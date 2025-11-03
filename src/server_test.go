@@ -1,0 +1,388 @@
+// server/server_test.go
+//
+// Integration-style tests for the server package focusing on vhost behavior
+// (HTTP and TLS termination) and basic control endpoints.
+//
+// The file intentionally keeps tests self-contained and avoids requiring a
+// real WireGuard UserspaceDevice by using VHostProxy directly for vhost tests.
+package server
+
+import (
+	"crypto/tls"
+	"fmt"
+	"io"
+	"net"
+	"net/http"
+	"net/http/httptest"
+	"net/url"
+	"testing"
+	"time"
+
+	"crypto/rand"
+	"crypto/rsa"
+	"crypto/x509"
+	"crypto/x509/pkix"
+	"encoding/pem"
+	"math/big"
+
+	"aquaduct.dev/weft/cmd"
+	"aquaduct.dev/weft/types"
+	"github.com/golang-jwt/jwt/v4"
+	. "github.com/onsi/ginkgo/v2"
+	. "github.com/onsi/gomega"
+	"golang.zx2c4.com/wireguard/wgctrl/wgtypes"
+)
+
+func TestServer(t *testing.T) {
+	RegisterFailHandler(Fail)
+	// RunSpecs lives in server_suite_test.go
+}
+
+// helper to generate a WireGuard public-key string parseable by wgtypes.ParseKey
+func testGenerateClientPubKeyString() string {
+	k, err := wgtypes.GenerateKey()
+	if err != nil {
+		return ""
+	}
+	return k.PublicKey().String()
+}
+
+func generateSelfSignedCert(commonName string) ([]byte, []byte, error) {
+	priv, err := rsa.GenerateKey(rand.Reader, 2048)
+	if err != nil {
+		return nil, nil, err
+	}
+	serial, err := rand.Int(rand.Reader, big.NewInt(1<<62))
+	if err != nil {
+		return nil, nil, err
+	}
+	template := &x509.Certificate{
+		SerialNumber: serial,
+		Subject: pkix.Name{
+			CommonName: commonName,
+		},
+		NotBefore:             time.Now().Add(-1 * time.Minute),
+		NotAfter:              time.Now().Add(24 * time.Hour),
+		KeyUsage:              x509.KeyUsageKeyEncipherment | x509.KeyUsageDigitalSignature,
+		ExtKeyUsage:           []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth},
+		BasicConstraintsValid: true,
+		DNSNames:              []string{commonName},
+	}
+	derBytes, err := x509.CreateCertificate(rand.Reader, template, template, &priv.PublicKey, priv)
+	if err != nil {
+		return nil, nil, err
+	}
+	certPEM := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: derBytes})
+	keyPEM := pem.EncodeToMemory(&pem.Block{Type: "RSA PRIVATE KEY", Bytes: x509.MarshalPKCS1PrivateKey(priv)})
+	return certPEM, keyPEM, nil
+}
+
+var _ = Describe("Server Basic Functionality", func() {
+	It("handles /healthcheck and shutdown", func() {
+		s := NewServer(nil, wgtypes.Key{})
+		// healthcheck
+		hReq, _ := http.NewRequest("GET", "/healthcheck", nil)
+		hRec := httptest.NewRecorder()
+		s.handleHealthcheck(hRec, hReq)
+		Expect(hRec.Result().StatusCode).To(Equal(http.StatusOK))
+
+		// shutdown should close proxies and device (none configured)
+		shReq, _ := http.NewRequest("POST", "/shutdown", nil)
+		shRec := httptest.NewRecorder()
+		s.handleShutdown(shRec, shReq)
+		Expect(shRec.Result().StatusCode).To(Equal(http.StatusOK))
+	})
+
+	It("handles the login flow", func() {
+		s := NewServer(nil, wgtypes.Key{})
+		s.ConnectionSecret = "test-secret-12345678901234567890"
+		tokenRaw, err := cmd.Login("localhost:9092", "test-secret-12345678901234567890", "test-proxy")
+
+		// 4. Verify the JWT
+		token, err := jwt.Parse(tokenRaw, func(token *jwt.Token) (interface{}, error) {
+			if _, ok := token.Method.(*jwt.SigningMethodHMAC); !ok {
+				return nil, fmt.Errorf("unexpected signing method: %v", token.Header["alg"])
+			}
+			return []byte(s.ConnectionSecret), nil
+		})
+
+		Expect(err).ToNot(HaveOccurred())
+		Expect(token.Valid).To(BeTrue())
+	})
+
+	It("proxies TCP", func() {
+		s := NewServer(nil, wgtypes.Key{})
+		req := &types.ConnectRequest{
+			ClientPublicKey: testGenerateClientPubKeyString(),
+			RemotePort:      1234,
+			Protocol:        "tcp",
+		}
+		resp, err := s.Serve(req)
+		Expect(err).ToNot(HaveOccurred())
+		Expect(resp.ServerPort).To(Equal(1234))
+	})
+
+	It("proxies HTTP", func() {
+		s := NewServer(nil, wgtypes.Key{})
+		up := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			fmt.Fprint(w, "upstream-body")
+		}))
+		defer up.Close()
+		upURL, _ := url.Parse(up.URL)
+
+		// Add vhost directly
+		s.VhostProxy.AddHost("test.local", upURL)
+
+		// Exercise the vhost proxy handler directly
+		req, _ := http.NewRequest("GET", "http://test.local/", nil)
+		w := httptest.NewRecorder()
+		req.Host = "test.local"
+		s.VhostProxy.ServeHTTP(w, req)
+		Expect(w.Result().StatusCode).To(Equal(http.StatusOK))
+		body, _ := io.ReadAll(w.Result().Body)
+		Expect(string(body)).To(ContainSubstring("upstream-body"))
+	})
+
+	It("proxies HTTPS", func() {
+		// This test registers TLS termination in the VHostProxy and mounts a TLS listener
+		// that proxies to an upstream httptest server (device is nil in tests).
+		s := NewServer(nil, wgtypes.Key{})
+		up := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			fmt.Fprint(w, "hello-secure")
+		}))
+		defer up.Close()
+		upURL, _ := url.Parse(up.URL)
+
+		// Generate cert
+		// Use server package helper to generate cert/key for tests
+		certPEM, keyPEM, err := generateSelfSignedCert("secure.test")
+		Expect(err).ToNot(HaveOccurred())
+
+		// Register TLS vhost directly against the upstream (device is nil in tests).
+		Expect(s.VhostProxy.AddHostWithTLS("secure.test", upURL, string(certPEM), string(keyPEM))).To(Succeed())
+
+		handler := s.VhostProxy.GetTLSHandler("secure.test")
+		cfg := s.VhostProxy.GetTLSConfig("secure.test")
+		Expect(handler).ToNot(BeNil())
+		Expect(cfg).ToNot(BeNil())
+
+		// Start TLS listener on a dynamic port to avoid collisions.
+		ln, err := net.Listen("tcp", "127.0.0.1:0")
+		Expect(err).ToNot(HaveOccurred())
+		tlsLn := tls.NewListener(ln, cfg)
+		go func() {
+			_ = http.Serve(tlsLn, handler)
+		}()
+
+		addr := ln.Addr().String()
+		tr := &http.Transport{TLSClientConfig: &tls.Config{InsecureSkipVerify: true}}
+		client := &http.Client{Transport: tr, Timeout: 3 * time.Second}
+		url := "https://" + addr + "/"
+		req2, _ := http.NewRequest("GET", url, nil)
+		// Set Host header to match vhost routing
+		req2.Host = "secure.test"
+		resp, err := client.Do(req2)
+		Expect(err).ToNot(HaveOccurred())
+		defer resp.Body.Close()
+		b, _ := io.ReadAll(resp.Body)
+		Expect(string(b)).To(ContainSubstring("hello-secure"))
+	})
+
+	It("creates VHost listeners lazily", func() {
+		// Create server and ensure no listener bound on the test TLS port before registration.
+		s := NewServer(nil, wgtypes.Key{})
+		testTLSPort := 45454 // non-privileged port for test
+		// Ensure proxies map (internal) does not contain the test port
+		_, existsBefore := s.proxies[testTLSPort]
+		Expect(existsBefore).To(BeFalse())
+
+		// Register a TLS vhost that requests that port via RemotePort and hostname.
+		up := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			fmt.Fprint(w, "deferred-upstream")
+		}))
+		defer up.Close()
+		certPEM, keyPEM, err := generateSelfSignedCert("deferred.test")
+		Expect(err).ToNot(HaveOccurred())
+
+		req := &types.ConnectRequest{
+			ClientPublicKey: testGenerateClientPubKeyString(),
+			RemotePort:      testTLSPort,
+			Hostname:        "deferred.test",
+			CertificatePEM:  string(certPEM),
+			PrivateKeyPEM:   string(keyPEM),
+		}
+		// Serve should add the TLS vhost and create the listener lazily for the requested RemotePort.
+		_, err = s.Serve(req)
+		Expect(err).ToNot(HaveOccurred())
+
+		// Now the proxies map should contain the testTLSPort entry because deferred bind should have created it.
+		_, existsAfter := s.proxies[testTLSPort]
+		Expect(existsAfter).To(BeTrue())
+	})
+
+	// It serves tcp, udp, http, https and multiple http domains from same IP by checking that the server can handle all of them.
+	var _ = Describe("Server Complex Interactions", func() {
+
+		It("returns a descriptive error when two clients request the same public port", func() {
+			// We'll simulate two clients attempting to bind to the same public port.
+			s := NewServer(nil, wgtypes.Key{})
+
+			// First client: should succeed and reserve a serverPort
+			req1 := &types.ConnectRequest{
+				ClientPublicKey: testGenerateClientPubKeyString(),
+				RemotePort:      4321,
+				Protocol:        "tcp",
+			}
+			resp1, err := s.Serve(req1)
+			Expect(err).ToNot(HaveOccurred())
+			Expect(resp1.ServerPort).To(Equal(4321))
+
+			// Record the assigned client address (as the server stores it in peers)
+			assignedIP := resp1.ClientAddress
+			Expect(assignedIP).ToNot(BeEmpty())
+
+			// Second client: use a different client key but request same RemotePort and expect a descriptive error
+			req2 := &types.ConnectRequest{
+				ClientPublicKey: testGenerateClientPubKeyString(),
+				RemotePort:      4321, // same public port
+				Protocol:        "tcp",
+			}
+			_, err = s.Serve(req2)
+			Expect(err).To(HaveOccurred())
+			Expect(err.Error()).To(ContainSubstring("port_conflict"))
+		})
+		It("serves tcp, udp, http, https and multiple http domains from same IP", func() {
+			// Arrange: Create a new server, upstream servers, and certificates
+			s := NewServer(nil, wgtypes.Key{})
+			tcpLn, err := net.Listen("tcp", "127.0.0.1:0")
+			Expect(err).ToNot(HaveOccurred())
+			defer tcpLn.Close()
+			go func() {
+				for {
+					conn, err := tcpLn.Accept()
+					if err != nil {
+						return
+					}
+					go func(c net.Conn) {
+						io.Copy(c, c)
+						c.Close()
+					}(conn)
+				}
+			}()
+			tcpPort := tcpLn.Addr().(*net.TCPAddr).Port
+			udpAddr, err := net.ResolveUDPAddr("udp", "127.0.0.1:0")
+			Expect(err).ToNot(HaveOccurred())
+			udpConn, err := net.ListenUDP("udp", udpAddr)
+			Expect(err).ToNot(HaveOccurred())
+			defer udpConn.Close()
+			udpPort := udpConn.LocalAddr().(*net.UDPAddr).Port
+			go func() {
+				buf := make([]byte, 1024)
+				for {
+					n, addr, err := udpConn.ReadFromUDP(buf)
+					if err != nil {
+						return
+					}
+					udpConn.WriteToUDP(buf[:n], addr)
+				}
+			}()
+			httpUp1 := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				fmt.Fprint(w, "domain1")
+			}))
+			defer httpUp1.Close()
+			u1, _ := url.Parse(httpUp1.URL)
+			httpUp2 := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				fmt.Fprint(w, "domain2")
+			}))
+			defer httpUp2.Close()
+			u2, _ := url.Parse(httpUp2.URL)
+			httpsUp := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				fmt.Fprint(w, "secure")
+			}))
+			defer httpsUp.Close()
+			u3, _ := url.Parse(httpsUp.URL)
+
+			// Act: Register TCP and UDP non-vhosts
+			tcpReq := &types.ConnectRequest{
+				ClientPublicKey: testGenerateClientPubKeyString(),
+				RemotePort:      tcpPort,
+				Protocol:        "tcp",
+			}
+			tcpResp, err := s.Serve(tcpReq)
+			Expect(err).ToNot(HaveOccurred())
+			udpReq := &types.ConnectRequest{
+				ClientPublicKey: testGenerateClientPubKeyString(),
+				RemotePort:      udpPort,
+				Protocol:        "udp",
+			}
+			udpResp, err := s.Serve(udpReq)
+			Expect(err).ToNot(HaveOccurred())
+
+			// Assert: The server should return the correct server ports
+			Expect(tcpResp.ServerPort).To(Equal(tcpPort))
+			Expect(udpResp.ServerPort).To(Equal(udpPort))
+
+			// Arrange: Register HTTP vhosts and an HTTP listener
+			s.VhostProxy.AddHost("example.com", u1)
+			s.VhostProxy.AddHost("example.org", u2)
+			httpLn, err := net.Listen("tcp", "127.0.0.1:0")
+			Expect(err).ToNot(HaveOccurred())
+			defer httpLn.Close()
+			publicPort := httpLn.Addr().(*net.TCPAddr).Port
+			go func() {
+				http.Serve(httpLn, s.VhostProxy)
+			}()
+
+			// Act: Send requests to the vhosts
+			tr := &http.Transport{TLSClientConfig: &tls.Config{InsecureSkipVerify: true}}
+			client := &http.Client{Transport: tr, Timeout: 3 * time.Second}
+			req1, _ := http.NewRequest("GET", fmt.Sprintf("http://127.0.0.1:%d/", publicPort), nil)
+			req1.Host = "example.com"
+			resp1, err := client.Do(req1)
+			Expect(err).ToNot(HaveOccurred())
+			b1, _ := io.ReadAll(resp1.Body)
+			resp1.Body.Close()
+			req2, _ := http.NewRequest("GET", fmt.Sprintf("http://127.0.0.1:%d/", publicPort), nil)
+			req2.Host = "example.org"
+			resp2, err := client.Do(req2)
+			Expect(err).ToNot(HaveOccurred())
+			b2, _ := io.ReadAll(resp2.Body)
+			resp2.Body.Close()
+
+			// Assert: The server should respond with the correct bodies
+			Expect(string(b1)).To(ContainSubstring("domain1"))
+			Expect(string(b2)).To(ContainSubstring("domain2"))
+
+			// Arrange: Register an HTTPS vhost and a TLS listener
+			certPEM, keyPEM, err := generateSelfSignedCert("secure.test")
+			Expect(err).ToNot(HaveOccurred())
+			Expect(s.VhostProxy.AddHostWithTLS("secure.test", u3, string(certPEM), string(keyPEM))).To(Succeed())
+			handler := s.VhostProxy.GetTLSHandler("secure.test")
+			cfg := s.VhostProxy.GetTLSConfig("secure.test")
+			Expect(handler).ToNot(BeNil())
+			Expect(cfg).ToNot(BeNil())
+			ln, err := net.Listen("tcp", "127.0.0.1:0")
+			Expect(err).ToNot(HaveOccurred())
+			tlsLn := tls.NewListener(ln, cfg)
+			go func() {
+				http.Serve(tlsLn, handler)
+			}()
+			addr := ln.Addr().String()
+
+			// Act: Send a request to the vhost
+			tr2 := &http.Transport{TLSClientConfig: &tls.Config{InsecureSkipVerify: true}}
+			client2 := &http.Client{Transport: tr2, Timeout: 3 * time.Second}
+			req3, _ := http.NewRequest("GET", "https://"+addr+"/", nil)
+			req3.Host = "secure.test"
+			resp3, err := client2.Do(req3)
+
+			// Assert: The server should not return an error and the body should contain the upstream body
+			Expect(err).ToNot(HaveOccurred())
+			b3, _ := io.ReadAll(resp3.Body)
+			Expect(string(b3)).To(ContainSubstring("secure"))
+			resp3.Body.Close()
+		})
+	})
+})
+
+/* Removed duplicate generateSelfSignedCert from tests; tests will use the package-level helper in server/server.go */
