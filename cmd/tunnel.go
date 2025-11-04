@@ -10,17 +10,19 @@ import (
 	"log"
 	"net"
 	"net/http"
-	"net/netip"
 	"net/url"
 	"os"
 	"os/signal"
+
 	"strconv"
 	"strings"
 	"syscall"
 	"time"
 
-	"aquaduct.dev/weft/types"
+	server "aquaduct.dev/weft/src"
 	"aquaduct.dev/weft/wireguard"
+
+	"aquaduct.dev/weft/types"
 	"github.com/spf13/cobra"
 )
 
@@ -56,11 +58,13 @@ var tunnelCmd = &cobra.Command{
 		if err != nil {
 			log.Fatalf("Invalid remote port: %v", err)
 		}
-
-		// 2. Generate private key
-		privateKey, err := wireguard.GeneratePrivateKey()
-		if err != nil {
-			log.Fatalf("Failed to generate private key: %v", err)
+		if remotePort == 0 {
+			switch strings.ToLower(remoteURL.Scheme) {
+			case "http":
+				remotePort = 80
+			case "https":
+				remotePort = 443
+			}
 		}
 
 		// If tunnel-name was not supplied by flag, compute default sha256(src|dst)
@@ -84,38 +88,17 @@ var tunnelCmd = &cobra.Command{
 		}
 
 		// Determine protocol and hostname to send to the control API.
-		// Map URL schemes like http/https -> tcp for the proxy protocol.
 		proto := strings.ToLower(localURL.Scheme)
-		if proto == "http" || proto == "https" {
-			proto = "tcp"
-		}
 		hostname := localURL.Hostname()
 		// If localURL doesn't have a hostname (e.g., "tcp://10.0.0.1:1234"), fall back to remoteURL.
 		if hostname == "" {
 			hostname = remoteURL.Hostname()
 		}
-		// Ensure remotePort is populated: if remote URL doesn't include a port, pick sensible defaults.
-		remotePortStr := remoteURL.Port()
-		if remotePortStr == "" {
-			switch strings.ToLower(remoteURL.Scheme) {
-			case "http":
-				remotePortStr = "80"
-			case "https":
-				remotePortStr = "443"
-			default:
-				// leave as requested remotePort (already parsed above) if unknown scheme
-				remotePortStr = strconv.Itoa(remotePort)
-			}
-		}
-		if rp, err := strconv.Atoi(remotePortStr); err == nil {
-			remotePort = rp
-		}
 
-		// If tunnel-name was not supplied by flag, compute default sha256(src|dst)
-		if tunnelNameFlag == "" {
-			// args[1] is local url, args[2] is remote url
-			h := sha256.Sum256([]byte(args[1] + "|" + args[2]))
-			tunnelNameFlag = hex.EncodeToString(h[:])
+		// Generate a new private key.
+		privateKey, err := wireguard.GeneratePrivateKey()
+		if err != nil {
+			log.Fatalf("Failed to generate private key: %v", err)
 		}
 
 		// Build the ConnectRequest that will be sent to the server.
@@ -124,11 +107,9 @@ var tunnelCmd = &cobra.Command{
 			RemotePort:      remotePort,
 			Protocol:        proto,
 			Hostname:        hostname,
+			Upstream:        localURL.String(),
 			TunnelName:      tunnelNameFlag,
 		}
-		// Debug: log the textual public key the client will send so we can compare encodings with the server.
-		// This prints only the public-key textual representation (not private key material).
-		log.Printf("DEBUG: client ConnectRequest.ClientPublicKey (len=%d): %s", len(connectReq.ClientPublicKey), connectReq.ClientPublicKey)
 
 		reqBody, err := json.Marshal(connectReq)
 		if err != nil {
@@ -171,48 +152,10 @@ var tunnelCmd = &cobra.Command{
 		}
 
 		// 4. Create WireGuard device
-		clientAddress, err := netip.ParseAddr(connectResp.ClientAddress)
-		if err != nil {
-			log.Fatalf("Failed to parse client address: %v", err)
-		}
-
-		// Build device config with only the device's private key. We'll add the server as a peer via IpcSet
-		// after creating the device to avoid placing peer keys at the top-level (invalid UAPI).
-		deviceConf := fmt.Sprintf("private_key=%s\n", hex.EncodeToString(privateKey[:]))
-
-		// Create the device first.
-		device, err := wireguard.NewUserspaceDevice(deviceConf, []netip.Addr{clientAddress})
+		// 4. Create WireGuard device using shared helper
+		_, err = server.Tunnel(serverIP, &connectResp, privateKey, []string{strings.Split(localURL.Host, ":")[0]})
 		if err != nil {
 			log.Fatalf("Failed to create wireguard device: %v", err)
-		}
-
-		// Construct a proper peer config and apply it via IpcSet on the device.
-		peerEndpoint := func() string {
-			if _, _, perr := net.SplitHostPort(serverIP); perr == nil {
-				return serverIP
-			}
-			return net.JoinHostPort(serverIP, "9092")
-		}()
-
-		peerConf := fmt.Sprintf("replace_peers=true\npublic_key=%s\nallowed_ip=%s\nendpoint=%s\npersistent_keepalive_interval=1",
-			connectResp.ServerPublicKey,
-			connectResp.AllowedIPs,
-			peerEndpoint,
-		)
-
-		// Apply peer configuration using the underlying device's IpcSet.
-		if err := device.Device.IpcSet(peerConf); err != nil {
-			log.Fatalf("Failed to set peer config: %v", err)
-		}
-
-		log.Printf("Tunnel established. Server assigned public port %d (requested %d) -> forwarding to local service %s", connectResp.ServerPort, remotePort, localURL.String())
-
-		// 5. Start proxying
-		// Use the server-assigned port (connectResp.ServerPort) for the local WireGuard listener.
-		assignedPort := connectResp.ServerPort
-		listener, err := device.NetStack.ListenTCP(&net.TCPAddr{Port: assignedPort})
-		if err != nil {
-			log.Fatalf("Failed to listen on remote port %d: %v", assignedPort, err)
 		}
 
 		// Start background healthchecks to the control API to keep the server-side proxy alive.
@@ -271,18 +214,10 @@ var tunnelCmd = &cobra.Command{
 				resp.Body.Close()
 			}
 			close(done)
-			// allow a brief grace period then exit process
-			time.Sleep(200 * time.Millisecond)
 			os.Exit(0)
 		}()
-
 		for {
-			conn, err := listener.Accept()
-			if err != nil {
-				log.Printf("Failed to accept new connection: %v", err)
-				continue
-			}
-			go wireguard.TCPProxy(conn, localURL.Host)
+			time.Sleep(time.Minute)
 		}
 	},
 }

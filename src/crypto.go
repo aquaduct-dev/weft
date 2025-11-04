@@ -21,7 +21,7 @@ import (
 
 // encrypt encrypts plaintext using a key-derived AES-GCM key.
 // Returns ciphertext with nonce prepended.
-func encrypt(key, text string) ([]byte, error) {
+func Encrypt(key, text string) ([]byte, error) {
 	hasher := sha256.New()
 	hasher.Write([]byte(key))
 	sha := hasher.Sum(nil)
@@ -46,7 +46,7 @@ func encrypt(key, text string) ([]byte, error) {
 }
 
 // decrypt decrypts ciphertext produced by encrypt (nonce prepended).
-func decrypt(key string, ciphertext []byte) ([]byte, error) {
+func Decrypt(key string, ciphertext []byte) ([]byte, error) {
 	hasher := sha256.New()
 	hasher.Write([]byte(key))
 	sha := hasher.Sum(nil)
@@ -75,7 +75,7 @@ func decrypt(key string, ciphertext []byte) ([]byte, error) {
 	return plaintext, nil
 }
 
-func generateCert(commonName string) ([]byte, []byte, error) {
+func GenerateCert(commonName string) ([]byte, []byte, error) {
 	priv, err := rsa.GenerateKey(rand.Reader, 2048)
 	if err != nil {
 		return nil, nil, err

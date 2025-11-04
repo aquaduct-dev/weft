@@ -41,17 +41,34 @@ That's it!  Your local URL is now proxied and available on the internet at the r
 
 ## Under the Hood
 
-Weft uses `wireguard-go`.  The connection secret is used to start a control tunnel to the server, which then creates additional WireGuard interfaces and replies with the connection details over the tunnel.  After that point, the client only uses the control tunnel to indicate shutdowns and perform healthchecks.  The server proxies requests back through the new Wireguard tunnels to serve requests made to the public IP.
+### Tunnels
 
-### HTTPS Zero-Trust (concise, crypto-focused)
+Weft uses `wireguard-go` to implement tunnels.  The server reserves a `10.1.0.0/16` block of addresses for the internal WireGuard network, and keeps track of which proxies have been assigned which addresses.  Each assigned address may only be used by the client to which it has been assigned; this is enforced in the peer config of the server Wireguard proxy.  The client side config allows the server to access from any IP.
 
-The Weft server does not generally have a signed TLS certificate.  Weft uses a short AES-based challenge to verify both the server and client possess the secret.
+When clients are removed, the address is freed and returned to the pool.  Subsequent clients may re-use the same address.
+
+### Proxy
+
+Both the server and the tunnel must run proxies.  The `/connect` method must establish a remote port listener on the server - a TCP/UDP proxy if necessary, or a VHostProxy if the connection uses HTTP/HTTPS. 
+
+TCP and UDP proxies are simple on the server side: they simply proxy to the tunnel-side TCP/UDP proxy, which then forwards the request to whatever local target is being tunneled.
+
+HTTP and HTTPS proxies are more complicated.  Each server-side `VHostProxy` must target the tunnel proxy port.  On the tunnel side, the proxy port should only forward TCP to the local HTTP server.
+
+
+The server should only ever proxy TCP/UDP from the client, but the client should proxy TCP/UDP/HTTP/HTTPS from its local network (allowing it to use local DNS) to TCP/UDP connections on the server.
+
+### HTTPS Zero-Trust Secret Verification
+
+The Weft server does not generally have a signed TLS certificate.  Weft uses a short AES-based challenge to verify both the server and client possess the secret to prevent clients from connecting to fake servers.
 
 1. Client `GET`s `/login`.
 2. Server generates a random nonce and returns the string "server-<nonce>" encrypted with the common secret.
 3. Client decrypts and verifies that the "server-" prefix is present.
 4. Client encrypts the nonce and `POST`s it to `/login`.
 5. Server verifies the returned ciphertext; on success it issues a short-lived JWT (~30m).
+
+Subsequently, the token is used for healthchecks.  When it expires, the client must repeat the challenge to obtain a new token.
 
 Notes:
 - All AES operations use the shared connection secret as the key; the nonce is single-use.

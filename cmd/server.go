@@ -37,13 +37,8 @@ var serverCmd = &cobra.Command{
 			fmt.Printf("OpenTelemetry: %s\n", opentelemetryConnectionString)
 		}
 
-		device, privateKey, err := server.CreateDevice(port)
-		if err != nil {
-			fmt.Printf("failed to create device: %v\n", err)
-			os.Exit(1)
-		}
+		srv := server.NewServer()
 
-		srv := server.NewServer(device, privateKey)
 		fmt.Printf("Connection Secret: %s\n", srv.ConnectionSecret)
 		// Optionally write the connection secret to a file for automation.
 		if secretFile != "" {

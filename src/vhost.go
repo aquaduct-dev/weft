@@ -2,9 +2,12 @@ package server
 
 import (
 	"crypto/tls"
+	"fmt"
+	"log"
 	"net/http"
 	"net/http/httputil"
 	"net/url"
+	"strings"
 	"sync"
 
 	"aquaduct.dev/weft/wireguard"
@@ -12,20 +15,66 @@ import (
 
 // VHostProxy manages name-based vhosts and optional TLS-termination handlers.
 type VHostProxy struct {
-	mu             sync.RWMutex
-	hosts          map[string]http.Handler
+	mu     sync.RWMutex
+	s      *http.Server
+	device *wireguard.UserspaceDevice
+
+	hosts map[string]http.Handler
+	port  int
+
+	manager *VHostProxyManager
+
 	defaultHandler http.Handler
-	device         *wireguard.UserspaceDevice
 	// tlsHandlers holds HTTPS handlers per hostname when TLS termination is configured.
 	tlsHandlers map[string]http.Handler
 	// tlsConfigs holds tls.Config per hostname for mounting listeners.
 	tlsConfigs map[string]*tls.Config
 }
 
+type VHostProxyManager struct {
+	proxies map[int]*VHostProxy
+	mu      sync.Mutex
+}
+
+func (v *VHostProxyManager) Proxy(port int, device *wireguard.UserspaceDevice) *VHostProxy {
+	v.mu.Lock()
+	defer v.mu.Unlock()
+	proxy, ok := v.proxies[port]
+	if ok {
+		return proxy
+	}
+	v.proxies[port] = NewVHostProxy(port, device, v)
+	return v.proxies[port]
+}
+
+type VHostCloser struct {
+	VHostProxy *VHostProxy
+	Host       string
+	Tls        bool
+}
+
+func (v VHostCloser) Close() error {
+	delete(v.VHostProxy.hosts, v.Host)
+	if v.Tls {
+		delete(v.VHostProxy.tlsHandlers, v.Host)
+		delete(v.VHostProxy.tlsConfigs, v.Host)
+	}
+	if v.VHostProxy.s != nil && len(v.VHostProxy.hosts) == 0 {
+		log.Printf("Shutting down VHost proxy on port %d (no proxies)", v.VHostProxy.port)
+		v.VHostProxy.s.Close()
+		v.VHostProxy.manager.mu.Lock()
+		delete(v.VHostProxy.manager.proxies, v.VHostProxy.port)
+		v.VHostProxy.manager.mu.Unlock()
+	}
+	return nil
+}
+
 // NewVHostProxy creates a new VHostProxy backed by the provided userspace device.
-func NewVHostProxy(device *wireguard.UserspaceDevice) *VHostProxy {
+func NewVHostProxy(port int, device *wireguard.UserspaceDevice, manager *VHostProxyManager) *VHostProxy {
 	return &VHostProxy{
 		hosts:          make(map[string]http.Handler),
+		manager:        manager,
+		port:           port,
 		defaultHandler: http.NotFoundHandler(),
 		device:         device,
 		tlsHandlers:    make(map[string]http.Handler),
@@ -34,20 +83,22 @@ func NewVHostProxy(device *wireguard.UserspaceDevice) *VHostProxy {
 }
 
 // AddHost registers an HTTP reverse proxy for the given host.
-func (p *VHostProxy) AddHost(host string, target *url.URL) {
+func (p *VHostProxy) AddHost(host string, target *url.URL) (VHostCloser, error) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 
 	proxy := httputil.NewSingleHostReverseProxy(target)
 	// Attach transport that uses the userspace device if present, and accept self-signed certs for upstreams.
-	tr := &http.Transport{
-		TLSClientConfig: &tls.Config{InsecureSkipVerify: true},
+	tr := &http.Transport{}
+	if p == nil || p.device == nil {
+		return VHostCloser{}, fmt.Errorf("could not add vhost proxy %s -> %s", host, target.String())
 	}
-	if p != nil && p.device != nil {
-		tr.DialContext = p.device.NetStack.DialContext
-	}
+	tr.DialContext = p.device.NetStack.DialContext
 	proxy.Transport = tr
 	p.hosts[host] = proxy
+	go p.Serve()
+	log.Printf("VHost: HTTP proxy configured for %s:%d -> %s", host, p.port, target.String())
+	return VHostCloser{VHostProxy: p, Host: host, Tls: false}, nil
 }
 
 // AddHostWithTLS registers both an HTTP reverse proxy and a TLS termination handler
@@ -55,7 +106,7 @@ func (p *VHostProxy) AddHost(host string, target *url.URL) {
 /* AddHostWithTLS already declared earlier; no-op here to avoid duplicate definition. */
 // AddHostWithTLS registers a host reverse proxy and an HTTPS handler that
 // terminates TLS using the provided certificate and key PEM strings.
-func (p *VHostProxy) AddHostWithTLS(host string, target *url.URL, certPEM, keyPEM string) error {
+func (p *VHostProxy) AddHostWithTLS(host string, target *url.URL, certPEM, keyPEM string) (VHostCloser, error) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 
@@ -77,7 +128,7 @@ func (p *VHostProxy) AddHostWithTLS(host string, target *url.URL, certPEM, keyPE
 	// Create a tls.Config from the PEMs.
 	cert, err := tls.X509KeyPair([]byte(certPEM), []byte(keyPEM))
 	if err != nil {
-		return err
+		return VHostCloser{}, err
 	}
 	tlsConfig := &tls.Config{
 		Certificates: []tls.Certificate{cert},
@@ -92,24 +143,44 @@ func (p *VHostProxy) AddHostWithTLS(host string, target *url.URL, certPEM, keyPE
 		p.tlsConfigs = make(map[string]*tls.Config)
 	}
 	p.tlsConfigs[host] = tlsConfig
-
-	return nil
+	go p.Serve()
+	log.Printf("VHost: HTTPS proxy configured for %s:%d -> %s", host, p.port, target.String())
+	return VHostCloser{VHostProxy: p, Host: host, Tls: true}, nil
 }
 
 func (p *VHostProxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	host := strings.Split(r.Host, ":")[0]
 	p.mu.RLock()
-	proxy, ok := p.hosts[r.Host]
-	httpsHandler, httpsOk := p.tlsHandlers[r.Host]
+	proxy, ok := p.hosts[host]
+	httpsHandler, httpsOk := p.tlsHandlers[host]
 	p.mu.RUnlock()
-	if ok {
-		proxy.ServeHTTP(w, r)
-		return
-	}
+
 	if httpsOk {
+		log.Printf("VHost: handling request for %s%s with HTTPS handler", r.Host, r.RequestURI)
 		httpsHandler.ServeHTTP(w, r)
 		return
 	}
+	if ok {
+		log.Printf("VHost: handling request for %s%s with HTTP handler", r.Host, r.RequestURI)
+		proxy.ServeHTTP(w, r)
+		return
+	}
+	log.Printf("VHost: handling request for %s%s with 404 handler", r.Host, r.RequestURI)
 	p.defaultHandler.ServeHTTP(w, r)
+}
+
+func (p *VHostProxy) Serve() {
+	if p.s != nil {
+		log.Printf("VHost: already serving on port %d", p.port)
+		return
+	}
+	p.s = &http.Server{
+		Addr:    fmt.Sprintf(":%d", p.port),
+		Handler: p,
+	}
+	log.Printf("VHost: serving on port %d", p.port)
+	p.s.ListenAndServe()
+
 }
 
 // GetTLSHandler returns the registered HTTPS handler for a host, or nil if none.

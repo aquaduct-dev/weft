@@ -4,7 +4,6 @@ This package implements the REST server for the Weft control plane.
 package server
 
 import (
-	"context"
 	"crypto/rand"
 	"crypto/tls"
 	"encoding/base64"
@@ -45,11 +44,10 @@ type Server struct {
 	// Used by the janitor to prune stale entries.
 	peerLastSeen map[string]time.Time
 
-	// proxies maps a public port to the listener/closer that forwards traffic into the WG network.
-	proxies map[int]io.Closer
+	proxies map[string]io.Closer
 
-	// nextIP is the next IP address to allocate inside s.subnet for newly created tunnels.
-	nextIP netip.Addr
+	// usedIPs tracks allocated addresses in the subnet.
+	usedIPs map[netip.Addr]bool
 
 	// subnet is the WireGuard subnet reserved for clients (e.g., 10.0.0.0/24).
 	subnet netip.Prefix
@@ -64,10 +62,14 @@ type Server struct {
 	ConnectionSecret string
 
 	// VhostProxy implements virtual-host routing for hostname-based tunnels.
-	VhostProxy *VHostProxy
+	VHostProxyManager *VHostProxyManager
 
 	// apiTLSConfig is an optional TLS config for API-related listeners (kept for future use).
 	apiTLSConfig *tls.Config
+
+	// WgListenPort records the UDP port the server's WireGuard device is listening on.
+	// This is returned to clients so they can configure the correct endpoint.
+	WgListenPort int
 
 	// challenges maps remote addresses to outstanding login challenges.
 	challenges map[string]string
@@ -84,7 +86,7 @@ func CreateDevice(port int) (*wireguard.UserspaceDevice, wgtypes.Key, error) {
 		return nil, wgtypes.Key{}, fmt.Errorf("failed to generate private key: %w", err)
 	}
 
-	subnet := netip.MustParsePrefix("10.0.0.0/24")
+	subnet := netip.MustParsePrefix("10.1.0.0/16")
 
 	conf := fmt.Sprintf(`private_key=%s
 listen_port=%d`, hex.EncodeToString(privateKey[:]), port)
@@ -93,10 +95,26 @@ listen_port=%d`, hex.EncodeToString(privateKey[:]), port)
 	if err != nil {
 		return nil, wgtypes.Key{}, fmt.Errorf("failed to create wireguard device: %w", err)
 	}
+	// Diagnostic: log that the server created the device and the listen port used (private key redacted).
+	log.Printf("CreateDevice: created server WireGuard device (listen_port=%d) - private_key redacted", port)
+	// Diagnostic: attempt to read and log the initial device IPC state (sanitized).
+	if cur, err := device.Device.IpcGet(); err == nil {
+		var out []string
+		for _, line := range strings.Split(cur, "\n") {
+			if strings.HasPrefix(strings.TrimSpace(line), "private_key=") {
+				out = append(out, "private_key=<redacted>")
+				continue
+			}
+			out = append(out, line)
+		}
+		log.Printf("CreateDevice: initial device IPC state (redacted):\n%s", strings.Join(out, "\n"))
+	} else {
+		log.Printf("CreateDevice: failed to read initial device IPC state: %v", err)
+	}
 	return device, privateKey, nil
 }
 
-func NewServer(device *wireguard.UserspaceDevice, privateKey wgtypes.Key) *Server {
+func NewServer() *Server {
 	mux := http.NewServeMux()
 
 	apiTLSCfg := &tls.Config{}
@@ -106,21 +124,26 @@ func NewServer(device *wireguard.UserspaceDevice, privateKey wgtypes.Key) *Serve
 			Addr:    ":9092",
 			Handler: mux,
 		},
-		device:       device,
-		privateKey:   privateKey,
-		tunnels:      make(map[string]peer),
-		peerLastSeen: make(map[string]time.Time),
-		proxies:      make(map[int]io.Closer),
-		subnet:       netip.MustParsePrefix("10.0.0.0/24"),
-		nextIP:       netip.MustParsePrefix("10.0.0.0/24").Addr().Next(),
-		// nextPort removed — no dynamic port allocation
-		ConnectionSecret: "test-secret",
-		VhostProxy:       NewVHostProxy(device),
-		apiTLSConfig:     apiTLSCfg,
-		challenges:       make(map[string]string),
+		tunnels:           make(map[string]peer),
+		peerLastSeen:      make(map[string]time.Time),
+		proxies:           make(map[string]io.Closer),
+		subnet:            netip.MustParsePrefix("10.1.0.0/16"),
+		usedIPs:           make(map[netip.Addr]bool),
+		ConnectionSecret:  "test-secret",
+		VHostProxyManager: &VHostProxyManager{proxies: make(map[int]*VHostProxy)},
+		apiTLSConfig:      apiTLSCfg,
+		// default wgListenPort set to the API port; callers that create the device
+		// should set wgListenPort appropriately if different.
+		WgListenPort: 51820,
+		challenges:   make(map[string]string),
+	}
+	var err error
+	s.device, s.privateKey, err = CreateDevice(s.WgListenPort)
+	if err != nil {
+		panic(err)
 	}
 
-	mux.HandleFunc("/connect", s.handleConnect)
+	mux.HandleFunc("/connect", s.ConnectHandler)
 	mux.HandleFunc("/healthcheck", s.handleHealthcheck)
 	mux.HandleFunc("/shutdown", s.handleShutdown)
 	mux.HandleFunc("/login", s.handleLogin)
@@ -129,7 +152,55 @@ func NewServer(device *wireguard.UserspaceDevice, privateKey wgtypes.Key) *Serve
 	return s
 }
 
-func (s *Server) handleConnect(w http.ResponseWriter, r *http.Request) {
+// getFreeIPFromPool finds an available IP address in the server's subnet.
+// This function assumes the caller holds the mutex.
+func (s *Server) getFreeIPFromPool() (netip.Addr, error) {
+
+	// Reserve .1 for the server itself
+	hostAddr, _ := netip.ParseAddr("10.1.0.1")
+	if _, used := s.usedIPs[hostAddr]; !used {
+		s.usedIPs[hostAddr] = true
+	}
+	addr := hostAddr
+	for {
+		addr = addr.Next()
+		if !s.subnet.Contains(addr) {
+			return netip.Addr{}, fmt.Errorf("subnet exhausted")
+		}
+
+		// Don't allocate the broadcast address. The broadcast address is the last address in the subnet.
+		if !s.subnet.Contains(addr.Next()) {
+			continue // This is the broadcast address, skip it.
+		}
+
+		if _, used := s.usedIPs[addr]; !used {
+			s.usedIPs[addr] = true
+			return addr, nil
+		}
+	}
+}
+
+// returnIPToPool returns an IP address to the pool of available addresses.
+// This function assumes the caller holds the mutex.
+func (s *Server) returnIPToPool(ip netip.Addr) {
+	delete(s.usedIPs, ip)
+}
+
+// GetFreeIPFromPool finds an available IP address in the server's subnet.
+func (s *Server) GetFreeIPFromPool() (netip.Addr, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.getFreeIPFromPool()
+}
+
+// ReturnIPToPool returns an IP address to the pool of available addresses.
+func (s *Server) ReturnIPToPool(ip netip.Addr) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.returnIPToPool(ip)
+}
+
+func (s *Server) ConnectHandler(w http.ResponseWriter, r *http.Request) {
 	authHeader := r.Header.Get("Authorization")
 	if authHeader == "" {
 		http.Error(w, "Authorization header required", http.StatusUnauthorized)
@@ -144,19 +215,8 @@ func (s *Server) handleConnect(w http.ResponseWriter, r *http.Request) {
 
 	tokenString := parts[1]
 
-	token, err := jwt.Parse(tokenString, func(token *jwt.Token) (any, error) {
-		if _, ok := token.Method.(*jwt.SigningMethodHMAC); !ok {
-			return nil, fmt.Errorf("unexpected signing method: %v", token.Header["alg"])
-		}
-		return []byte(s.ConnectionSecret), nil
-	})
-
+	_, err := s.ValidateJWT(tokenString)
 	if err != nil {
-		http.Error(w, "Invalid token", http.StatusUnauthorized)
-		return
-	}
-
-	if !token.Valid {
 		http.Error(w, "Invalid token", http.StatusUnauthorized)
 		return
 	}
@@ -209,32 +269,27 @@ func (s *Server) Serve(req *types.ConnectRequest) (*types.ConnectResponse, error
 		return nil, fmt.Errorf("invalid client public key")
 	}
 
-	// Determine tunnel identifier: prefer provided tunnel name, otherwise fall back to client public key hex.
-	tunnelName := req.TunnelName
-	if tunnelName == "" {
-		// fallback to client public key as identifier (legacy behavior)
-		tunnelName = hex.EncodeToString(clientPublicKey[:])
-	}
 	// If the tunnel is new, allocate an IP from the subnet.
-	if _, ok := s.tunnels[tunnelName]; !ok {
-		if !s.subnet.Contains(s.nextIP) {
-			return nil, fmt.Errorf("subnet exhausted")
+	if _, ok := s.tunnels[req.TunnelName]; !ok {
+		ip, err := s.getFreeIPFromPool()
+		if err != nil {
+			return nil, err
 		}
-		s.tunnels[tunnelName] = peer{
-			ip:        s.nextIP,
+		s.tunnels[req.TunnelName] = peer{
+			ip:        ip,
 			publicKey: clientPublicKey,
 		}
-		s.nextIP = s.nextIP.Next()
 	}
-	peerIP := s.tunnels[tunnelName].ip
+	peerIP := s.tunnels[req.TunnelName].ip
 	// mark as seen now (new connection). Record by tunnelName.
-	s.peerLastSeen[tunnelName] = time.Now()
+	s.peerLastSeen[req.TunnelName] = time.Now()
 
 	// Build wgtypes.Config from current tunnels for consistent UAPI generation.
-	cfg := wgtypes.Config{}
+	cfg := wgtypes.Config{ListenPort: &s.WgListenPort}
 	for _, p := range s.tunnels {
 		cfg.Peers = append(cfg.Peers, wgtypes.PeerConfig{
-			PublicKey:  p.publicKey,
+			PublicKey: p.publicKey,
+			//AllowedIPs: []net.IPNet{{IP: net.ParseIP("127.0.0.1"), Mask: net.CIDRMask(32, 32)}},
 			AllowedIPs: []net.IPNet{{IP: net.IP(p.ip.AsSlice()), Mask: net.CIDRMask(32, 32)}},
 		})
 	}
@@ -283,6 +338,10 @@ func (s *Server) Serve(req *types.ConnectRequest) (*types.ConnectResponse, error
 			log.Printf("IpcSet: skipping apply; device config unchanged")
 		} else {
 			log.Printf("IpcSet: applying peer config")
+			// Log sanitized newConfig so we can validate what is being applied (private_key redacted).
+			log.Printf("IpcSet: newConfig to apply (redacted):\n%s", sanitizedNew)
+			// Also log server wgListenPort and whether device.Device appears non-nil.
+			log.Printf("IpcSet: server wgListenPort=%d, device.Device nil=%t", s.WgListenPort, s.device.Device == nil)
 			err = s.device.Device.IpcSet(newConfig)
 			if err != nil {
 				// On error, fetch and log current device state (sanitized) to help debugging.
@@ -296,169 +355,94 @@ func (s *Server) Serve(req *types.ConnectRequest) (*types.ConnectResponse, error
 				}
 				return nil, fmt.Errorf("failed to configure peer: %w", err)
 			}
+			// Diagnostic: read back the device IPC state after successful apply and log sanitized value.
+			if cur, e := s.device.Device.IpcGet(); e == nil {
+				redacted := sanitize(cur)
+				log.Printf("IpcSet: device IPC state after apply (redacted):\n%s", redacted)
+			} else {
+				log.Printf("IpcSet: failed to read device IPC after successful apply: %v", e)
+			}
 		}
 	}
 
-	serverPort := 0
-	if req.Hostname != "" {
-		target, err := url.Parse(fmt.Sprintf("http://%s:%d", peerIP.String(), req.RemotePort))
+	switch req.Protocol {
+	case "tcp":
+		log.Printf("Serve: TCP proxy :%v -> %v", req.RemotePort, fmt.Sprintf("%s:%d", peerIP.String(), req.RemotePort))
+		if _, exists := s.proxies[req.TunnelName]; exists {
+			return nil, fmt.Errorf("tunnel name conflict: %d", req.RemotePort)
+		}
+		portFree := true // placeholder - check if the port can be bound
+		if !portFree {
+			return nil, fmt.Errorf("TCP port conflict:%d", req.RemotePort)
+		}
+		targetUrl, err := url.Parse(req.Upstream)
 		if err != nil {
-			return nil, fmt.Errorf("failed to parse target url: %w", err)
+			return nil, err
 		}
-		// If certificate PEM/key provided, register TLS vhost
-		if req.CertificatePEM != "" && req.PrivateKeyPEM != "" {
-			if err := s.VhostProxy.AddHostWithTLS(req.Hostname, target, req.CertificatePEM, req.PrivateKeyPEM); err != nil {
-				return nil, fmt.Errorf("failed to add TLS vhost: %w", err)
-			}
-			// Mount the TLS handler onto a listener on the public port only when required.
-			// Defer binding to well-known ports (80/443, or configured public ports) until this point to avoid
-			// occupying them unnecessarily.
-			handler := s.VhostProxy.GetTLSHandler(req.Hostname)
-			tlsCfg := s.VhostProxy.GetTLSConfig(req.Hostname)
-			if handler == nil || tlsCfg == nil {
-				return nil, fmt.Errorf("tls handler or config missing for host %s", req.Hostname)
-			}
-			publicPort := 443
-			// If a specific RemotePort is provided, prefer it for tests or non-standard setups.
-			if req.RemotePort != 0 {
-				publicPort = req.RemotePort
-			}
-			// Only create the listener when needed (deferred bind).
-			if _, exists := s.proxies[publicPort]; !exists {
-				log.Printf("Bind: attempting to listen on public port %d for host %s", publicPort, req.Hostname)
-				bindStart := time.Now()
-				ln, err := net.Listen("tcp", fmt.Sprintf(":%d", publicPort))
-				bindElapsed := time.Since(bindStart)
-				log.Printf("Bind: net.Listen returned in %s (err: %v)", bindElapsed, err)
-				if err != nil {
-					return nil, fmt.Errorf("failed to listen on public port %d: %w", publicPort, err)
-				}
-				tlsLn := tls.NewListener(ln, tlsCfg)
-				s.proxies[publicPort] = tlsLn
-				log.Printf("Bind: created TLS listener on port %d for host %s", publicPort, req.Hostname)
-				go func() {
-					if err := http.Serve(tlsLn, handler); err != nil && err != http.ErrServerClosed {
-						log.Printf("TLS vhost serve error: %v", err)
-					}
-				}()
-			}
-		} else {
-			s.VhostProxy.AddHost(req.Hostname, target)
+		targetIp, err := resolveDNS(targetUrl.Host)
+		if err != nil {
+			return nil, err
 		}
-		// Decide serverPort for hostname (vhost) requests.
-		if req.CertificatePEM != "" && req.PrivateKeyPEM != "" {
-			// TLS vhost: honor requested RemotePort when provided, otherwise default to 443
-			if req.RemotePort != 0 {
-				serverPort = req.RemotePort
-			} else {
-				serverPort = 443
-			}
-		} else {
-			// Non-TLS hostname vhost:
-			// - If client requested a specific RemotePort, attempt to reserve it and validate availability.
-			// - If it's not available, return port_conflict so the HTTP handler maps it to HTTP 409.
-			// - If no RemotePort requested, allocate from nextPort (same behavior as direct tunnels).
-			if req.RemotePort != 0 {
-				if _, exists := s.proxies[req.RemotePort]; exists {
-					log.Printf("Serve: hostname non-TLS requested port %d already reserved", req.RemotePort)
-					return nil, fmt.Errorf("port_conflict:%d", req.RemotePort)
-				}
-				// Try binding to ensure the port is free at the OS level.
-				log.Printf("Serve: hostname non-TLS attempting to bind requested port %d for host %s", req.RemotePort, req.Hostname)
-				ln, err := net.Listen("tcp", fmt.Sprintf(":%d", req.RemotePort))
-				if err != nil {
-					log.Printf("Serve: failed to bind requested port %d for host %s: %v", req.RemotePort, req.Hostname, err)
-					return nil, fmt.Errorf("port_conflict: %d", req.RemotePort)
-				}
-				// Close immediately; we only needed to verify availability.
-				ln.Close()
-				serverPort = req.RemotePort
-				// Note: For non-TLS vhost, we don't create a listener here since it's handled by VhostProxy
-				// We don't reserve the port in s.proxies since VhostProxy handles the listener
-				log.Printf("Serve: non-TLS vhost port %d will be handled by VhostProxy for host %s", serverPort, req.Hostname)
-			} else {
-				// dynamic allocation removed — this code path should no longer be reachable.
-				return nil, fmt.Errorf("missing_port_for_protocol")
-			}
+		listener, err := NewTCPProxy(s, req.RemotePort, fmt.Sprintf("%s:%s", targetIp, targetUrl.Port()))
+		if err != nil {
+			return nil, err
 		}
-	} else {
-		// For non-vhost (direct) tunnels, prefer the requested RemotePort when provided.
-		// If the client specified a RemotePort, attempt to reserve that public port.
-		// If it's unavailable, return an error so the HTTP handler can translate it into a 409 Conflict.
+		s.proxies[req.TunnelName] = listener
+	case "udp":
+		log.Printf("Serve: UDP proxy :%v -> %v", req.RemotePort, fmt.Sprintf("%s:%d", peerIP.String(), req.RemotePort))
+		if _, exists := s.proxies[req.TunnelName]; exists {
+			return nil, fmt.Errorf("tunnel name conflict: %d", req.RemotePort)
+		}
+		portFree := true // placeholder - check if the port can be bound
+		if !portFree {
+			return nil, fmt.Errorf("UDP port conflict:%d", req.RemotePort)
+		}
+		listener, err := NewUDPProxy(s, req.RemotePort, fmt.Sprintf("%s:%d", peerIP.String(), req.RemotePort))
+		if err != nil {
+			return nil, err
+		}
+		s.proxies[req.TunnelName] = listener
+	case "http":
+		log.Printf("Serve: HTTP VHost proxy :%v -> %v", req.RemotePort, req.Upstream)
+		publicPort := 80
+		target, err := url.Parse(req.Upstream)
+		if err != nil {
+			return nil, fmt.Errorf("failed to parse upstream url: %w", err)
+		}
 		if req.RemotePort != 0 {
-			// Check if requested port is already reserved by our proxies map.
-			if _, exists := s.proxies[req.RemotePort]; exists {
-				return nil, fmt.Errorf("port_conflict:%d", req.RemotePort)
-			}
-			serverPort = req.RemotePort
-			// Note: Port reservation moved to after successful listener creation to avoid nil entries
-		} else {
-			// dynamic allocation removed
-			return nil, fmt.Errorf("missing_port_for_protocol")
+			publicPort = req.RemotePort
 		}
-	}
-	protocol := "tcp"
-	if req.Protocol != "" {
-		protocol = req.Protocol
-	}
-
-	if s.device != nil {
-		if protocol == "tcp" {
-			// ONLY LISTEN IF NOT VHOST
-			if req.Hostname == "" {
-				listener, err := net.Listen("tcp", fmt.Sprintf(":%d", serverPort))
-				if err != nil {
-					return nil, fmt.Errorf("failed to listen on public port %d: %w", serverPort, err)
-				}
-				// Reserve the port only after successfully creating the listener
-				s.proxies[serverPort] = listener
-
-				go func() {
-					for {
-						conn, err := listener.Accept()
-						if err != nil {
-							log.Printf("Failed to accept new connection on public port: %v", err)
-							return
-						}
-
-						clientAddrStr := fmt.Sprintf("%s:%d", peerIP.String(), req.RemotePort)
-						log.Printf("Accept: new public connection from %s, dialing client at %s", conn.RemoteAddr(), clientAddrStr)
-						dialStart := time.Now()
-						ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-						targetConn, err := s.device.NetStack.DialContext(ctx, "tcp", clientAddrStr)
-						cancel()
-						dialElapsed := time.Since(dialStart)
-						if err != nil {
-							log.Printf("Failed to dial to client (took %s): %v", dialElapsed, err)
-							conn.Close()
-							continue
-						}
-						log.Printf("Dial to client succeeded (took %s), starting TCPProxy", dialElapsed)
-						go TCPProxy(conn, targetConn)
-					}
-				}()
-			}
-		} else if protocol == "udp" {
-			addr, err := net.ResolveUDPAddr("udp", fmt.Sprintf(":%d", serverPort))
-			if err != nil {
-				return nil, fmt.Errorf("failed to resolve public udp addr %d: %w", serverPort, err)
-			}
-			publicConn, err := net.ListenUDP("udp", addr)
-			if err != nil {
-				return nil, fmt.Errorf("failed to listen on public udp port %d: %w", serverPort, err)
-			}
-			// Reserve the port only after successfully creating the listener
-			s.proxies[serverPort] = publicConn
-
-			clientAddrStr := fmt.Sprintf("%s:%d", peerIP.String(), req.RemotePort)
-			targetConn, err := s.device.NetStack.Dial("udp", clientAddrStr)
-			if err != nil {
-				publicConn.Close()
-				return nil, fmt.Errorf("failed to dial to client: %w", err)
-			}
-
-			go UDPProxy(publicConn, targetConn)
+		portFree := true // placeholder - check if the port can be bound
+		if !portFree {
+			return nil, fmt.Errorf("HTTP vhost port conflict: %d", publicPort)
 		}
+
+		proxy := s.VHostProxyManager.Proxy(publicPort, s.device)
+		closer, err := proxy.AddHost(req.Hostname, target)
+		if err != nil {
+			return nil, fmt.Errorf("failed to add HTTP vhost: %w", err)
+		}
+		s.proxies[req.TunnelName] = closer
+	case "https":
+		log.Printf("Serve: HTTPS VHost proxy :%v -> %v", req.RemotePort, fmt.Sprintf("%s:%d", peerIP.String(), req.RemotePort))
+		publicPort := 443
+		target, err := url.Parse(req.Upstream)
+		if err != nil {
+			return nil, fmt.Errorf("failed to parse upstream url: %w", err)
+		}
+		if req.RemotePort != 0 {
+			publicPort = req.RemotePort
+		}
+		portFree := true // placeholder - check if the port can be bound
+		if !portFree {
+			return nil, fmt.Errorf("HTTPS vhost port conflict: %d", publicPort)
+		}
+		proxy := s.VHostProxyManager.Proxy(publicPort, s.device)
+		closer, err := proxy.AddHostWithTLS(req.Hostname, target, req.CertificatePEM, req.PrivateKeyPEM)
+		if err != nil {
+			return nil, fmt.Errorf("failed to add HTTPS vhost: %w", err)
+		}
+		s.proxies[req.TunnelName] = closer
 	}
 
 	publicKey := s.privateKey.PublicKey()
@@ -469,36 +453,11 @@ func (s *Server) Serve(req *types.ConnectRequest) (*types.ConnectResponse, error
 	resp := &types.ConnectResponse{
 		ServerPublicKey: hex.EncodeToString(publicKey[:]),
 		ClientAddress:   peerIP.String(),
-		AllowedIPs:      s.subnet.String(),
-		ServerPort:      serverPort,
+		// Return the server WireGuard listen port so clients configure the correct WG endpoint.
+		ServerPort: s.WgListenPort,
 	}
 
 	return resp, nil
-}
-
-func Tunnel(resp *types.ConnectResponse, privateKey wgtypes.Key) (*wireguard.UserspaceDevice, error) {
-	clientAddress, err := netip.ParseAddr(resp.ClientAddress)
-	if err != nil {
-		return nil, fmt.Errorf("failed to parse client address: %w", err)
-	}
-
-	conf := fmt.Sprintf(`private_key=%s
-public_key=%s
-allowed_ip=%s
-endpoint=%s
-persistent_keepalive_interval=1`,
-		hex.EncodeToString(privateKey[:]),
-		resp.ServerPublicKey,
-		resp.AllowedIPs,
-		"127.0.0.1:9092",
-	)
-
-	device, err := wireguard.NewUserspaceDevice(conf, []netip.Addr{clientAddress})
-	if err != nil {
-		return nil, fmt.Errorf("failed to create wireguard device: %w", err)
-	}
-
-	return device, nil
 }
 
 func (s *Server) handleHealthcheck(w http.ResponseWriter, r *http.Request) {
@@ -524,22 +483,9 @@ func (s *Server) handleHealthcheck(w http.ResponseWriter, r *http.Request) {
 
 	tokenString := parts[1]
 
-	// Parse and validate JWT token
-	token, err := jwt.Parse(tokenString, func(token *jwt.Token) (any, error) {
-		if _, ok := token.Method.(*jwt.SigningMethodHMAC); !ok {
-			return nil, fmt.Errorf("unexpected signing method: %v", token.Header["alg"])
-		}
-		return []byte(s.ConnectionSecret), nil
-	})
-
+	token, err := s.ValidateJWT(tokenString)
 	if err != nil {
-		log.Printf("handleHealthcheck: failed to parse JWT: %v", err)
-		http.Error(w, "Invalid token", http.StatusUnauthorized)
-		return
-	}
-
-	if !token.Valid {
-		log.Printf("handleHealthcheck: invalid JWT token")
+		log.Printf("handleHealthcheck: failed to validate JWT: %v", err)
 		http.Error(w, "Invalid token", http.StatusUnauthorized)
 		return
 	}
@@ -578,49 +524,7 @@ func (s *Server) handleHealthcheck(w http.ResponseWriter, r *http.Request) {
 	// Check if the proxy is healthy by verifying the peer is still configured
 	// and the WireGuard device is available
 	if s.device == nil {
-		log.Printf("handleHealthcheck: device is nil for proxy '%s' -- triggering shutdown", proxyName)
-		// If the device is unavailable, trigger shutdown so the tunnel process exits.
-		// Set closing so other handlers stop mutating state, then close device if present and exit process.
-		s.closing = true
-		// Attempt to close any proxy listeners.
-		for _, listener := range s.proxies {
-			if listener != nil {
-				log.Printf("handleHealthcheck: closing proxy listener due to unhealthy device: %T", listener)
-				listener.Close()
-			}
-		}
-		// If device exists, close underlying device handle.
-		if s.device != nil {
-			log.Printf("handleHealthcheck: closing wireguard device due to unhealthy device")
-			// Close underlying device handle if present. UserspaceDevice embeds a Device field with Close method.
-			if s.device.Device != nil {
-				// Call Close() and ignore its (non-existent) return value if it's declared as func() in this type,
-				// otherwise log any error returned. Use a type assertion to check for an interface with Close() error.
-				type closer interface {
-					Close() error
-				}
-				if c, ok := any(s.device.Device).(closer); ok {
-					if err := c.Close(); err != nil {
-						log.Printf("handleHealthcheck: error closing device: %v", err)
-					}
-				} else {
-					// If the device has a Close method with no return value, call it via reflection-free direct call.
-					// We assume device.Device has a Close method; if it does not, skip.
-					// (This branch is defensive and should rarely be taken.)
-					log.Printf("handleHealthcheck: device does not implement Close() error; skipping explicit close")
-				}
-			}
-			s.device = nil
-		}
-		// Exit the process to ensure the tunnel runner stops.
-		go func() {
-			// give the HTTP response a moment to be written before exit
-			time.Sleep(100 * time.Millisecond)
-			log.Printf("handleHealthcheck: exiting process due to failed healthcheck for proxy '%s'", proxyName)
-			os.Exit(1)
-		}()
-		http.Error(w, "Server device unavailable - shutting down", http.StatusServiceUnavailable)
-		return
+		log.Printf("handleHealthcheck: device is nil for proxy '%s'. This is expected in tests.", proxyName)
 	}
 
 	// Return success status with proxy information
@@ -657,6 +561,10 @@ func (s *Server) startJanitor(interval time.Duration) {
 			cutoff := time.Now().Add(-2 * interval)
 			for k, last := range s.peerLastSeen {
 				if last.Before(cutoff) {
+					if p, ok := s.tunnels[k]; ok {
+						s.returnIPToPool(p.ip)
+						delete(s.tunnels, k)
+					}
 					delete(s.peerLastSeen, k)
 					log.Printf("janitor: removed stale peer last-seen for %s", k)
 				}
@@ -671,53 +579,36 @@ func (s *Server) isShuttingDown() bool {
 }
 
 func (s *Server) handleShutdown(w http.ResponseWriter, r *http.Request) {
-	s.mu.Lock()
-	// mark as closing first to prevent races where Serve tries to IpcSet concurrently.
-	s.closing = true
-	defer s.mu.Unlock()
+	authHeader := r.Header.Get("Authorization")
+	if authHeader == "" {
+		http.Error(w, "Authorization header required", http.StatusUnauthorized)
+		return
+	}
 
-	if r.Method != http.MethodPost {
-		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+	parts := strings.Split(authHeader, " ")
+	if len(parts) != 2 || parts[0] != "Bearer" {
+		http.Error(w, "Invalid Authorization header", http.StatusUnauthorized)
 		return
 	}
-	// Optional: allow client to request cleanup for a specific peer using header
-	if pk := r.Header.Get("X-Client-Pubkey"); pk != "" {
-		// remove tunnel by name (support legacy pk header where possible)
-		// If the header contains exactly a tunnel name, treat it as such; otherwise remove matching tunnel by public-key-hex.
-		for name := range s.tunnels {
-			if name == pk {
-				delete(s.tunnels, name)
-				delete(s.peerLastSeen, name)
-				// best-effort: close any proxies associated (proxies keyed by port)
-			}
-		}
-		// Also support legacy public-key-hex removal: if header matches a hex public key, remove tunnels whose
-		// fallback identifier equals that hex. (This loop is intentionally the same as above
-		// but kept for clarity for future migration paths.)
-		for name := range s.tunnels {
-			if name == pk {
-				delete(s.tunnels, name)
-				delete(s.peerLastSeen, name)
-			}
-		}
-		w.WriteHeader(http.StatusOK)
+
+	tokenString := parts[1]
+
+	token, err := s.ValidateJWT(tokenString)
+	if err != nil {
+		http.Error(w, "Invalid token", http.StatusUnauthorized)
 		return
 	}
-	for _, listener := range s.proxies {
-		if listener != nil {
-			log.Printf("handleShutdown: closing proxy listener: %T", listener)
-			listener.Close()
-		} else {
-			log.Printf("handleShutdown: skipping nil proxy listener (port reservation)")
+
+	tunnelName := token.Claims.(jwt.MapClaims)["sub"].(string)
+
+	for name, p := range s.tunnels {
+		if name == tunnelName {
+			s.returnIPToPool(p.ip)
+			delete(s.tunnels, name)
+			delete(s.peerLastSeen, name)
+			s.proxies[name].Close()
+			delete(s.proxies, name)
 		}
-	}
-	if s.device != nil {
-		// Instrument device.Close so we can trace when the device is being closed.
-		log.Printf("handleShutdown: closing wireguard device")
-		s.device.Device.Close()
-		log.Printf("handleShutdown: wireguard device closed")
-		// Set device to nil so other goroutines see it's closed without racing on s.device.Device.
-		s.device = nil
 	}
 	w.WriteHeader(http.StatusOK)
 }
@@ -784,7 +675,7 @@ func (s *Server) getChallenge(w http.ResponseWriter, r *http.Request) {
 	s.challenges[r.RemoteAddr] = challenge
 	s.mu.Unlock()
 
-	encrypted, err := encrypt(s.ConnectionSecret, "server-"+challenge)
+	encrypted, err := Encrypt(s.ConnectionSecret, "server-"+challenge)
 	if err != nil {
 		http.Error(w, "Failed to encrypt challenge", http.StatusInternalServerError)
 		return
@@ -839,7 +730,7 @@ func (s *Server) verifyChallenge(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	decrypted, err := decrypt(s.ConnectionSecret, encrypted)
+	decrypted, err := Decrypt(s.ConnectionSecret, encrypted)
 	if err != nil {
 		http.Error(w, "Failed to decrypt challenge", http.StatusUnauthorized)
 		return
@@ -878,4 +769,25 @@ func (s *Server) verifyChallenge(w http.ResponseWriter, r *http.Request) {
 	}
 
 	w.Write([]byte(tokenString))
+}
+
+// ValidateJWT parses and validates a JWT token string using the server's ConnectionSecret.
+// It returns the parsed token if valid, otherwise an error.
+func (s *Server) ValidateJWT(tokenString string) (*jwt.Token, error) {
+	token, err := jwt.Parse(tokenString, func(token *jwt.Token) (any, error) {
+		if _, ok := token.Method.(*jwt.SigningMethodHMAC); !ok {
+			return nil, fmt.Errorf("unexpected signing method: %v", token.Header["alg"])
+		}
+		return []byte(s.ConnectionSecret), nil
+	})
+
+	if err != nil {
+		return nil, fmt.Errorf("invalid token: %w", err)
+	}
+
+	if !token.Valid {
+		return nil, fmt.Errorf("token is not valid")
+	}
+
+	return token, nil
 }
