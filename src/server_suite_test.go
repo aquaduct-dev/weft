@@ -1,5 +1,4 @@
-/* temporarily disabled to run only vhost tests */
-package server
+package server_test
 
 import (
 	"testing"
@@ -8,3 +7,7 @@ import (
 	. "github.com/onsi/gomega"
 )
 
+func TestServer(t *testing.T) {
+	RegisterFailHandler(Fail)
+	RunSpecs(t, "Server Suite")
+}

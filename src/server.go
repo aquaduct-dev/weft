@@ -12,11 +12,13 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"math/big"
 	"net"
 	"net/http"
 	"net/netip"
 	"net/url"
 	"os"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -62,7 +64,7 @@ type Server struct {
 	ConnectionSecret string
 
 	// VhostProxy implements virtual-host routing for hostname-based tunnels.
-	VHostProxyManager *VHostProxyManager
+	ProxyManager *ProxyManager
 
 	// apiTLSConfig is an optional TLS config for API-related listeners (kept for future use).
 	apiTLSConfig *tls.Config
@@ -80,10 +82,10 @@ type peer struct {
 	ip        netip.Addr
 }
 
-func CreateDevice(port int) (*wireguard.UserspaceDevice, wgtypes.Key, error) {
+func CreateDevice(port int) (*wireguard.UserspaceDevice, wgtypes.Key, int, error) {
 	privateKey, err := wgtypes.GeneratePrivateKey()
 	if err != nil {
-		return nil, wgtypes.Key{}, fmt.Errorf("failed to generate private key: %w", err)
+		return nil, wgtypes.Key{}, 0, fmt.Errorf("failed to generate private key: %w", err)
 	}
 
 	subnet := netip.MustParsePrefix("10.1.0.0/16")
@@ -93,52 +95,52 @@ listen_port=%d`, hex.EncodeToString(privateKey[:]), port)
 
 	device, err := wireguard.NewUserspaceDevice(conf, []netip.Addr{subnet.Addr()})
 	if err != nil {
-		return nil, wgtypes.Key{}, fmt.Errorf("failed to create wireguard device: %w", err)
+		return nil, wgtypes.Key{}, 0, fmt.Errorf("failed to create wireguard device: %w", err)
 	}
-	// Diagnostic: log that the server created the device and the listen port used (private key redacted).
-	log.Printf("CreateDevice: created server WireGuard device (listen_port=%d) - private_key redacted", port)
-	// Diagnostic: attempt to read and log the initial device IPC state (sanitized).
-	if cur, err := device.Device.IpcGet(); err == nil {
-		var out []string
-		for _, line := range strings.Split(cur, "\n") {
-			if strings.HasPrefix(strings.TrimSpace(line), "private_key=") {
-				out = append(out, "private_key=<redacted>")
-				continue
-			}
-			out = append(out, line)
+
+	// Get the actual listen port from the device
+	ipc, err := device.Device.IpcGet()
+	if err != nil {
+		return nil, wgtypes.Key{}, 0, fmt.Errorf("failed to get IPC info: %w", err)
+	}
+	var actualPort int
+	for _, line := range strings.Split(ipc, "\n") {
+		portStr, ok := strings.CutPrefix(line, "listen_port=")
+		if !ok {
+			continue
 		}
-		log.Printf("CreateDevice: initial device IPC state (redacted):\n%s", strings.Join(out, "\n"))
-	} else {
-		log.Printf("CreateDevice: failed to read initial device IPC state: %v", err)
+		actualPort, err = strconv.Atoi(portStr)
+		if err != nil {
+			return nil, wgtypes.Key{}, 0, fmt.Errorf("failed to parse listen port: %w", err)
+		}
 	}
-	return device, privateKey, nil
+
+	log.Printf("CreateDevice: created server WireGuard device (listen_port=%d) - private_key redacted", actualPort)
+	return device, privateKey, actualPort, nil
 }
 
-func NewServer() *Server {
+func NewServer(port int) *Server {
 	mux := http.NewServeMux()
 
 	apiTLSCfg := &tls.Config{}
 
 	s := &Server{
 		Server: &http.Server{
-			Addr:    ":9092",
+			Addr:    fmt.Sprintf(":%d", port),
 			Handler: mux,
 		},
-		tunnels:           make(map[string]peer),
-		peerLastSeen:      make(map[string]time.Time),
-		proxies:           make(map[string]io.Closer),
-		subnet:            netip.MustParsePrefix("10.1.0.0/16"),
-		usedIPs:           make(map[netip.Addr]bool),
-		ConnectionSecret:  "test-secret",
-		VHostProxyManager: &VHostProxyManager{proxies: make(map[int]*VHostProxy)},
-		apiTLSConfig:      apiTLSCfg,
-		// default wgListenPort set to the API port; callers that create the device
-		// should set wgListenPort appropriately if different.
-		WgListenPort: 51820,
-		challenges:   make(map[string]string),
+		tunnels:          make(map[string]peer),
+		peerLastSeen:     make(map[string]time.Time),
+		proxies:          make(map[string]io.Closer),
+		subnet:           netip.MustParsePrefix("10.1.0.0/16"),
+		usedIPs:          make(map[netip.Addr]bool),
+		ConnectionSecret: "test-secret",
+		ProxyManager:     NewProxyManager(),
+		apiTLSConfig:     apiTLSCfg,
+		challenges:       make(map[string]string),
 	}
 	var err error
-	s.device, s.privateKey, err = CreateDevice(s.WgListenPort)
+	s.device, s.privateKey, s.WgListenPort, err = CreateDevice(0) // Always use a random port for the wireguard device
 	if err != nil {
 		panic(err)
 	}
@@ -235,6 +237,7 @@ func (s *Server) ConnectHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	log.Printf("ConnectHandler: WgListenPort is %d", s.WgListenPort)
 	resp, err := s.Serve(&req)
 	if err != nil {
 		// Translate well-known error types into appropriate HTTP status codes so clients can act,
@@ -253,6 +256,7 @@ func (s *Server) ConnectHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	log.Printf("ConnectHandler: sending response: %+v", resp)
 	w.Header().Set("Content-Type", "application/json")
 	if err := json.NewEncoder(w).Encode(resp); err != nil {
 		http.Error(w, "Failed to encode response", http.StatusInternalServerError)
@@ -285,12 +289,27 @@ func (s *Server) Serve(req *types.ConnectRequest) (*types.ConnectResponse, error
 	s.peerLastSeen[req.TunnelName] = time.Now()
 
 	// Build wgtypes.Config from current tunnels for consistent UAPI generation.
+	// Ensure server WireGuard device is listening on an ephemeral port bound to the WireGuard interface.
+	// If s.WgListenPort==0, ask the device for its effective listen_port and use that. If the device
+	// is nil, return an error.
+	if s.device == nil || s.device.Device == nil {
+		return nil, fmt.Errorf("device closed (cannot configure peers)")
+	}
+	// Read current IPC info to determine the active listen_port in case it was set to 0 at creation.
+	ipc, _ := s.device.Device.IpcGet()
+	for _, line := range strings.Split(ipc, "\n") {
+		if portStr, ok := strings.CutPrefix(line, "listen_port="); ok {
+			if p, err := strconv.Atoi(strings.TrimSpace(portStr)); err == nil && p != 0 {
+				s.WgListenPort = p
+			}
+		}
+	}
+
 	cfg := wgtypes.Config{ListenPort: &s.WgListenPort}
 	for _, p := range s.tunnels {
 		cfg.Peers = append(cfg.Peers, wgtypes.PeerConfig{
-			PublicKey: p.publicKey,
-			//AllowedIPs: []net.IPNet{{IP: net.ParseIP("127.0.0.1"), Mask: net.CIDRMask(32, 32)}},
-			AllowedIPs: []net.IPNet{{IP: net.IP(p.ip.AsSlice()), Mask: net.CIDRMask(32, 32)}},
+			PublicKey:  p.publicKey,
+			AllowedIPs: []net.IPNet{{IP: net.IP(p.ip.AsSlice()), Mask: net.CIDRMask(32, 32)}, {IP: net.ParseIP("10.1.0.1"), Mask: net.CIDRMask(32, 32)}},
 		})
 	}
 	newConfig, err := ConfigToString(cfg)
@@ -298,6 +317,7 @@ func (s *Server) Serve(req *types.ConnectRequest) (*types.ConnectResponse, error
 		log.Printf("ConfigToString failed: %v; exiting server", err)
 		os.Exit(1)
 	}
+	log.Printf("Config %v", newConfig)
 
 	if s.device != nil {
 		// Defensive logging: record that we're preparing an IPC config update.
@@ -365,84 +385,37 @@ func (s *Server) Serve(req *types.ConnectRequest) (*types.ConnectResponse, error
 		}
 	}
 
+	// Assign tunnelProxyPort randomly
+	tunnelProxyPortBigInt, err := rand.Int(rand.Reader, big.NewInt(10000))
+	if err != nil {
+		return nil, err
+	}
+	tunnelProxyPort := int(tunnelProxyPortBigInt.Uint64()) + 10000
+	tunnelSource := url.URL{
+		Host:   fmt.Sprintf("%s:%d", peerIP.String(), tunnelProxyPort),
+		Scheme: "tcp",
+	}
+	tunnelEnd := url.URL{
+		Host:   fmt.Sprintf("%s:%d", req.Hostname, req.RemotePort),
+		Scheme: "tcp",
+	}
 	switch req.Protocol {
 	case "tcp":
-		log.Printf("Serve: TCP proxy :%v -> %v", req.RemotePort, fmt.Sprintf("%s:%d", peerIP.String(), req.RemotePort))
-		if _, exists := s.proxies[req.TunnelName]; exists {
-			return nil, fmt.Errorf("tunnel name conflict: %d", req.RemotePort)
-		}
-		portFree := true // placeholder - check if the port can be bound
-		if !portFree {
-			return nil, fmt.Errorf("TCP port conflict:%d", req.RemotePort)
-		}
-		targetUrl, err := url.Parse(req.Upstream)
-		if err != nil {
-			return nil, err
-		}
-		targetIp, err := resolveDNS(targetUrl.Host)
-		if err != nil {
-			return nil, err
-		}
-		listener, err := NewTCPProxy(s, req.RemotePort, fmt.Sprintf("%s:%s", targetIp, targetUrl.Port()))
-		if err != nil {
-			return nil, err
-		}
-		s.proxies[req.TunnelName] = listener
 	case "udp":
-		log.Printf("Serve: UDP proxy :%v -> %v", req.RemotePort, fmt.Sprintf("%s:%d", peerIP.String(), req.RemotePort))
-		if _, exists := s.proxies[req.TunnelName]; exists {
-			return nil, fmt.Errorf("tunnel name conflict: %d", req.RemotePort)
-		}
-		portFree := true // placeholder - check if the port can be bound
-		if !portFree {
-			return nil, fmt.Errorf("UDP port conflict:%d", req.RemotePort)
-		}
-		listener, err := NewUDPProxy(s, req.RemotePort, fmt.Sprintf("%s:%d", peerIP.String(), req.RemotePort))
-		if err != nil {
-			return nil, err
-		}
-		s.proxies[req.TunnelName] = listener
+		tunnelSource.Scheme = "udp"
+		tunnelEnd.Scheme = "udp"
 	case "http":
-		log.Printf("Serve: HTTP VHost proxy :%v -> %v", req.RemotePort, req.Upstream)
-		publicPort := 80
-		target, err := url.Parse(req.Upstream)
-		if err != nil {
-			return nil, fmt.Errorf("failed to parse upstream url: %w", err)
-		}
-		if req.RemotePort != 0 {
-			publicPort = req.RemotePort
-		}
-		portFree := true // placeholder - check if the port can be bound
-		if !portFree {
-			return nil, fmt.Errorf("HTTP vhost port conflict: %d", publicPort)
-		}
-
-		proxy := s.VHostProxyManager.Proxy(publicPort, s.device)
-		closer, err := proxy.AddHost(req.Hostname, target)
-		if err != nil {
-			return nil, fmt.Errorf("failed to add HTTP vhost: %w", err)
-		}
-		s.proxies[req.TunnelName] = closer
+		tunnelSource.Scheme = "http"
+		tunnelEnd.Scheme = "http"
 	case "https":
-		log.Printf("Serve: HTTPS VHost proxy :%v -> %v", req.RemotePort, fmt.Sprintf("%s:%d", peerIP.String(), req.RemotePort))
-		publicPort := 443
-		target, err := url.Parse(req.Upstream)
-		if err != nil {
-			return nil, fmt.Errorf("failed to parse upstream url: %w", err)
-		}
-		if req.RemotePort != 0 {
-			publicPort = req.RemotePort
-		}
-		portFree := true // placeholder - check if the port can be bound
-		if !portFree {
-			return nil, fmt.Errorf("HTTPS vhost port conflict: %d", publicPort)
-		}
-		proxy := s.VHostProxyManager.Proxy(publicPort, s.device)
-		closer, err := proxy.AddHostWithTLS(req.Hostname, target, req.CertificatePEM, req.PrivateKeyPEM)
-		if err != nil {
-			return nil, fmt.Errorf("failed to add HTTPS vhost: %w", err)
-		}
-		s.proxies[req.TunnelName] = closer
+		tunnelSource.Scheme = "http"
+		tunnelEnd.Scheme = "https"
+	default:
+		return nil, fmt.Errorf("unknown protocol: %s", req.Protocol)
+	}
+	err = s.ProxyManager.StartProxy(&tunnelSource, &tunnelEnd, req.TunnelName, s.device)
+	if err != nil {
+		return nil, err
 	}
 
 	publicKey := s.privateKey.PublicKey()
@@ -450,11 +423,26 @@ func (s *Server) Serve(req *types.ConnectRequest) (*types.ConnectResponse, error
 	// The HTTP handler will translate:
 	//   - "port_conflict:<port>" -> 409 Conflict
 	//   - "missing_port_for_protocol" or "url_missing_port" -> 422 Unprocessable Entity
+	// After applying peer config, ensure WgListenPort is current by re-reading device IPC.
+	if ipcAfter, err2 := s.device.Device.IpcGet(); err2 == nil {
+		for _, line := range strings.Split(ipcAfter, "\n") {
+			if portStr, ok := strings.CutPrefix(line, "listen_port="); ok {
+				if p, err := strconv.Atoi(strings.TrimSpace(portStr)); err == nil && p != 0 {
+					s.WgListenPort = p
+				}
+			}
+		}
+	}
+	// Prepare ConnectResponse including both the server's WireGuard listen port and the
+	// tunnel proxy port assigned for this connection (for protocols where server chooses).
+
 	resp := &types.ConnectResponse{
 		ServerPublicKey: hex.EncodeToString(publicKey[:]),
 		ClientAddress:   peerIP.String(),
-		// Return the server WireGuard listen port so clients configure the correct WG endpoint.
-		ServerPort: s.WgListenPort,
+		// ServerWGPort is the UDP listen port of the server's WireGuard device.
+		ServerWGPort: s.WgListenPort,
+		// TunnelProxyPort is the port on the server side that will proxy to the client's WG IP.
+		TunnelProxyPort: tunnelProxyPort,
 	}
 
 	return resp, nil
@@ -603,11 +591,10 @@ func (s *Server) handleShutdown(w http.ResponseWriter, r *http.Request) {
 
 	for name, p := range s.tunnels {
 		if name == tunnelName {
+			s.ProxyManager.Close(name)
 			s.returnIPToPool(p.ip)
 			delete(s.tunnels, name)
 			delete(s.peerLastSeen, name)
-			s.proxies[name].Close()
-			delete(s.proxies, name)
 		}
 	}
 	w.WriteHeader(http.StatusOK)
@@ -627,11 +614,9 @@ func ConfigToString(cfg wgtypes.Config) (string, error) {
 		}
 
 		if len(peer.AllowedIPs) > 0 {
-			var parts []string
 			for _, ipNet := range peer.AllowedIPs {
-				parts = append(parts, ipNet.String())
+				b.WriteString(fmt.Sprintf("allowed_ip=%s\n", ipNet.String()))
 			}
-			b.WriteString(fmt.Sprintf("allowed_ip=%s\n", strings.Join(parts, ",")))
 		}
 
 		// Endpoint if present

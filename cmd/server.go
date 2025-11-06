@@ -37,7 +37,7 @@ var serverCmd = &cobra.Command{
 			fmt.Printf("OpenTelemetry: %s\n", opentelemetryConnectionString)
 		}
 
-		srv := server.NewServer()
+		srv := server.NewServer(port)
 
 		fmt.Printf("Connection Secret: %s\n", srv.ConnectionSecret)
 		// Optionally write the connection secret to a file for automation.

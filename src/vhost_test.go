@@ -30,7 +30,7 @@ func TestVHost_AddHostAndServeHTTP(t *testing.T) {
 	}
 
 	manager := &VHostProxyManager{proxies: make(map[int]*VHostProxy)}
-	vp := NewVHostProxy(0, nil, manager)
+	vp := NewVHostProxy(0, manager)
 
 	// Add a reverse proxy directly into the hosts map (bypass AddHost which requires a device).
 	vp.mu.Lock()
@@ -66,9 +66,7 @@ func TestVHost_AddHostWithTLSAndRetrieval(t *testing.T) {
 	}
 
 	manager := &VHostProxyManager{proxies: make(map[int]*VHostProxy)}
-	vp := NewVHostProxy(0, nil, manager)
-
-	// generate cert/key for the host
+	    vp := NewVHostProxy(0, manager)
 	certPEM, keyPEM, err := GenerateCert("secure.test")
 	if err != nil {
 		t.Fatalf("GenerateCert failed: %v", err)
@@ -124,7 +122,7 @@ func TestVHost_AddHostWithTLSAndRetrieval(t *testing.T) {
 
 func TestVHost_UnknownHostReturns404(t *testing.T) {
 	manager := &VHostProxyManager{proxies: make(map[int]*VHostProxy)}
-	vp := NewVHostProxy(0, nil, manager)
+	vp := NewVHostProxy(0, manager)
 
 	req := httptest.NewRequest("GET", "http://unknown/", nil)
 	req.Host = "unknown"

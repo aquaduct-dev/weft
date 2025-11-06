@@ -23,5 +23,10 @@ type ConnectRequest struct {
 type ConnectResponse struct {
 	ServerPublicKey string `json:"server_public_key"`
 	ClientAddress   string `json:"client_address"`
-	ServerPort      int    `json:"server_port"`
+	// ServerWGPort is the UDP listen port of the server's WireGuard device (for client endpoint).
+	ServerWGPort int `json:"server_wg_port"`
+	// TunnelProxyPort is the port on the server that the tunnel proxy was assigned to
+	// (for protocols where the server selects a proxy port). For TCP/UDP this matches the
+	// port the server will proxy to the client's WireGuard IP.
+	TunnelProxyPort int `json:"tunnel_proxy_port"`
 }

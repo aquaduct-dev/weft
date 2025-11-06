@@ -3,89 +3,78 @@ package server
 import (
 	"fmt"
 	"io"
+	"log"
 	"net"
+	"net/netip"
+	"net/url"
+	"strconv"
+	"strings"
+
+	"aquaduct.dev/weft/wireguard"
 )
 
-// NewTCPProxy creates a TCP listener on a public port and returns a closer.
-func NewTCPProxy(s *Server, publicPort int, clientAddr string) (io.Closer, error) {
-	addr := fmt.Sprintf(":%d", publicPort)
-	ln, err := net.Listen("tcp", addr)
-	if err != nil {
-		return nil, err
-	}
-	go TCPListen(s, ln, clientAddr)
-	return ln, nil
+type ProxyManager struct {
+	proxies           map[string]io.Closer
+	VHostProxyManager *VHostProxyManager
 }
 
-// NewUDPProxy creates a UDP listener on a public port and returns a closer.
-func NewUDPProxy(s *Server, publicPort int, clientAddr string) (io.Closer, error) {
-	addr, err := net.ResolveUDPAddr("udp", fmt.Sprintf(":%d", publicPort))
-	if err != nil {
-		return nil, err
+func NewProxyManager() *ProxyManager {
+	return &ProxyManager{
+		proxies:           make(map[string]io.Closer),
+		VHostProxyManager: &VHostProxyManager{proxies: make(map[int]*VHostProxy)},
 	}
-	conn, err := net.ListenUDP("udp", addr)
-	if err != nil {
-		return nil, err
-	}
-	go UDPListen(s, conn, clientAddr)
-	return conn, nil
 }
 
-// TCPListen accepts a Server, a net.Listener for public connections and a client address (string).
-// It accepts incoming connections on the listener and forwards data between the accepted public
-// connection and the corresponding client connection obtained from the Server using clientAddr.
-func TCPListen(s *Server, ln net.Listener, clientAddr string) {
-	// For TCP we open a new client connection for every accepted public connection.
-	// This avoids multiplexing multiple public clients onto a single TCP stream.
-	// Add detailed logs to observe dialing and connection lifecycles.
-
-	for {
-		publicConn, err := ln.Accept()
-		if err != nil {
-			// listener closed or error accepting; exit goroutine
-			return
+// ProxyTCP is a generic TCP proxy that forwards connections.
+func ProxyTCP(publicConn net.Conn, target string, device *wireguard.UserspaceDevice) {
+	fmt.Printf("ProxyTCP: accepted public connection from %v — dialing target %s\n", publicConn.RemoteAddr(), target)
+	if device == nil {
+		if strings.HasPrefix(target, "10.1") {
+			log.Printf("ProxyTCP: no wireguard device but destination %s can only be served on wireguard!", target)
 		}
+	}
+	var targetConn net.Conn
+	var err error
+	if strings.HasPrefix(target, "10.1") {
+		fmt.Printf("ProxyTCP: dial to target %s via wireguard %v", target, device)
+		targetConn, err = device.NetStack.Dial("tcp", target)
+	} else {
+		fmt.Printf("ProxyTCP: dial to target %s", target)
+		targetConn, err = net.Dial("tcp", target)
+	}
+	if err != nil {
+		fmt.Printf("ProxyTCP: dial to target %s failed: %v — closing public connection\n", target, err)
+		publicConn.Close()
+		return
+	}
 
-		// Dial a fresh target connection for this public connection.
-		fmt.Printf("TCPListen: accepted public connection from %v — dialing target %s\n", publicConn.RemoteAddr(), clientAddr)
-		targetConn, err := net.Dial("tcp", clientAddr)
-		if err != nil {
-			fmt.Printf("TCPListen: dial to target %s failed: %v — closing public connection\n", clientAddr, err)
-			publicConn.Close()
-			continue
-		}
+	// Wire up copy in both directions. Close both sides when done.
+	go func(pub net.Conn, tgt net.Conn) {
+		defer pub.Close()
+		defer tgt.Close()
+		fmt.Printf("ProxyTCP: proxy start %v <-> %v\n", tgt.RemoteAddr(), pub.RemoteAddr())
 
-		// Wire up copy in both directions. Close both sides when done.
-		go func(pub net.Conn, tgt net.Conn) {
-			defer pub.Close()
-			defer tgt.Close()
-			fmt.Printf("TCPListen: proxy start %v <-> %v\n", tgt.RemoteAddr(), pub.RemoteAddr())
-
-			// copy target->public
-			done := make(chan struct{})
-			go func() {
-				_, err := io.Copy(pub, tgt)
-				if err != nil {
-					fmt.Printf("TCPListen: copy target->public error: %v\n", err)
-				}
-				close(done)
-			}()
-
-			// copy public->target (will return when pub closed)
-			_, err := io.Copy(tgt, pub)
+		// copy target->public
+		done := make(chan struct{})
+		go func() {
+			_, err := io.Copy(pub, tgt)
 			if err != nil {
-				fmt.Printf("TCPListen: copy public->target error: %v\n", err)
+				fmt.Printf("ProxyTCP: copy target->public error: %v\n", err)
 			}
-			<-done
-			fmt.Printf("TCPListen: proxy finished %v <-> %v\n", tgt.RemoteAddr(), pub.RemoteAddr())
-		}(publicConn, targetConn)
-	}
+			close(done)
+		}()
+
+		// copy public->target (will return when pub closed)
+		_, err := io.Copy(tgt, pub)
+		if err != nil {
+			fmt.Printf("ProxyTCP: copy public->target error: %v\n", err)
+		}
+		<-done
+		fmt.Printf("ProxyTCP: proxy finished %v <-> %v\n", tgt.RemoteAddr(), pub.RemoteAddr())
+	}(publicConn, targetConn)
 }
 
-// UDPListen accepts a Server, a public UDPConn and a client address string. It reads packets
-// from the public UDP socket and forwards them to the client connection resolved via the Server.
-// Responses from the target connection are written back to the last seen public address.
-func UDPListen(s *Server, publicConn *net.UDPConn, clientAddr string) {
+func UDPListen(s *Server, publicConn *net.UDPConn, clientAddr netip.Addr) {
 	// Maintain per-public-source mapping to a target UDP connection.
 	// This lets concurrent public clients each get their own UDP "session".
 	type session struct {
@@ -116,8 +105,9 @@ func UDPListen(s *Server, publicConn *net.UDPConn, clientAddr string) {
 		sess, ok := sessions[key]
 		if !ok {
 			// create a new UDP connection to the clientAddr for this public source
-			fmt.Printf("UDPListen: new session for public %s -> dialing target %s\n", publicAddr, clientAddr)
-			raddr, err := net.ResolveUDPAddr("udp", clientAddr)
+			clientAddrPort := netip.AddrPortFrom(clientAddr, uint16(publicConn.LocalAddr().(*net.UDPAddr).Port))
+			fmt.Printf("UDPListen: new session for public %s -> dialing target %s\n", publicAddr, clientAddrPort.String())
+			raddr, err := net.ResolveUDPAddr("udp", clientAddrPort.String())
 			if err != nil {
 				fmt.Printf("UDPListen: ResolveUDPAddr(%s) failed: %v\n", clientAddr, err)
 				continue
@@ -171,4 +161,129 @@ func UDPListen(s *Server, publicConn *net.UDPConn, clientAddr string) {
 		}
 		fmt.Printf("UDPListen: forwarded %d bytes from public %s -> target %s\n", len(payload), publicAddr, clientAddr)
 	}
+}
+
+func (p *ProxyManager) Close(proxyName string) {
+	p.proxies[proxyName].Close()
+	delete(p.proxies, proxyName)
+}
+
+func (p *ProxyManager) StartProxy(srcURL *url.URL, dstURL *url.URL, proxyName string, device *wireguard.UserspaceDevice) error {
+	var err error
+	if device == nil {
+		if strings.HasPrefix(dstURL.Host, "10.1") {
+			return fmt.Errorf("no wireguard device but destination %s can only be served on wireguard", dstURL.String())
+		}
+		if strings.HasPrefix(dstURL.Host, "10.1") {
+			return fmt.Errorf("no wireguard device but source %s can only be served on wireguard", srcURL.String())
+		}
+	}
+	// remoteURL.Host is expected to include the desired bind IP (e.g. the assigned WG IP) and port.
+	switch srcURL.Scheme {
+	case "tcp":
+		var ln net.Listener
+		var err error
+		if strings.HasPrefix(dstURL.Host, "10.1") {
+			tcpAddr, err := net.ResolveTCPAddr("tcp", dstURL.Host)
+			if err != nil {
+				return fmt.Errorf("resolve tcp address %s: %w", dstURL.Host, err)
+			}
+			ln, err = device.NetStack.ListenTCP(tcpAddr)
+			log.Printf("proxy: listening tcp on wireguard %s -> forwarding to %s", dstURL.Host, srcURL.Host)
+			if err != nil {
+				return fmt.Errorf("ListenTCP error for %s: %w", dstURL.Host, err)
+			}
+		} else {
+			ln, err = net.Listen("tcp", dstURL.Host)
+			log.Printf("proxy: listening tcp on %s -> forwarding to %s", dstURL.Host, srcURL.Host)
+		}
+		if err != nil {
+			return fmt.Errorf("listen tcp %s: %w", dstURL.Host, err)
+		}
+		go func() {
+			for {
+				conn, err := ln.Accept()
+				if err != nil {
+					log.Printf("proxy accept error on %s: %v", dstURL.Host, err)
+					return
+				}
+				go ProxyTCP(conn, srcURL.Host, device)
+			}
+		}()
+		p.proxies[proxyName] = ln
+	case "udp":
+		// For UDP, bind explicitly to the provided host (which may be a WG IP).
+		addr, err := net.ResolveUDPAddr("udp", dstURL.Host)
+		if err != nil {
+			return fmt.Errorf("resolve udp %s: %w", dstURL.Host, err)
+		}
+		l, err := net.ListenUDP("udp", addr)
+		if err != nil {
+			return fmt.Errorf("listen udp %s: %w", dstURL.Host, err)
+		}
+		log.Printf("proxy: listening udp on %s -> forwarding to %s", dstURL.Host, srcURL.Host)
+		go func() {
+			buf := make([]byte, 65535)
+			for {
+				n, src, err := l.ReadFromUDP(buf)
+				if err != nil {
+					log.Printf("udp read error on %s: %v", dstURL.Host, err)
+					return
+				}
+				go func(p []byte, saddr *net.UDPAddr) {
+					dst, err := net.ResolveUDPAddr("udp", srcURL.Host)
+					if err != nil {
+						log.Printf("udp resolve local %s error: %v", srcURL.Host, err)
+						return
+					}
+					conn, err := net.DialUDP("udp", nil, dst)
+					if err != nil {
+						log.Printf("udp dial error to %s: %v", srcURL.Host, err)
+						return
+					}
+					defer conn.Close()
+					if _, err := conn.Write(p); err != nil {
+						log.Printf("udp write error to %s: %v", srcURL.Host, err)
+						return
+					}
+					_ = saddr
+				}(append([]byte(nil), buf[:n]...), src)
+			}
+		}()
+		p.proxies[proxyName] = l
+
+	case "http":
+		split := strings.Split(dstURL.Host, ":")
+		port := 80
+		if len(split) > 1 {
+			port, err = strconv.Atoi(split[1])
+			if err != nil {
+				return fmt.Errorf("invalid port %s: %w", split[1], err)
+			}
+		}
+		proxy := p.VHostProxyManager.Proxy(port)
+		closer, err := proxy.AddHost(split[0], srcURL)
+		if err != nil {
+			return err
+		}
+		p.proxies[proxyName] = closer
+	case "https":
+		split := strings.Split(dstURL.Host, ":")
+		port := 443
+		if len(split) > 1 {
+			port, err = strconv.Atoi(split[1])
+			if err != nil {
+				return fmt.Errorf("invalid port %s: %w", split[1], err)
+			}
+		}
+		proxy := p.VHostProxyManager.Proxy(port)
+		closer, err := proxy.AddHost(split[0], srcURL)
+		if err != nil {
+			return err
+		}
+		p.proxies[proxyName] = closer
+	default:
+		err = fmt.Errorf("unsupported protocol: %s", srcURL.Scheme)
+	}
+	return err
 }

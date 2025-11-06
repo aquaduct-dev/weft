@@ -9,15 +9,12 @@ import (
 	"net/url"
 	"strings"
 	"sync"
-
-	"aquaduct.dev/weft/wireguard"
 )
 
 // VHostProxy manages name-based vhosts and optional TLS-termination handlers.
 type VHostProxy struct {
-	mu     sync.RWMutex
-	s      *http.Server
-	device *wireguard.UserspaceDevice
+	mu sync.RWMutex
+	s  *http.Server
 
 	hosts map[string]http.Handler
 	port  int
@@ -36,14 +33,14 @@ type VHostProxyManager struct {
 	mu      sync.Mutex
 }
 
-func (v *VHostProxyManager) Proxy(port int, device *wireguard.UserspaceDevice) *VHostProxy {
+func (v *VHostProxyManager) Proxy(port int) *VHostProxy {
 	v.mu.Lock()
 	defer v.mu.Unlock()
 	proxy, ok := v.proxies[port]
 	if ok {
 		return proxy
 	}
-	v.proxies[port] = NewVHostProxy(port, device, v)
+	v.proxies[port] = NewVHostProxy(port, v)
 	return v.proxies[port]
 }
 
@@ -70,13 +67,12 @@ func (v VHostCloser) Close() error {
 }
 
 // NewVHostProxy creates a new VHostProxy backed by the provided userspace device.
-func NewVHostProxy(port int, device *wireguard.UserspaceDevice, manager *VHostProxyManager) *VHostProxy {
+func NewVHostProxy(port int, manager *VHostProxyManager) *VHostProxy {
 	return &VHostProxy{
 		hosts:          make(map[string]http.Handler),
 		manager:        manager,
 		port:           port,
 		defaultHandler: http.NotFoundHandler(),
-		device:         device,
 		tlsHandlers:    make(map[string]http.Handler),
 		tlsConfigs:     make(map[string]*tls.Config),
 	}
@@ -88,13 +84,7 @@ func (p *VHostProxy) AddHost(host string, target *url.URL) (VHostCloser, error) 
 	defer p.mu.Unlock()
 
 	proxy := httputil.NewSingleHostReverseProxy(target)
-	// Attach transport that uses the userspace device if present, and accept self-signed certs for upstreams.
-	tr := &http.Transport{}
-	if p == nil || p.device == nil {
-		return VHostCloser{}, fmt.Errorf("could not add vhost proxy %s -> %s", host, target.String())
-	}
-	tr.DialContext = p.device.NetStack.DialContext
-	proxy.Transport = tr
+
 	p.hosts[host] = proxy
 	go p.Serve()
 	log.Printf("VHost: HTTP proxy configured for %s:%d -> %s", host, p.port, target.String())
@@ -114,9 +104,6 @@ func (p *VHostProxy) AddHostWithTLS(host string, target *url.URL, certPEM, keyPE
 	// Attach transport that uses the userspace device if present, and accept self-signed certs for upstreams.
 	tr := &http.Transport{
 		TLSClientConfig: &tls.Config{InsecureSkipVerify: true},
-	}
-	if p != nil && p.device != nil {
-		tr.DialContext = p.device.NetStack.DialContext
 	}
 	proxy.Transport = tr
 	p.hosts[host] = proxy

@@ -92,7 +92,7 @@ var tunnelCmd = &cobra.Command{
 		hostname := localURL.Hostname()
 		// If localURL doesn't have a hostname (e.g., "tcp://10.0.0.1:1234"), fall back to remoteURL.
 		if hostname == "" {
-			hostname = remoteURL.Hostname()
+			log.Fatalf("URL missing hostname: %s", localURL.String())
 		}
 
 		// Generate a new private key.
@@ -150,12 +150,13 @@ var tunnelCmd = &cobra.Command{
 		if err := json.NewDecoder(resp.Body).Decode(&connectResp); err != nil {
 			log.Fatalf("Failed to decode connect response: %v", err)
 		}
+		log.Printf("Assigned IP %s and proxy port %d", connectResp.ClientAddress, connectResp.TunnelProxyPort)
 
-		// 4. Create WireGuard device
-		// 4. Create WireGuard device using shared helper
-		_, err = server.Tunnel(serverIP, &connectResp, privateKey, []string{strings.Split(localURL.Host, ":")[0]})
+		// 4. Create tunnel
+		p := server.NewProxyManager()
+		device, err := server.Tunnel(serverIP, localURL, &connectResp, privateKey, p, tunnelNameFlag)
 		if err != nil {
-			log.Fatalf("Failed to create wireguard device: %v", err)
+			log.Fatalf("Failed to create tunnel: %v", err)
 		}
 
 		// Start background healthchecks to the control API to keep the server-side proxy alive.
@@ -218,6 +219,7 @@ var tunnelCmd = &cobra.Command{
 		}()
 		for {
 			time.Sleep(time.Minute)
+			device.Device.BatchSize()
 		}
 	},
 }
