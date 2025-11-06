@@ -223,31 +223,56 @@ func (p *ProxyManager) StartProxy(srcURL *url.URL, dstURL *url.URL, proxyName st
 		}
 		log.Printf("proxy: listening udp on %s -> forwarding to %s", dstURL.Host, srcURL.Host)
 		go func() {
+			sessions := make(map[string]*net.UDPConn)
 			buf := make([]byte, 65535)
 			for {
-				n, src, err := l.ReadFromUDP(buf)
+				n, publicAddr, err := l.ReadFromUDP(buf)
 				if err != nil {
 					log.Printf("udp read error on %s: %v", dstURL.Host, err)
 					return
 				}
-				go func(p []byte, saddr *net.UDPAddr) {
+
+				key := publicAddr.String()
+				targetConn, ok := sessions[key]
+				if !ok {
 					dst, err := net.ResolveUDPAddr("udp", srcURL.Host)
 					if err != nil {
 						log.Printf("udp resolve local %s error: %v", srcURL.Host, err)
-						return
+						continue
 					}
-					conn, err := net.DialUDP("udp", nil, dst)
+					newTargetConn, err := net.DialUDP("udp", nil, dst)
 					if err != nil {
 						log.Printf("udp dial error to %s: %v", srcURL.Host, err)
-						return
+						continue
 					}
-					defer conn.Close()
-					if _, err := conn.Write(p); err != nil {
-						log.Printf("udp write error to %s: %v", srcURL.Host, err)
-						return
-					}
-					_ = saddr
-				}(append([]byte(nil), buf[:n]...), src)
+					targetConn = newTargetConn
+					sessions[key] = targetConn
+
+					// goroutine to copy from target to public
+					go func(publicAddr *net.UDPAddr, targetConn *net.UDPConn) {
+						defer func() {
+							targetConn.Close()
+							delete(sessions, publicAddr.String())
+						}()
+						respBuf := make([]byte, 65535)
+						for {
+							// TODO: add timeout and session cleanup
+							n, _, err := targetConn.ReadFrom(respBuf)
+							if err != nil {
+								return
+							}
+							_, err = l.WriteToUDP(respBuf[:n], publicAddr)
+							if err != nil {
+								return
+							}
+						}
+					}(publicAddr, targetConn)
+				}
+
+				if _, err := targetConn.Write(buf[:n]); err != nil {
+					log.Printf("udp write error to %s: %v", srcURL.Host, err)
+					// handle error, maybe close and delete session
+				}
 			}
 		}()
 		p.proxies[proxyName] = l
