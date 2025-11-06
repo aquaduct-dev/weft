@@ -168,7 +168,7 @@ func (p *ProxyManager) Close(proxyName string) {
 	delete(p.proxies, proxyName)
 }
 
-func (p *ProxyManager) StartProxy(srcURL *url.URL, dstURL *url.URL, proxyName string, device *wireguard.UserspaceDevice) error {
+func (p *ProxyManager) StartProxy(srcURL *url.URL, dstURL *url.URL, proxyName string, device *wireguard.UserspaceDevice, certPEM, keyPEM []byte) error {
 	var err error
 	if device == nil {
 		if strings.HasPrefix(dstURL.Host, "10.1") {
@@ -179,8 +179,9 @@ func (p *ProxyManager) StartProxy(srcURL *url.URL, dstURL *url.URL, proxyName st
 		}
 	}
 	// remoteURL.Host is expected to include the desired bind IP (e.g. the assigned WG IP) and port.
-	switch srcURL.Scheme {
-	case "tcp":
+	proxyType := fmt.Sprintf("%s>%s", srcURL.Scheme, dstURL.Scheme)
+	switch proxyType {
+	case "tcp>tcp", "https>https", "http>tcp":
 		var ln net.Listener
 		var err error
 		if strings.HasPrefix(dstURL.Host, "10.1") {
@@ -211,7 +212,7 @@ func (p *ProxyManager) StartProxy(srcURL *url.URL, dstURL *url.URL, proxyName st
 			}
 		}()
 		p.proxies[proxyName] = ln
-	case "udp":
+	case "udp>udp":
 		// For UDP, bind explicitly to the provided host (which may be a WG IP).
 		addr, err := net.ResolveUDPAddr("udp", dstURL.Host)
 		if err != nil {
@@ -277,7 +278,7 @@ func (p *ProxyManager) StartProxy(srcURL *url.URL, dstURL *url.URL, proxyName st
 		}()
 		p.proxies[proxyName] = l
 
-	case "http":
+	case "http>http":
 		split := strings.Split(dstURL.Host, ":")
 		port := 80
 		if len(split) > 1 {
@@ -292,7 +293,7 @@ func (p *ProxyManager) StartProxy(srcURL *url.URL, dstURL *url.URL, proxyName st
 			return err
 		}
 		p.proxies[proxyName] = closer
-	case "https":
+	case "http>https":
 		split := strings.Split(dstURL.Host, ":")
 		port := 443
 		if len(split) > 1 {
@@ -302,13 +303,13 @@ func (p *ProxyManager) StartProxy(srcURL *url.URL, dstURL *url.URL, proxyName st
 			}
 		}
 		proxy := p.VHostProxyManager.Proxy(port)
-		closer, err := proxy.AddHost(split[0], srcURL)
+		closer, err := proxy.AddHostWithTLS(split[0], srcURL, string(certPEM), string(keyPEM))
 		if err != nil {
 			return err
 		}
 		p.proxies[proxyName] = closer
 	default:
-		err = fmt.Errorf("unsupported protocol: %s", srcURL.Scheme)
+		err = fmt.Errorf("unsupported proxy type: %s", proxyType)
 	}
 	return err
 }

@@ -413,7 +413,7 @@ func (s *Server) Serve(req *types.ConnectRequest) (*types.ConnectResponse, error
 	default:
 		return nil, fmt.Errorf("unknown protocol: %s", req.Protocol)
 	}
-	err = s.ProxyManager.StartProxy(&tunnelSource, &tunnelEnd, req.TunnelName, s.device)
+	err = s.ProxyManager.StartProxy(&tunnelSource, &tunnelEnd, req.TunnelName, s.device, nil, nil)
 	if err != nil {
 		return nil, err
 	}

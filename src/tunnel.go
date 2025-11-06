@@ -82,7 +82,7 @@ func Tunnel(serverIP string, localUrl *url.URL, resp *types.ConnectResponse, pri
 	}
 
 	// 5. Start the proxy
-	if err := p.StartProxy(localUrl, remoteUrl, tunnelName, device); err != nil {
+	if err := p.StartProxy(localUrl, remoteUrl, tunnelName, device, nil, nil); err != nil {
 		log.Fatalf("Failed to start proxy: %v", err)
 	}
 

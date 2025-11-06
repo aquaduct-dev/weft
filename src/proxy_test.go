@@ -1,8 +1,11 @@
 package server
 
 import (
+	"context"
 	"io"
 	"net"
+	"net/http"
+	"net/http/httptest"
 	"net/url"
 	"time"
 
@@ -11,7 +14,7 @@ import (
 )
 
 var _ = Describe("TunnelTCPProxy", func() {
-	It("should proxy TCP traffic", func() {
+	It("should proxy tcp>tcp traffic", func() {
 		// Create a mock TCP server
 		mockServer, err := net.Listen("tcp", "127.0.0.1:12030")
 		Expect(err).ToNot(HaveOccurred())
@@ -33,7 +36,7 @@ var _ = Describe("TunnelTCPProxy", func() {
 		Expect(err).ToNot(HaveOccurred())
 		remoteURL, err := url.Parse("tcp://127.0.0.1:12031")
 		Expect(err).ToNot(HaveOccurred())
-		err = NewProxyManager().StartProxy(localURL, remoteURL, "test-tunnel", nil)
+		err = NewProxyManager().StartProxy(localURL, remoteURL, "test-tunnel", nil, nil, nil)
 		Expect(err).ToNot(HaveOccurred())
 		// Connect to the tunnel proxy
 		conn, err := net.Dial("tcp", remoteURL.Host)
@@ -50,7 +53,7 @@ var _ = Describe("TunnelTCPProxy", func() {
 		Expect(string(buf)).To(Equal(message))
 	})
 
-	It("should proxy UDP traffic", func() {
+	It("should proxy udp>udp traffic", func() {
 		// Create a mock UDP server
 		mockAddr, err := net.ResolveUDPAddr("udp", "127.0.0.1:12040")
 		Expect(err).ToNot(HaveOccurred())
@@ -74,7 +77,7 @@ var _ = Describe("TunnelTCPProxy", func() {
 		Expect(err).ToNot(HaveOccurred())
 		remoteURL, err := url.Parse("udp://127.0.0.1:12041")
 		Expect(err).ToNot(HaveOccurred())
-		err = NewProxyManager().StartProxy(localURL, remoteURL, "test-tunnel-udp", nil)
+		err = NewProxyManager().StartProxy(localURL, remoteURL, "test-tunnel-udp", nil, nil, nil)
 		Expect(err).ToNot(HaveOccurred())
 
 		// Connect to the tunnel proxy
@@ -98,4 +101,56 @@ var _ = Describe("TunnelTCPProxy", func() {
 			return string(buf[:n])
 		}).Should(Equal(message))
 	})
+
+	It("should proxy http>http traffic", func() {
+		// Create a mock HTTP server
+		mockServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.WriteHeader(http.StatusOK)
+			w.Write([]byte("hello"))
+		}))
+		defer mockServer.Close()
+
+		// Create a tunnel proxy
+		localURL, err := url.Parse(mockServer.URL)
+		Expect(err).ToNot(HaveOccurred())
+		remoteURL, err := url.Parse("http://testhost:12051")
+		Expect(err).ToNot(HaveOccurred())
+		err = NewProxyManager().StartProxy(localURL, remoteURL, "test-tunnel-http", nil, nil, nil)
+		Expect(err).ToNot(HaveOccurred())
+
+		// Wait for the proxy to be ready
+		Eventually(func() error {
+			conn, err := net.Dial("tcp", "127.0.0.1:12051")
+			if err != nil {
+				return err
+			}
+			conn.Close()
+			return nil
+		}).Should(Succeed())
+
+		// Connect to the tunnel proxy
+		req, err := http.NewRequest("GET", "http://testhost:12051", nil)
+		Expect(err).ToNot(HaveOccurred())
+
+		client := &http.Client{
+			Transport: &http.Transport{
+				DialContext: func(ctx context.Context, network, addr string) (net.Conn, error) {
+					if addr == "testhost:12051" {
+						addr = "127.0.0.1:12051"
+					}
+					return (&net.Dialer{}).DialContext(ctx, network, addr)
+				},
+			},
+		}
+		resp, err := client.Do(req)
+		Expect(err).ToNot(HaveOccurred())
+		defer resp.Body.Close()
+
+		// Assert that the mock HTTP server received the data
+		Expect(resp.StatusCode).To(Equal(http.StatusOK))
+		body, err := io.ReadAll(resp.Body)
+		Expect(err).ToNot(HaveOccurred())
+		Expect(string(body)).To(Equal("hello"))
+	})
+
 })

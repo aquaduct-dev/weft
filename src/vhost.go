@@ -165,8 +165,32 @@ func (p *VHostProxy) Serve() {
 		Addr:    fmt.Sprintf(":%d", p.port),
 		Handler: p,
 	}
-	log.Printf("VHost: serving on port %d", p.port)
-	p.s.ListenAndServe()
+
+	if len(p.tlsHandlers) > 0 {
+		log.Printf("VHost: serving with TLS on port %d", p.port)
+		tlsConfig := &tls.Config{
+			GetCertificate: func(hello *tls.ClientHelloInfo) (*tls.Certificate, error) {
+				p.mu.RLock()
+				defer p.mu.RUnlock()
+				if cfg, ok := p.tlsConfigs[hello.ServerName]; ok {
+					// Assuming one certificate per config
+					if len(cfg.Certificates) > 0 {
+						return &cfg.Certificates[0], nil
+					}
+				}
+				return nil, fmt.Errorf("no certificate for server name %s", hello.ServerName)
+			},
+		}
+		l, err := tls.Listen("tcp", fmt.Sprintf(":%d", p.port), tlsConfig)
+		if err != nil {
+			log.Printf("VHost: tls.Listen on port %d failed: %v", p.port, err)
+			return
+		}
+		p.s.Serve(l)
+	} else {
+		log.Printf("VHost: serving on port %d", p.port)
+		p.s.ListenAndServe()
+	}
 
 }
 
