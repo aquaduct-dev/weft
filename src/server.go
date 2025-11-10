@@ -11,13 +11,11 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
-	"log"
 	"math/big"
 	"net"
 	"net/http"
 	"net/netip"
 	"net/url"
-	"os"
 	"strconv"
 	"strings"
 	"sync"
@@ -26,6 +24,7 @@ import (
 	"aquaduct.dev/weft/types"
 	"aquaduct.dev/weft/wireguard"
 	"github.com/golang-jwt/jwt/v4"
+	"github.com/rs/zerolog/log"
 	"golang.zx2c4.com/wireguard/wgctrl/wgtypes"
 )
 
@@ -115,7 +114,7 @@ listen_port=%d`, hex.EncodeToString(privateKey[:]), port)
 		}
 	}
 
-	log.Printf("CreateDevice: created server WireGuard device (listen_port=%d) - private_key redacted", actualPort)
+	log.Info().Int("port", actualPort).Msg("CreateDevice: created server WireGuard device")
 	return device, privateKey, actualPort, nil
 }
 
@@ -123,6 +122,12 @@ func NewServer(port int) *Server {
 	mux := http.NewServeMux()
 
 	apiTLSCfg := &tls.Config{}
+
+	// Generate a random connection secret on startup.
+	connectionSecret, err := generateRandomSecret(10) // 10 bytes for a secure secret
+	if err != nil {
+		log.Fatal().Err(err).Msg("failed to generate connection secret")
+	}
 
 	s := &Server{
 		Server: &http.Server{
@@ -134,12 +139,11 @@ func NewServer(port int) *Server {
 		proxies:          make(map[string]io.Closer),
 		subnet:           netip.MustParsePrefix("10.1.0.0/16"),
 		usedIPs:          make(map[netip.Addr]bool),
-		ConnectionSecret: "test-secret",
+		ConnectionSecret: connectionSecret,
 		ProxyManager:     NewProxyManager(),
 		apiTLSConfig:     apiTLSCfg,
 		challenges:       make(map[string]string),
 	}
-	var err error
 	s.device, s.privateKey, s.WgListenPort, err = CreateDevice(0) // Always use a random port for the wireguard device
 	if err != nil {
 		panic(err)
@@ -152,6 +156,17 @@ func NewServer(port int) *Server {
 	go s.startJanitor(30 * time.Second)
 
 	return s
+}
+
+// generateRandomSecret generates a cryptographically secure random string of the specified byte length.
+// The string is base64 URL-encoded to ensure it's safe for use in URLs and other text-based contexts.
+func generateRandomSecret(length int) (string, error) {
+	b := make([]byte, length)
+	_, err := rand.Read(b)
+	if err != nil {
+		return "", fmt.Errorf("failed to read random bytes: %w", err)
+	}
+	return base64.URLEncoding.EncodeToString(b), nil
 }
 
 // getFreeIPFromPool finds an available IP address in the server's subnet.
@@ -237,7 +252,7 @@ func (s *Server) ConnectHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	log.Printf("ConnectHandler: WgListenPort is %d", s.WgListenPort)
+	log.Debug().Int("port", s.WgListenPort).Msg("ConnectHandler: WgListenPort")
 	resp, err := s.Serve(&req)
 	if err != nil {
 		// Translate well-known error types into appropriate HTTP status codes so clients can act,
@@ -256,7 +271,7 @@ func (s *Server) ConnectHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	log.Printf("ConnectHandler: sending response: %+v", resp)
+	log.Debug().Any("response", resp).Msg("ConnectHandler: sending response")
 	w.Header().Set("Content-Type", "application/json")
 	if err := json.NewEncoder(w).Encode(resp); err != nil {
 		http.Error(w, "Failed to encode response", http.StatusInternalServerError)
@@ -314,30 +329,29 @@ func (s *Server) Serve(req *types.ConnectRequest) (*types.ConnectResponse, error
 	}
 	newConfig, err := ConfigToString(cfg)
 	if err != nil {
-		log.Printf("ConfigToString failed: %v; exiting server", err)
-		os.Exit(1)
+		log.Fatal().Err(err).Msg("ConfigToString failed")
 	}
-	log.Printf("Config %v", newConfig)
+	log.Debug().Str("config", newConfig).Msg("Config")
 
 	if s.device != nil {
 		// Defensive logging: record that we're preparing an IPC config update.
 		// Compute checksum of the new config and compare with the device's current IPC state.
-		log.Printf("IpcSet: preparing peer config update (replace_peers=%t)", strings.Contains(newConfig, "replace_peers=true"))
+		log.Debug().Bool("replace_peers", strings.Contains(newConfig, "replace_peers=true")).Msg("IpcSet: preparing peer config update")
 		if s.device.Device == nil {
-			log.Printf("IpcSet: device.Device is nil (device closed?)")
+			log.Warn().Msg("IpcSet: device.Device is nil (device closed?)")
 			return nil, fmt.Errorf("device closed (cannot configure peers)")
 		}
-		log.Printf("IpcSet: device not nil")
+		log.Debug().Msg("IpcSet: device not nil")
 		if s.isShuttingDown() {
-			log.Printf("IpcSet: server is shutting down; refusing to configure peers")
+			log.Warn().Msg("IpcSet: server is shutting down; refusing to configure peers")
 			return nil, fmt.Errorf("server shutting down (cannot configure peers)")
 		}
-		log.Printf("IpcSet: device not shutting down")
+		log.Debug().Msg("IpcSet: device not shutting down")
 		// Read current device config for comparison.
 		currentConfig, getErr := s.device.Device.IpcGet()
 		if getErr != nil {
 			// If we cannot read current config, log and proceed to attempt an update.
-			log.Printf("IpcSet: failed to read current device config: %v; will attempt to apply new config", getErr)
+			log.Warn().Err(getErr).Msg("IpcSet: failed to read current device config; will attempt to apply new config")
 		}
 		// Sanitize configs for logging/comparison by removing private_key lines.
 		sanitize := func(conf string) string {
@@ -353,34 +367,34 @@ func (s *Server) Serve(req *types.ConnectRequest) (*types.ConnectResponse, error
 		}
 		sanitizedNew := sanitize(newConfig)
 		sanitizedCurrent := sanitize(currentConfig)
-		log.Printf("IpcSet: comparing configs for change detection")
+		log.Debug().Msg("IpcSet: comparing configs for change detection")
 		if sanitizedCurrent == sanitizedNew && sanitizedCurrent != "" {
-			log.Printf("IpcSet: skipping apply; device config unchanged")
+			log.Debug().Msg("IpcSet: skipping apply; device config unchanged")
 		} else {
-			log.Printf("IpcSet: applying peer config")
+			log.Info().Msg("IpcSet: applying peer config")
 			// Log sanitized newConfig so we can validate what is being applied (private_key redacted).
-			log.Printf("IpcSet: newConfig to apply (redacted):\n%s", sanitizedNew)
+			log.Debug().Str("newConfig", sanitizedNew).Msg("IpcSet: newConfig to apply (redacted)")
 			// Also log server wgListenPort and whether device.Device appears non-nil.
-			log.Printf("IpcSet: server wgListenPort=%d, device.Device nil=%t", s.WgListenPort, s.device.Device == nil)
+			log.Debug().Int("wgListenPort", s.WgListenPort).Bool("device.Device_nil", s.device.Device == nil).Msg("IpcSet: server state")
 			err = s.device.Device.IpcSet(newConfig)
 			if err != nil {
 				// On error, fetch and log current device state (sanitized) to help debugging.
-				log.Printf("IpcSet error: %v", err)
+				log.Error().Err(err).Msg("IpcSet error")
 				if cur, e := s.device.Device.IpcGet(); e == nil {
 					// redact private_key before logging
 					redacted := sanitize(cur)
-					log.Printf("IpcSet: current device IPC state after error (redacted):\n%s", redacted)
+					log.Debug().Str("current_config", redacted).Msg("IpcSet: current device IPC state after error (redacted)")
 				} else {
-					log.Printf("IpcSet: failed to read device IPC after error: %v", e)
+					log.Error().Err(e).Msg("IpcSet: failed to read device IPC after error")
 				}
 				return nil, fmt.Errorf("failed to configure peer: %w", err)
 			}
 			// Diagnostic: read back the device IPC state after successful apply and log sanitized value.
 			if cur, e := s.device.Device.IpcGet(); e == nil {
 				redacted := sanitize(cur)
-				log.Printf("IpcSet: device IPC state after apply (redacted):\n%s", redacted)
+				log.Debug().Str("current_config", redacted).Msg("IpcSet: device IPC state after apply (redacted)")
 			} else {
-				log.Printf("IpcSet: failed to read device IPC after successful apply: %v", e)
+				log.Error().Err(e).Msg("IpcSet: failed to read device IPC after successful apply")
 			}
 		}
 	}
@@ -457,14 +471,14 @@ func (s *Server) handleHealthcheck(w http.ResponseWriter, r *http.Request) {
 	// Validate JWT token from Authorization header
 	authHeader := r.Header.Get("Authorization")
 	if authHeader == "" {
-		log.Printf("handleHealthcheck: missing Authorization header")
+		log.Warn().Msg("handleHealthcheck: missing Authorization header")
 		http.Error(w, "Authorization header required", http.StatusUnauthorized)
 		return
 	}
 
 	parts := strings.Split(authHeader, " ")
 	if len(parts) != 2 || parts[0] != "Bearer" {
-		log.Printf("handleHealthcheck: invalid Authorization header format")
+		log.Warn().Msg("handleHealthcheck: invalid Authorization header format")
 		http.Error(w, "Invalid Authorization header", http.StatusUnauthorized)
 		return
 	}
@@ -473,7 +487,7 @@ func (s *Server) handleHealthcheck(w http.ResponseWriter, r *http.Request) {
 
 	token, err := s.ValidateJWT(tokenString)
 	if err != nil {
-		log.Printf("handleHealthcheck: failed to validate JWT: %v", err)
+		log.Warn().Err(err).Msg("handleHealthcheck: failed to validate JWT")
 		http.Error(w, "Invalid token", http.StatusUnauthorized)
 		return
 	}
@@ -481,19 +495,19 @@ func (s *Server) handleHealthcheck(w http.ResponseWriter, r *http.Request) {
 	// Extract proxy name from JWT claims
 	claims, ok := token.Claims.(jwt.MapClaims)
 	if !ok {
-		log.Printf("handleHealthcheck: failed to extract JWT claims")
+		log.Warn().Msg("handleHealthcheck: failed to extract JWT claims")
 		http.Error(w, "Invalid token claims", http.StatusUnauthorized)
 		return
 	}
 
 	proxyName, ok := claims["sub"].(string)
 	if !ok || proxyName == "" {
-		log.Printf("handleHealthcheck: missing or invalid proxy name in JWT sub claim")
+		log.Warn().Any("claims", claims).Msg("handleHealthcheck: missing or invalid proxy name in JWT sub claim")
 		http.Error(w, fmt.Sprintf("Missing proxy name in token %v", claims), http.StatusBadRequest)
 		return
 	}
 
-	log.Printf("handleHealthcheck: received healthcheck for proxy '%s'", proxyName)
+	log.Debug().Str("proxy_name", proxyName).Msg("handleHealthcheck: received healthcheck")
 
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -501,7 +515,7 @@ func (s *Server) handleHealthcheck(w http.ResponseWriter, r *http.Request) {
 	// Check if the proxy (tunnel) exists
 	peer, exists := s.tunnels[proxyName]
 	if !exists {
-		log.Printf("handleHealthcheck: proxy '%s' not found", proxyName)
+		log.Warn().Str("proxy_name", proxyName).Msg("handleHealthcheck: proxy not found")
 		http.Error(w, fmt.Sprintf("Proxy '%s' not found", proxyName), http.StatusNotFound)
 		return
 	}
@@ -512,7 +526,7 @@ func (s *Server) handleHealthcheck(w http.ResponseWriter, r *http.Request) {
 	// Check if the proxy is healthy by verifying the peer is still configured
 	// and the WireGuard device is available
 	if s.device == nil {
-		log.Printf("handleHealthcheck: device is nil for proxy '%s'. This is expected in tests.", proxyName)
+		log.Debug().Str("proxy_name", proxyName).Msg("handleHealthcheck: device is nil. This is expected in tests.")
 	}
 
 	// Return success status with proxy information
@@ -526,12 +540,12 @@ func (s *Server) handleHealthcheck(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusOK)
 	if err := json.NewEncoder(w).Encode(response); err != nil {
-		log.Printf("handleHealthcheck: failed to encode response for proxy '%s': %v", proxyName, err)
+		log.Error().Err(err).Str("proxy_name", proxyName).Msg("handleHealthcheck: failed to encode response")
 		http.Error(w, "Failed to encode response", http.StatusInternalServerError)
 		return
 	}
 
-	log.Printf("handleHealthcheck: proxy '%s' is healthy", proxyName)
+	log.Debug().Str("proxy_name", proxyName).Msg("handleHealthcheck: proxy is healthy")
 }
 
 // startJanitor launches a background goroutine that periodically prunes stale peer last-seen entries.
@@ -554,7 +568,7 @@ func (s *Server) startJanitor(interval time.Duration) {
 						delete(s.tunnels, k)
 					}
 					delete(s.peerLastSeen, k)
-					log.Printf("janitor: removed stale peer last-seen for %s", k)
+					log.Info().Str("peer", k).Msg("janitor: removed stale peer last-seen")
 				}
 			}
 			s.mu.Unlock()

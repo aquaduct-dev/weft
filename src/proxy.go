@@ -3,7 +3,6 @@ package server
 import (
 	"fmt"
 	"io"
-	"log"
 	"net"
 	"net/netip"
 	"net/url"
@@ -11,67 +10,72 @@ import (
 	"strings"
 
 	"aquaduct.dev/weft/wireguard"
+	"github.com/rs/zerolog/log"
 )
 
 type ProxyManager struct {
 	proxies           map[string]io.Closer
+	hostToProxyName   map[string]string // New map to store host to proxyName mapping
+	proxyNameToHost   map[string]string // New map to store proxyName to host mapping
 	VHostProxyManager *VHostProxyManager
 }
 
 func NewProxyManager() *ProxyManager {
 	return &ProxyManager{
 		proxies:           make(map[string]io.Closer),
-		VHostProxyManager: &VHostProxyManager{proxies: make(map[int]*VHostProxy)},
+		hostToProxyName:   make(map[string]string), // Initialize the new map
+		proxyNameToHost:   make(map[string]string), // Initialize the new map
+		VHostProxyManager: NewVHostProxyManager(),
 	}
 }
 
 // ProxyTCP is a generic TCP proxy that forwards connections.
 func ProxyTCP(publicConn net.Conn, target string, device *wireguard.UserspaceDevice) {
-	fmt.Printf("ProxyTCP: accepted public connection from %v — dialing target %s\n", publicConn.RemoteAddr(), target)
+	log.Debug().Str("target", target).Msg("ProxyTCP: accepted public connection")
 	if device == nil {
 		if strings.HasPrefix(target, "10.1") {
-			log.Printf("ProxyTCP: no wireguard device but destination %s can only be served on wireguard!", target)
+			log.Warn().Str("target", target).Msg("ProxyTCP: no wireguard device but destination can only be served on wireguard!")
 		}
 	}
 	var targetConn net.Conn
 	var err error
 	if strings.HasPrefix(target, "10.1") {
-		fmt.Printf("ProxyTCP: dial to target %s via wireguard %v", target, device)
+		log.Debug().Str("target", target).Msg("ProxyTCP: dial to target via wireguard")
 		targetConn, err = device.NetStack.Dial("tcp", target)
 	} else {
-		fmt.Printf("ProxyTCP: dial to target %s", target)
+		log.Debug().Str("target", target).Msg("ProxyTCP: dial to target")
 		targetConn, err = net.Dial("tcp", target)
 	}
 	if err != nil {
-		fmt.Printf("ProxyTCP: dial to target %s failed: %v — closing public connection\n", target, err)
+		log.Error().Err(err).Str("target", target).Msg("ProxyTCP: dial to target failed")
 		publicConn.Close()
 		return
 	}
 
 	// Wire up copy in both directions. Close both sides when done.
-	go func(pub net.Conn, tgt net.Conn) {
-		defer pub.Close()
-		defer tgt.Close()
-		fmt.Printf("ProxyTCP: proxy start %v <-> %v\n", tgt.RemoteAddr(), pub.RemoteAddr())
+	go func() {
+		defer publicConn.Close()
+		defer targetConn.Close()
+		log.Debug().Str("target_addr", targetConn.RemoteAddr().String()).Str("public_addr", publicConn.RemoteAddr().String()).Msg("ProxyTCP: proxy start")
 
 		// copy target->public
 		done := make(chan struct{})
 		go func() {
-			_, err := io.Copy(pub, tgt)
+			_, err := io.Copy(publicConn, targetConn)
 			if err != nil {
-				fmt.Printf("ProxyTCP: copy target->public error: %v\n", err)
+				log.Error().Err(err).Msg("ProxyTCP: copy target->public error")
 			}
 			close(done)
 		}()
 
 		// copy public->target (will return when pub closed)
-		_, err := io.Copy(tgt, pub)
+		_, err := io.Copy(targetConn, publicConn)
 		if err != nil {
-			fmt.Printf("ProxyTCP: copy public->target error: %v\n", err)
+			log.Error().Err(err).Msg("ProxyTCP: copy public->target error")
 		}
 		<-done
-		fmt.Printf("ProxyTCP: proxy finished %v <-> %v\n", tgt.RemoteAddr(), pub.RemoteAddr())
-	}(publicConn, targetConn)
+		log.Debug().Str("target_addr", targetConn.RemoteAddr().String()).Str("public_addr", publicConn.RemoteAddr().String()).Msg("ProxyTCP: proxy finished")
+	}()
 }
 
 func UDPListen(s *Server, publicConn *net.UDPConn, clientAddr netip.Addr) {
@@ -92,7 +96,7 @@ func UDPListen(s *Server, publicConn *net.UDPConn, clientAddr netip.Addr) {
 		n, publicAddr, err := publicConn.ReadFromUDP(buf)
 		if err != nil {
 			// socket closed or error; exit goroutine
-			fmt.Printf("UDPListen: ReadFromUDP error: %v\n", err)
+			log.Error().Err(err).Msg("UDPListen: ReadFromUDP error")
 			return
 		}
 
@@ -106,15 +110,15 @@ func UDPListen(s *Server, publicConn *net.UDPConn, clientAddr netip.Addr) {
 		if !ok {
 			// create a new UDP connection to the clientAddr for this public source
 			clientAddrPort := netip.AddrPortFrom(clientAddr, uint16(publicConn.LocalAddr().(*net.UDPAddr).Port))
-			fmt.Printf("UDPListen: new session for public %s -> dialing target %s\n", publicAddr, clientAddrPort.String())
+			log.Debug().Str("public_addr", publicAddr.String()).Str("target_addr", clientAddrPort.String()).Msg("UDPListen: new session")
 			raddr, err := net.ResolveUDPAddr("udp", clientAddrPort.String())
 			if err != nil {
-				fmt.Printf("UDPListen: ResolveUDPAddr(%s) failed: %v\n", clientAddr, err)
+				log.Error().Err(err).Str("target_addr", clientAddr.String()).Msg("UDPListen: ResolveUDPAddr failed")
 				continue
 			}
 			targetConn, err := net.DialUDP("udp", nil, raddr)
 			if err != nil {
-				fmt.Printf("UDPListen: DialUDP to %s failed: %v\n", clientAddr, err)
+				log.Error().Err(err).Str("target_addr", clientAddr.String()).Msg("UDPListen: DialUDP to target failed")
 				continue
 			}
 
@@ -131,7 +135,7 @@ func UDPListen(s *Server, publicConn *net.UDPConn, clientAddr netip.Addr) {
 					nr, err := tconn.Read(rbuf)
 					if err != nil {
 						// Target closed or error - remove session and exit goroutine.
-						fmt.Printf("UDPListen: target Read error for session %s -> %v\n", pubAddr, err)
+						log.Error().Err(err).Str("public_addr", pubAddr.String()).Msg("UDPListen: target Read error for session")
 						// best-effort: close target and remove mapping
 						tconn.Close()
 						return
@@ -140,10 +144,10 @@ func UDPListen(s *Server, publicConn *net.UDPConn, clientAddr netip.Addr) {
 						// send back to public source
 						_, err := publicConn.WriteToUDP(rbuf[:nr], pubAddr)
 						if err != nil {
-							fmt.Printf("UDPListen: WriteToUDP to %s failed: %v\n", pubAddr, err)
+							log.Error().Err(err).Str("public_addr", pubAddr.String()).Msg("UDPListen: WriteToUDP to public failed")
 							// continue; connection may still be usable
 						} else {
-							fmt.Printf("UDPListen: forwarded %d bytes from target %s -> public %s\n", nr, tconn.RemoteAddr(), pubAddr)
+							log.Debug().Int("bytes", nr).Str("target_addr", tconn.RemoteAddr().String()).Str("public_addr", pubAddr.String()).Msg("UDPListen: forwarded from target to public")
 						}
 					}
 				}
@@ -153,19 +157,25 @@ func UDPListen(s *Server, publicConn *net.UDPConn, clientAddr netip.Addr) {
 		// forward the received public packet to the corresponding target
 		_, err = sess.target.Write(payload)
 		if err != nil {
-			fmt.Printf("UDPListen: write to target %s failed for public %s: %v\n", clientAddr, publicAddr, err)
+			log.Error().Err(err).Str("target_addr", clientAddr.String()).Str("public_addr", publicAddr.String()).Msg("UDPListen: write to target failed for public")
 			// on write error, close target and delete session
 			sess.target.Close()
 			delete(sessions, key)
 			continue
 		}
-		fmt.Printf("UDPListen: forwarded %d bytes from public %s -> target %s\n", len(payload), publicAddr, clientAddr)
+		log.Debug().Int("bytes", len(payload)).Str("public_addr", publicAddr.String()).Str("target_addr", clientAddr.String()).Msg("UDPListen: forwarded from public to target")
 	}
 }
 
 func (p *ProxyManager) Close(proxyName string) {
-	p.proxies[proxyName].Close()
-	delete(p.proxies, proxyName)
+	if existingProxy, ok := p.proxies[proxyName]; ok {
+		existingProxy.Close()
+		delete(p.proxies, proxyName)
+		if host, ok := p.proxyNameToHost[proxyName]; ok {
+			delete(p.hostToProxyName, host)
+			delete(p.proxyNameToHost, proxyName)
+		}
+	}
 }
 
 func (p *ProxyManager) StartProxy(srcURL *url.URL, dstURL *url.URL, proxyName string, device *wireguard.UserspaceDevice, certPEM, keyPEM []byte) error {
@@ -174,11 +184,20 @@ func (p *ProxyManager) StartProxy(srcURL *url.URL, dstURL *url.URL, proxyName st
 		if strings.HasPrefix(dstURL.Host, "10.1") {
 			return fmt.Errorf("no wireguard device but destination %s can only be served on wireguard", dstURL.String())
 		}
-		if strings.HasPrefix(dstURL.Host, "10.1") {
+		if strings.HasPrefix(srcURL.Host, "10.1") {
 			return fmt.Errorf("no wireguard device but source %s can only be served on wireguard", srcURL.String())
 		}
 	}
 	// remoteURL.Host is expected to include the desired bind IP (e.g. the assigned WG IP) and port.
+	if _, ok := p.proxies[proxyName]; ok {
+		return fmt.Errorf("proxy %s already exists", proxyName)
+	}
+	if existingProxyName, ok := p.hostToProxyName[dstURL.Host]; ok {
+		return fmt.Errorf("proxy for host %s already exists (named %s)", dstURL.Host, existingProxyName)
+	}
+	if existingProxyName, ok := p.hostToProxyName[srcURL.Host]; ok {
+		return fmt.Errorf("proxy for host %s already exists (named %s)", srcURL.Host, existingProxyName)
+	}
 	proxyType := fmt.Sprintf("%s>%s", srcURL.Scheme, dstURL.Scheme)
 	switch proxyType {
 	case "tcp>tcp", "https>https", "http>tcp":
@@ -190,13 +209,13 @@ func (p *ProxyManager) StartProxy(srcURL *url.URL, dstURL *url.URL, proxyName st
 				return fmt.Errorf("resolve tcp address %s: %w", dstURL.Host, err)
 			}
 			ln, err = device.NetStack.ListenTCP(tcpAddr)
-			log.Printf("proxy: listening tcp on wireguard %s -> forwarding to %s", dstURL.Host, srcURL.Host)
+			log.Info().Str("proxy_type", proxyType).Str("src", srcURL.Host).Str("dst", dstURL.Host).Msg("Proxy: listening tcp on wireguard")
 			if err != nil {
 				return fmt.Errorf("ListenTCP error for %s: %w", dstURL.Host, err)
 			}
 		} else {
 			ln, err = net.Listen("tcp", dstURL.Host)
-			log.Printf("proxy: listening tcp on %s -> forwarding to %s", dstURL.Host, srcURL.Host)
+			log.Info().Str("proxy_type", proxyType).Str("src", srcURL.Host).Str("dst", dstURL.Host).Msg("Proxy: listening tcp")
 		}
 		if err != nil {
 			return fmt.Errorf("listen tcp %s: %w", dstURL.Host, err)
@@ -205,13 +224,15 @@ func (p *ProxyManager) StartProxy(srcURL *url.URL, dstURL *url.URL, proxyName st
 			for {
 				conn, err := ln.Accept()
 				if err != nil {
-					log.Printf("proxy accept error on %s: %v", dstURL.Host, err)
+					log.Error().Err(err).Str("dst", dstURL.Host).Msg("proxy accept error")
 					return
 				}
 				go ProxyTCP(conn, srcURL.Host, device)
 			}
 		}()
 		p.proxies[proxyName] = ln
+		p.hostToProxyName[dstURL.Host] = proxyName
+		p.proxyNameToHost[proxyName] = dstURL.Host
 	case "udp>udp":
 		// For UDP, bind explicitly to the provided host (which may be a WG IP).
 		addr, err := net.ResolveUDPAddr("udp", dstURL.Host)
@@ -222,14 +243,14 @@ func (p *ProxyManager) StartProxy(srcURL *url.URL, dstURL *url.URL, proxyName st
 		if err != nil {
 			return fmt.Errorf("listen udp %s: %w", dstURL.Host, err)
 		}
-		log.Printf("proxy: listening udp on %s -> forwarding to %s", dstURL.Host, srcURL.Host)
+		log.Info().Str("proxy_type", proxyType).Str("src", srcURL.Host).Str("dst", dstURL.Host).Msg("Proxy: listening udp")
 		go func() {
 			sessions := make(map[string]*net.UDPConn)
 			buf := make([]byte, 65535)
 			for {
 				n, publicAddr, err := l.ReadFromUDP(buf)
 				if err != nil {
-					log.Printf("udp read error on %s: %v", dstURL.Host, err)
+					log.Error().Err(err).Str("dst", dstURL.Host).Msg("udp read error")
 					return
 				}
 
@@ -238,46 +259,47 @@ func (p *ProxyManager) StartProxy(srcURL *url.URL, dstURL *url.URL, proxyName st
 				if !ok {
 					dst, err := net.ResolveUDPAddr("udp", srcURL.Host)
 					if err != nil {
-						log.Printf("udp resolve local %s error: %v", srcURL.Host, err)
+						log.Error().Err(err).Str("src", srcURL.Host).Msg("udp resolve local error")
 						continue
 					}
 					newTargetConn, err := net.DialUDP("udp", nil, dst)
 					if err != nil {
-						log.Printf("udp dial error to %s: %v", srcURL.Host, err)
+						log.Error().Err(err).Str("src", srcURL.Host).Msg("udp dial error")
 						continue
 					}
 					targetConn = newTargetConn
 					sessions[key] = targetConn
 
 					// goroutine to copy from target to public
-					go func(publicAddr *net.UDPAddr, targetConn *net.UDPConn) {
+					go func(pubAddr *net.UDPAddr, tconn *net.UDPConn) {
 						defer func() {
 							targetConn.Close()
-							delete(sessions, publicAddr.String())
+							delete(sessions, pubAddr.String())
 						}()
 						respBuf := make([]byte, 65535)
 						for {
 							// TODO: add timeout and session cleanup
-							n, _, err := targetConn.ReadFrom(respBuf)
+							n, _, err := tconn.ReadFrom(respBuf)
 							if err != nil {
 								return
 							}
-							_, err = l.WriteToUDP(respBuf[:n], publicAddr)
+							_, err = l.WriteToUDP(respBuf[:n], pubAddr)
 							if err != nil {
 								return
 							}
 						}
-					}(publicAddr, targetConn)
+					}(publicAddr, newTargetConn)
 				}
 
 				if _, err := targetConn.Write(buf[:n]); err != nil {
-					log.Printf("udp write error to %s: %v", srcURL.Host, err)
+					log.Error().Err(err).Str("src", srcURL.Host).Msg("udp write error")
 					// handle error, maybe close and delete session
 				}
 			}
 		}()
 		p.proxies[proxyName] = l
-
+		p.hostToProxyName[dstURL.Host] = proxyName
+		p.proxyNameToHost[proxyName] = dstURL.Host
 	case "http>http":
 		split := strings.Split(dstURL.Host, ":")
 		port := 80
@@ -293,6 +315,8 @@ func (p *ProxyManager) StartProxy(srcURL *url.URL, dstURL *url.URL, proxyName st
 			return err
 		}
 		p.proxies[proxyName] = closer
+		p.hostToProxyName[dstURL.Host] = proxyName
+		p.proxyNameToHost[proxyName] = dstURL.Host
 	case "http>https":
 		split := strings.Split(dstURL.Host, ":")
 		port := 443
@@ -303,11 +327,27 @@ func (p *ProxyManager) StartProxy(srcURL *url.URL, dstURL *url.URL, proxyName st
 			}
 		}
 		proxy := p.VHostProxyManager.Proxy(port)
-		closer, err := proxy.AddHostWithTLS(split[0], srcURL, string(certPEM), string(keyPEM))
-		if err != nil {
-			return err
+		// If certPEM/keyPEM not provided, configure automatic issuance via ACME HTTP-01.
+		if len(certPEM) == 0 || len(keyPEM) == 0 {
+			// Ensure port 80 proxy is running to serve ACME challenges.
+			httpProxy := p.VHostProxyManager.Proxy(p.VHostProxyManager.ACMEPort())
+			go httpProxy.Serve()
+			closer, err := proxy.AddHostWithACME(split[0], srcURL)
+			if err != nil {
+				return err
+			}
+			p.proxies[proxyName] = closer
+			p.hostToProxyName[dstURL.Host] = proxyName
+			p.proxyNameToHost[proxyName] = dstURL.Host
+		} else {
+			closer, err := proxy.AddHostWithTLS(split[0], srcURL, string(certPEM), string(keyPEM))
+			if err != nil {
+				return err
+			}
+			p.proxies[proxyName] = closer
+			p.hostToProxyName[dstURL.Host] = proxyName
+			p.proxyNameToHost[proxyName] = dstURL.Host
 		}
-		p.proxies[proxyName] = closer
 	default:
 		err = fmt.Errorf("unsupported proxy type: %s", proxyType)
 	}

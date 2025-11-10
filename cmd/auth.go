@@ -15,19 +15,20 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
-	"log"
 	"net/http"
 	"strings"
+
+	"github.com/rs/zerolog/log"
 )
 
 // Login performs the zero-trust authentication flow with the server and returns a JWT.
 func Login(serverAddr, connectionSecret, proxyName string) (string, error) {
 	// 1. GET /login to get the challenge
 	loginURL := fmt.Sprintf("http://%s/login", serverAddr)
-	log.Printf(" login: requesting challenge from %s", loginURL)
+	log.Debug().Str("url", loginURL).Msg("Login: requesting challenge")
 	resp, err := http.Get(loginURL)
 	if err != nil {
-		log.Printf(" login: GET /login failed: %v", err)
+		log.Error().Err(err).Msg("Login: GET /login failed")
 		return "", fmt.Errorf("failed to get login challenge: %w", err)
 	}
 	defer resp.Body.Close()
@@ -39,18 +40,18 @@ func Login(serverAddr, connectionSecret, proxyName string) (string, error) {
 
 	encryptedChallenge, err := io.ReadAll(resp.Body)
 	if err != nil {
-		log.Printf(" login: failed to read challenge body: %v", err)
+		log.Error().Err(err).Msg("Login: failed to read challenge body")
 		return "", fmt.Errorf("failed to read login challenge: %w", err)
 	}
-	log.Printf(" login: received encrypted challenge (len=%d) from %s", len(encryptedChallenge), serverAddr)
+	log.Debug().Int("len", len(encryptedChallenge)).Str("server", serverAddr).Msg("Login: received encrypted challenge")
 
 	// 2. Decrypt the challenge
 	decrypted, err := decrypt(connectionSecret, encryptedChallenge)
 	if err != nil {
-		log.Printf(" login: decrypt failed (maybe wrong connection secret): %v", err)
+		log.Error().Err(err).Msg("Login: decrypt failed (maybe wrong connection secret)")
 		return "", fmt.Errorf("failed to decrypt login challenge - is the connection secret correct? %w", err)
 	}
-	log.Printf(" login: decrypted challenge (len=%d)", len(decrypted))
+	log.Debug().Int("len", len(decrypted)).Msg("Login: decrypted challenge")
 
 	if !strings.HasPrefix(string(decrypted), "server-") {
 		return "", fmt.Errorf("invalid server challenge")
@@ -61,10 +62,10 @@ func Login(serverAddr, connectionSecret, proxyName string) (string, error) {
 	// 3. POST the encrypted suffix back to /login
 	encrypted, err := encrypt(connectionSecret, challenge)
 	if err != nil {
-		log.Printf(" login: encryption of response failed: %v", err)
+		log.Error().Err(err).Msg("Login: encryption of response failed")
 		return "", fmt.Errorf("failed to encrypt login challenge: %w", err)
 	}
-	log.Printf(" login: posting encrypted challenge response to %s (len=%d)", loginURL, len(encrypted))
+	log.Debug().Str("url", loginURL).Int("len", len(encrypted)).Msg("Login: posting encrypted challenge response")
 
 	// POST JSON containing the base64-like bytes (kept as raw string) and proxy_name so the server
 	// treats this as JSON. Server.loginHandler checks Content-Type == "application/json".
@@ -77,16 +78,16 @@ func Login(serverAddr, connectionSecret, proxyName string) (string, error) {
 	}
 	jsonBody, jerr := json.Marshal(reqBodyMap)
 	if jerr != nil {
-		log.Printf(" login: failed to marshal login JSON: %v", jerr)
+		log.Error().Err(jerr).Msg("Login: failed to marshal login JSON")
 		return "", fmt.Errorf("failed to marshal login request: %w", jerr)
 	}
 	resp, err = http.Post(loginURL, "application/json", bytes.NewBuffer(jsonBody))
 	if err != nil {
-		log.Printf(" login: POST /login failed: %v", err)
+		log.Error().Err(err).Msg("Login: POST /login failed")
 		return "", fmt.Errorf("failed to post login challenge: %w", err)
 	}
 	defer resp.Body.Close()
-	log.Printf(" login: POST /login completed with status %d", resp.StatusCode)
+	log.Debug().Int("status_code", resp.StatusCode).Msg("Login: POST /login completed")
 
 	if resp.StatusCode != http.StatusOK {
 		body, _ := io.ReadAll(resp.Body)
@@ -95,10 +96,10 @@ func Login(serverAddr, connectionSecret, proxyName string) (string, error) {
 
 	jwt, err := io.ReadAll(resp.Body)
 	if err != nil {
-		log.Printf(" login: failed to read JWT from %s: %v", serverAddr, err)
+		log.Error().Err(err).Str("server", serverAddr).Msg("Login: failed to read JWT")
 		return "", fmt.Errorf("failed to read JWT: %w", err)
 	}
-	log.Printf(" login: obtained JWT (len=%d) from %s", len(jwt), serverAddr)
+	log.Debug().Int("len", len(jwt)).Str("server", serverAddr).Msg("Login: obtained JWT")
 
 	return string(jwt), nil
 }

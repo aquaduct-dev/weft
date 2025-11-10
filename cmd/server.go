@@ -2,12 +2,12 @@ package cmd
 
 import (
 	"context"
-	"fmt"
 	"os"
 	"os/signal"
 	"syscall"
 
 	server "aquaduct.dev/weft/src"
+	"github.com/rs/zerolog/log"
 	"github.com/spf13/cobra"
 )
 
@@ -15,44 +15,43 @@ var serverCmd = &cobra.Command{
 	Use:   "server",
 	Short: "Run the Weft server",
 	Run: func(cmd *cobra.Command, args []string) {
-		fmt.Println("Server started!")
+		log.Info().Msg("Server started!")
 		email, _ := cmd.Flags().GetString("email")
 		bindIPs, _ := cmd.Flags().GetString("bind-ips")
 		useSecretPerIP, _ := cmd.Flags().GetBool("use-secret-per-ip")
 		port, _ := cmd.Flags().GetInt("port")
-		verbose, _ := cmd.Flags().GetBool("verbose")
 		opentelemetryConnectionString, _ := cmd.Flags().GetString("opentelemetry-connection-string")
 		secretFile, _ := cmd.Flags().GetString("secret-file")
 
-		fmt.Printf("Starting Weft server on port %d\n", port)
+		log.Info().Int("port", port).Msg("Starting Weft server")
 		if email != "" {
-			fmt.Printf("LetsEncrypt email: %s\n", email)
+			log.Info().Str("email", email).Msg("LetsEncrypt email")
 		}
 		if bindIPs != "" {
-			fmt.Printf("Binding to IPs: %s\n", bindIPs)
+			log.Info().Str("bind_ips", bindIPs).Msg("Binding to IPs")
 		}
-		fmt.Printf("Use Secret Per IP: %v\n", useSecretPerIP)
-		fmt.Printf("Verbose: %v\n", verbose)
+		log.Info().Bool("use_secret_per_ip", useSecretPerIP).Msg("Use Secret Per IP")
 		if opentelemetryConnectionString != "" {
-			fmt.Printf("OpenTelemetry: %s\n", opentelemetryConnectionString)
+			log.Info().Str("opentelemetry_connection_string", opentelemetryConnectionString).Msg("OpenTelemetry")
 		}
 
 		srv := server.NewServer(port)
+		if email != "" {
+			srv.ProxyManager.VHostProxyManager.SetACMEEmail(email)
+		}
 
-		fmt.Printf("Connection Secret: %s\n", srv.ConnectionSecret)
+		log.Info().Str("connection_secret", srv.ConnectionSecret).Msg("Connection Secret")
 		// Optionally write the connection secret to a file for automation.
 		if secretFile != "" {
 			if err := os.WriteFile(secretFile, []byte(srv.ConnectionSecret+"\n"), 0600); err != nil {
-				fmt.Printf("failed to write secret to file %s: %v\n", secretFile, err)
-				os.Exit(1)
+				log.Fatal().Err(err).Str("secret_file", secretFile).Msg("failed to write secret to file")
 			}
-			fmt.Printf("Wrote connection secret to %s\n", secretFile)
+			log.Info().Str("secret_file", secretFile).Msg("Wrote connection secret to file")
 		}
 
 		go func() {
 			if err := srv.ListenAndServe(); err != nil {
-				fmt.Printf("failed to serve: %v\n", err)
-				os.Exit(1)
+				log.Fatal().Err(err).Msg("failed to serve")
 			}
 		}()
 
@@ -61,10 +60,9 @@ var serverCmd = &cobra.Command{
 		signal.Notify(sigChan, syscall.SIGINT, syscall.SIGTERM)
 		<-sigChan
 
-		fmt.Println("Server stopped.")
+		log.Info().Msg("Server stopped.")
 		if err := srv.Shutdown(context.Background()); err != nil {
-			fmt.Printf("failed to shutdown: %v", err)
-			os.Exit(1)
+			log.Fatal().Err(err).Msg("failed to shutdown")
 		}
 	},
 }
@@ -75,7 +73,6 @@ func init() {
 	serverCmd.Flags().String("bind-ips", "", "Comma separated list of IPs to bind to")
 	serverCmd.Flags().Bool("use-secret-per-ip", false, "Use a separate secret for each IP")
 	serverCmd.Flags().Int("port", 9092, "Server connection port")
-	serverCmd.Flags().Bool("verbose", false, "Enable verbose logging")
 	serverCmd.Flags().String("opentelemetry-connection-string", "", "OpenTelemetry connection string")
 	// Write the generated connection secret to a file (optional)
 	serverCmd.Flags().String("secret-file", "", "Path to write the generated connection secret")

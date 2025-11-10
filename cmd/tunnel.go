@@ -7,7 +7,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
-	"log"
 	"net"
 	"net/http"
 	"net/url"
@@ -16,6 +15,7 @@ import (
 
 	"strconv"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 
@@ -23,6 +23,8 @@ import (
 	"aquaduct.dev/weft/wireguard"
 
 	"aquaduct.dev/weft/types"
+	"github.com/golang-jwt/jwt/v4"
+	"github.com/rs/zerolog/log"
 	"github.com/spf13/cobra"
 )
 
@@ -37,7 +39,7 @@ var tunnelCmd = &cobra.Command{
 		// 1. Parse arguments
 		weftURL, err := url.Parse(args[0])
 		if err != nil {
-			log.Fatalf("Invalid weft URL: %v", err)
+			log.Fatal().Err(err).Msg("Invalid weft URL")
 		}
 		// Extract connection secret: prefer password (user:pass@host), fall back to username (user@host).
 		// Note: connection secret (if present in the URL) is no longer sent in the ConnectRequest.
@@ -47,16 +49,16 @@ var tunnelCmd = &cobra.Command{
 
 		localURL, err := url.Parse(args[1])
 		if err != nil {
-			log.Fatalf("Invalid local URL: %v", err)
+			log.Fatal().Err(err).Msg("Invalid local URL")
 		}
 
 		remoteURL, err := url.Parse(args[2])
 		if err != nil {
-			log.Fatalf("Invalid remote URL: %v", err)
+			log.Fatal().Err(err).Msg("Invalid remote URL")
 		}
 		remotePort, err := strconv.Atoi(remoteURL.Port())
 		if err != nil {
-			log.Fatalf("Invalid remote port: %v", err)
+			log.Fatal().Err(err).Msg("Invalid remote port")
 		}
 		if remotePort == 0 {
 			switch strings.ToLower(remoteURL.Scheme) {
@@ -82,23 +84,38 @@ var tunnelCmd = &cobra.Command{
 		}
 
 		// Provide proxy_name (tunnel name) to login so server issues a JWT scoped to this tunnel.
-		jwt, err := Login(connectHost, connectionSecret, tunnelNameFlag)
+		jwtTokenString, err := Login(connectHost, connectionSecret, tunnelNameFlag)
 		if err != nil {
-			log.Fatalf("Login failed: %v", err)
+			log.Fatal().Err(err).Msg("Login failed")
 		}
+
+		token, _, err := jwt.NewParser().ParseUnverified(jwtTokenString, jwt.MapClaims{})
+
+		if err != nil {
+			log.Fatal().Err(err).Msg("Failed to parse JWT")
+		}
+		claims, ok := token.Claims.(jwt.MapClaims)
+		if !ok {
+			log.Fatal().Msg("Failed to get JWT claims")
+		}
+		exp := int64(claims["exp"].(float64))
+		jwtExpiry := time.Unix(exp, 0)
+
+		// Mutex to protect the JWT.
+		var jwtMutex sync.Mutex
 
 		// Determine protocol and hostname to send to the control API.
 		proto := strings.ToLower(localURL.Scheme)
 		hostname := localURL.Hostname()
 		// If localURL doesn't have a hostname (e.g., "tcp://10.0.0.1:1234"), fall back to remoteURL.
 		if hostname == "" {
-			log.Fatalf("URL missing hostname: %s", localURL.String())
+			log.Fatal().Str("url", localURL.String()).Msg("URL missing hostname")
 		}
 
 		// Generate a new private key.
 		privateKey, err := wireguard.GeneratePrivateKey()
 		if err != nil {
-			log.Fatalf("Failed to generate private key: %v", err)
+			log.Fatal().Err(err).Msg("Failed to generate private key")
 		}
 
 		// Build the ConnectRequest that will be sent to the server.
@@ -113,24 +130,24 @@ var tunnelCmd = &cobra.Command{
 
 		reqBody, err := json.Marshal(connectReq)
 		if err != nil {
-			log.Fatalf("Failed to marshal connect request: %v", err)
+			log.Fatal().Err(err).Msg("Failed to marshal connect request")
 		}
 		// Log the exact JSON payload we will send to the control API to aid debugging.
-		log.Printf("Connect request payload: %s", string(reqBody))
+		log.Debug().RawJSON("payload", reqBody).Msg("Connect request payload")
 
 		connectURL := fmt.Sprintf("http://%s/connect", connectHost)
-		log.Printf("Posting connect request to %s", connectURL)
+		log.Info().Str("url", connectURL).Msg("Posting connect request")
 
 		httpReq, err := http.NewRequest(http.MethodPost, connectURL, bytes.NewBuffer(reqBody))
 		if err != nil {
-			log.Fatalf("Failed to create connect request: %v", err)
+			log.Fatal().Err(err).Msg("Failed to create connect request")
 		}
 		httpReq.Header.Set("Content-Type", "application/json")
-		httpReq.Header.Set("Authorization", "Bearer "+jwt)
+		httpReq.Header.Set("Authorization", "Bearer "+jwtTokenString)
 
 		resp, err := http.DefaultClient.Do(httpReq)
 		if err != nil {
-			log.Fatalf("Failed to connect to server: %v", err)
+			log.Fatal().Err(err).Msg("Failed to connect to server")
 		}
 		defer resp.Body.Close()
 
@@ -141,22 +158,22 @@ var tunnelCmd = &cobra.Command{
 			// Trim trailing newline for nicer output.
 			msg := string(bytes.TrimSpace(body))
 			if msg == "" {
-				log.Fatalf("Server returned status %d", resp.StatusCode)
+				log.Fatal().Int("status_code", resp.StatusCode).Msg("Server returned empty error")
 			}
-			log.Fatalf("Server error (%d): %s", resp.StatusCode, msg)
+			log.Fatal().Int("status_code", resp.StatusCode).Str("error", msg).Msg("Server error")
 		}
 
 		var connectResp types.ConnectResponse
 		if err := json.NewDecoder(resp.Body).Decode(&connectResp); err != nil {
-			log.Fatalf("Failed to decode connect response: %v", err)
+			log.Fatal().Err(err).Msg("Failed to decode connect response")
 		}
-		log.Printf("Assigned IP %s and proxy port %d", connectResp.ClientAddress, connectResp.TunnelProxyPort)
+		log.Info().Str("ip", connectResp.ClientAddress).Int("port", connectResp.TunnelProxyPort).Msg("Assigned IP and proxy port")
 
 		// 4. Create tunnel
 		p := server.NewProxyManager()
 		device, err := server.Tunnel(serverIP, localURL, &connectResp, privateKey, p, tunnelNameFlag)
 		if err != nil {
-			log.Fatalf("Failed to create tunnel: %v", err)
+			log.Fatal().Err(err).Msg("Failed to create tunnel")
 		}
 
 		// Start background healthchecks to the control API to keep the server-side proxy alive.
@@ -175,8 +192,37 @@ var tunnelCmd = &cobra.Command{
 			for {
 				select {
 				case <-ticker.C:
+					jwtMutex.Lock()
+					if time.Until(jwtExpiry) < 1*time.Minute {
+						log.Info().Msg("JWT is about to expire, refreshing...")
+						newJwtTokenString, err := Login(connectHost, connectionSecret, tunnelNameFlag)
+						if err != nil {
+							log.Error().Err(err).Msg("Failed to refresh JWT")
+							jwtMutex.Unlock()
+							continue
+						}
+						jwtTokenString = newJwtTokenString
+						token, _, err := jwt.NewParser().ParseUnverified(jwtTokenString, jwt.MapClaims{})
+						if err != nil {
+							log.Error().Err(err).Msg("Failed to parse new JWT")
+							jwtMutex.Unlock()
+							continue
+						}
+						claims, ok := token.Claims.(jwt.MapClaims)
+						if !ok {
+							log.Error().Msg("Failed to get new JWT claims")
+							jwtMutex.Unlock()
+							continue
+						}
+						exp := int64(claims["exp"].(float64))
+						jwtExpiry = time.Unix(exp, 0)
+						log.Info().Msg("JWT refreshed")
+					}
+
 					req, _ := http.NewRequest(http.MethodGet, healthURL, nil)
-					req.Header.Set("Authorization", "Bearer "+jwt)
+					req.Header.Set("Authorization", "Bearer "+jwtTokenString)
+					jwtMutex.Unlock()
+
 					resp, err := client.Do(req)
 					if err != nil || resp.StatusCode != http.StatusOK {
 						body := []byte("(no data)")
@@ -185,7 +231,7 @@ var tunnelCmd = &cobra.Command{
 							body, _ = io.ReadAll(resp.Body)
 							statusCode = resp.StatusCode
 						}
-						log.Printf("Healthcheck request failed %d: %v", statusCode, string(body))
+						log.Error().Int("status_code", statusCode).Str("body", string(body)).Msg("Healthcheck request failed")
 						os.Exit(1)
 					}
 				case <-done:
@@ -207,7 +253,9 @@ var tunnelCmd = &cobra.Command{
 				return fmt.Sprintf("http://%s/shutdown", net.JoinHostPort(serverIP, "9092"))
 			}()
 			req, _ := http.NewRequest(http.MethodPost, shutdownURL, nil)
-			req.Header.Set("Authorization", "Bearer "+jwt)
+			jwtMutex.Lock()
+			req.Header.Set("Authorization", "Bearer "+jwtTokenString)
+			jwtMutex.Unlock()
 			// Best-effort; ignore errors.
 			client := &http.Client{Timeout: 3 * time.Second}
 			if resp, err := client.Do(req); err == nil && resp != nil {

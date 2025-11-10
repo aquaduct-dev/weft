@@ -12,7 +12,6 @@ package server
 import (
 	"encoding/hex"
 	"fmt"
-	"log"
 	"net"
 	"net/netip"
 	"net/url"
@@ -21,6 +20,7 @@ import (
 
 	"aquaduct.dev/weft/types"
 	"aquaduct.dev/weft/wireguard"
+	"github.com/rs/zerolog/log"
 	"golang.zx2c4.com/wireguard/wgctrl/wgtypes"
 )
 
@@ -44,7 +44,7 @@ func Tunnel(serverIP string, localUrl *url.URL, resp *types.ConnectResponse, pri
 	}
 
 	// Log the assigned client address so tests and debugging can confirm we used the server-assigned IP.
-	log.Printf("Tunnel: using assigned client IP %s from server response", clientAddress.String())
+	log.Info().Str("client_ip", clientAddress.String()).Msg("Tunnel: using assigned client IP from server response")
 
 	// Create device config with the client's private key.
 	peerConf := fmt.Sprintf("private_key=%s\nreplace_peers=true\npublic_key=%s\nallowed_ip=%s\nendpoint=%s\npersistent_keepalive_interval=1",
@@ -60,11 +60,11 @@ func Tunnel(serverIP string, localUrl *url.URL, resp *types.ConnectResponse, pri
 
 	device, err := wireguard.NewUserspaceDevice(peerConf, addrList)
 	if err != nil {
-		log.Fatalf("Failed to create WireGuard device: %v", err)
+		log.Fatal().Err(err).Msg("Failed to create WireGuard device")
 		return nil, err
 	}
 
-	log.Printf("Tunnel established to server %s (server wg port=%d, client ip=%s)", serverIP, resp.ServerWGPort, clientAddress.String())
+	log.Info().Str("server_ip", serverIP).Int("server_wg_port", resp.ServerWGPort).Str("client_ip", clientAddress.String()).Msg("Tunnel established")
 
 	remoteUrl := &url.URL{
 		Scheme: localUrl.Scheme,
@@ -83,7 +83,7 @@ func Tunnel(serverIP string, localUrl *url.URL, resp *types.ConnectResponse, pri
 
 	// 5. Start the proxy
 	if err := p.StartProxy(localUrl, remoteUrl, tunnelName, device, nil, nil); err != nil {
-		log.Fatalf("Failed to start proxy: %v", err)
+		log.Fatal().Err(err).Msg("Failed to start proxy")
 	}
 
 	return device, nil

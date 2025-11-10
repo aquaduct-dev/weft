@@ -29,7 +29,7 @@ func TestVHost_AddHostAndServeHTTP(t *testing.T) {
 		t.Fatalf("parse upstream url: %v", err)
 	}
 
-	manager := &VHostProxyManager{proxies: make(map[int]*VHostProxy)}
+	manager := NewVHostProxyManager()
 	vp := NewVHostProxy(0, manager)
 
 	// Add a reverse proxy directly into the hosts map (bypass AddHost which requires a device).
@@ -65,8 +65,8 @@ func TestVHost_AddHostWithTLSAndRetrieval(t *testing.T) {
 		t.Fatalf("parse upstream url: %v", err)
 	}
 
-	manager := &VHostProxyManager{proxies: make(map[int]*VHostProxy)}
-	    vp := NewVHostProxy(0, manager)
+	manager := NewVHostProxyManager()
+	vp := NewVHostProxy(0, manager)
 	certPEM, keyPEM, err := GenerateCert("secure.test")
 	if err != nil {
 		t.Fatalf("GenerateCert failed: %v", err)
@@ -121,7 +121,7 @@ func TestVHost_AddHostWithTLSAndRetrieval(t *testing.T) {
 }
 
 func TestVHost_UnknownHostReturns404(t *testing.T) {
-	manager := &VHostProxyManager{proxies: make(map[int]*VHostProxy)}
+	manager := NewVHostProxyManager()
 	vp := NewVHostProxy(0, manager)
 
 	req := httptest.NewRequest("GET", "http://unknown/", nil)
@@ -133,5 +133,64 @@ func TestVHost_UnknownHostReturns404(t *testing.T) {
 	defer res.Body.Close()
 	if res.StatusCode != http.StatusNotFound {
 		t.Fatalf("expected 404 Not Found; got %d", res.StatusCode)
+	}
+}
+
+func TestVHost_ACMEChallengeWithExistingVHost(t *testing.T) {
+	// 1. Setup VHostProxyManager and set a custom ACME port
+	manager := NewVHostProxyManager()
+	acmeTestPort := 18080 // some high port for testing
+	manager.SetACMEPort(acmeTestPort)
+
+	// 2. Get the proxy for the ACME port and add a regular vhost to it
+	proxy := manager.Proxy(acmeTestPort)
+	proxy.defaultHandler = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Error(w, "custom not found", http.StatusNotFound)
+	})
+
+	// upstream server for the regular vhost
+	up := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Write([]byte("upstream-ok"))
+	}))
+	defer up.Close()
+	u, err := url.Parse(up.URL)
+	if err != nil {
+		t.Fatalf("parse upstream url: %v", err)
+	}
+	proxy.AddHost("example.test", u)
+
+	// 3. Start serving on the proxy
+	go proxy.Serve()
+	// wait for it to be ready
+	time.Sleep(100 * time.Millisecond)
+
+	// 4. Test the regular vhost
+	req := httptest.NewRequest("GET", "http://example.test/", nil)
+	req.Host = "example.test"
+	rec := httptest.NewRecorder()
+	proxy.ServeHTTP(rec, req)
+	res := rec.Result()
+	if res.StatusCode != http.StatusOK {
+		t.Fatalf("expected 200 OK for regular vhost; got %d", res.StatusCode)
+	}
+	b, _ := io.ReadAll(res.Body)
+	if string(b) != "upstream-ok" {
+		t.Fatalf("unexpected body for regular vhost: %q", string(b))
+	}
+
+	// 5. Test the ACME challenge
+	// To test the ACME challenge, we need to add a host to acmeHosts
+	manager.AddACMEHost("acme.test")
+
+	// The autocert manager's HTTPHandler will serve a challenge.
+	// We can't easily get the token, so we'll just check that we don't get our custom 404.
+	acmeReq := httptest.NewRequest("GET", "/.well-known/acme-challenge/some-token", nil)
+	acmeReq.Host = "acme.test"
+	acmeRec := httptest.NewRecorder()
+	proxy.ServeHTTP(acmeRec, acmeReq)
+	acmeRes := acmeRec.Result()
+	body, _ := io.ReadAll(acmeRes.Body)
+	if string(body) == "custom not found\n" {
+		t.Fatalf("expected ACME challenge to be handled, but got custom 404")
 	}
 }

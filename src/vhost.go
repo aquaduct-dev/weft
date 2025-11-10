@@ -1,14 +1,17 @@
 package server
 
 import (
+	"context"
 	"crypto/tls"
 	"fmt"
-	"log"
 	"net/http"
 	"net/http/httputil"
 	"net/url"
 	"strings"
 	"sync"
+
+	"github.com/rs/zerolog/log"
+	"golang.org/x/crypto/acme/autocert"
 )
 
 // VHostProxy manages name-based vhosts and optional TLS-termination handlers.
@@ -29,8 +32,60 @@ type VHostProxy struct {
 }
 
 type VHostProxyManager struct {
-	proxies map[int]*VHostProxy
-	mu      sync.Mutex
+	proxies     map[int]*VHostProxy
+	mu          sync.Mutex
+	acmeManager *autocert.Manager
+	acmeHosts   map[string]bool
+	acmePort    int
+	acmeEmail   string
+}
+
+func NewVHostProxyManager() *VHostProxyManager {
+	m := &VHostProxyManager{
+		proxies:   make(map[int]*VHostProxy),
+		acmeHosts: make(map[string]bool),
+		acmePort:  80,
+	}
+	m.acmeManager = &autocert.Manager{
+		Prompt: autocert.AcceptTOS,
+		HostPolicy: func(ctx context.Context, host string) error {
+			m.mu.Lock()
+			defer m.mu.Unlock()
+			if !m.acmeHosts[host] {
+				return fmt.Errorf("acme: host %s not configured for acme", host)
+			}
+			return nil
+		},
+		Cache: autocert.DirCache("certs"),
+	}
+	return m
+}
+
+func (v *VHostProxyManager) SetACMEEmail(email string) {
+	v.mu.Lock()
+	defer v.mu.Unlock()
+	v.acmeEmail = email
+	if v.acmeManager != nil {
+		v.acmeManager.Email = email
+	}
+}
+
+func (v *VHostProxyManager) SetACMEPort(port int) {
+	v.mu.Lock()
+	defer v.mu.Unlock()
+	v.acmePort = port
+}
+
+func (v *VHostProxyManager) ACMEPort() int {
+	v.mu.Lock()
+	defer v.mu.Unlock()
+	return v.acmePort
+}
+
+func (v *VHostProxyManager) AddACMEHost(host string) {
+	v.mu.Lock()
+	defer v.mu.Unlock()
+	v.acmeHosts[host] = true
 }
 
 func (v *VHostProxyManager) Proxy(port int) *VHostProxy {
@@ -57,7 +112,7 @@ func (v VHostCloser) Close() error {
 		delete(v.VHostProxy.tlsConfigs, v.Host)
 	}
 	if v.VHostProxy.s != nil && len(v.VHostProxy.hosts) == 0 {
-		log.Printf("Shutting down VHost proxy on port %d (no proxies)", v.VHostProxy.port)
+		log.Info().Int("port", v.VHostProxy.port).Msg("Shutting down VHost proxy (no proxies)")
 		v.VHostProxy.s.Close()
 		v.VHostProxy.manager.mu.Lock()
 		delete(v.VHostProxy.manager.proxies, v.VHostProxy.port)
@@ -87,7 +142,7 @@ func (p *VHostProxy) AddHost(host string, target *url.URL) (VHostCloser, error) 
 
 	p.hosts[host] = proxy
 	go p.Serve()
-	log.Printf("VHost: HTTP proxy configured for %s:%d -> %s", host, p.port, target.String())
+	log.Info().Str("host", host).Int("port", p.port).Str("target", target.String()).Msg("VHost: HTTP proxy configured")
 	return VHostCloser{VHostProxy: p, Host: host, Tls: false}, nil
 }
 
@@ -131,34 +186,70 @@ func (p *VHostProxy) AddHostWithTLS(host string, target *url.URL, certPEM, keyPE
 	}
 	p.tlsConfigs[host] = tlsConfig
 	go p.Serve()
-	log.Printf("VHost: HTTPS proxy configured for %s:%d -> %s", host, p.port, target.String())
+	log.Info().Str("host", host).Int("port", p.port).Str("target", target.String()).Msg("VHost: HTTPS proxy configured")
+	return VHostCloser{VHostProxy: p, Host: host, Tls: true}, nil
+}
+
+// AddHostWithACME registers an HTTP reverse proxy and enables ACME for the given host.
+func (p *VHostProxy) AddHostWithACME(host string, target *url.URL) (VHostCloser, error) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+
+	proxy := httputil.NewSingleHostReverseProxy(target)
+	p.hosts[host] = proxy
+
+	p.manager.AddACMEHost(host)
+
+	go p.Serve()
+	log.Info().Str("host", host).Int("port", p.port).Str("target", target.String()).Msg("VHost: ACME proxy configured")
 	return VHostCloser{VHostProxy: p, Host: host, Tls: true}, nil
 }
 
 func (p *VHostProxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	host := strings.Split(r.Host, ":")[0]
+	if p.port == p.manager.acmePort && p.manager.acmeManager != nil && strings.HasPrefix(r.URL.Path, "/.well-known/acme-challenge/") {
+		p.manager.acmeManager.HTTPHandler(nil).ServeHTTP(w, r)
+		return
+	}
+
 	p.mu.RLock()
 	proxy, ok := p.hosts[host]
 	httpsHandler, httpsOk := p.tlsHandlers[host]
 	p.mu.RUnlock()
 
 	if httpsOk {
-		log.Printf("VHost: handling request for %s%s with HTTPS handler", r.Host, r.RequestURI)
+		log.Debug().Str("host", r.Host).Str("uri", r.RequestURI).Msg("VHost: handling request with HTTPS handler")
 		httpsHandler.ServeHTTP(w, r)
 		return
 	}
 	if ok {
-		log.Printf("VHost: handling request for %s%s with HTTP handler", r.Host, r.RequestURI)
+		log.Debug().Str("host", r.Host).Str("uri", r.RequestURI).Msg("VHost: handling request with HTTP handler")
 		proxy.ServeHTTP(w, r)
 		return
 	}
-	log.Printf("VHost: handling request for %s%s with 404 handler", r.Host, r.RequestURI)
+	log.Debug().Str("host", r.Host).Str("uri", r.RequestURI).Msg("VHost: handling request with 404 handler")
 	p.defaultHandler.ServeHTTP(w, r)
+}
+
+func (p *VHostProxy) hasTLS() bool {
+	p.mu.RLock()
+	defer p.mu.RUnlock()
+	if len(p.tlsHandlers) > 0 {
+		return true
+	}
+	if p.manager.acmeManager != nil {
+		for host := range p.hosts {
+			if p.manager.acmeHosts[host] {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 func (p *VHostProxy) Serve() {
 	if p.s != nil {
-		log.Printf("VHost: already serving on port %d", p.port)
+		log.Debug().Int("port", p.port).Msg("VHost: already serving")
 		return
 	}
 	p.s = &http.Server{
@@ -166,8 +257,8 @@ func (p *VHostProxy) Serve() {
 		Handler: p,
 	}
 
-	if len(p.tlsHandlers) > 0 {
-		log.Printf("VHost: serving with TLS on port %d", p.port)
+	if p.hasTLS() {
+		log.Info().Int("port", p.port).Msg("VHost: serving with TLS")
 		tlsConfig := &tls.Config{
 			GetCertificate: func(hello *tls.ClientHelloInfo) (*tls.Certificate, error) {
 				p.mu.RLock()
@@ -178,17 +269,20 @@ func (p *VHostProxy) Serve() {
 						return &cfg.Certificates[0], nil
 					}
 				}
+				if p.manager.acmeManager != nil {
+					return p.manager.acmeManager.GetCertificate(hello)
+				}
 				return nil, fmt.Errorf("no certificate for server name %s", hello.ServerName)
 			},
 		}
 		l, err := tls.Listen("tcp", fmt.Sprintf(":%d", p.port), tlsConfig)
 		if err != nil {
-			log.Printf("VHost: tls.Listen on port %d failed: %v", p.port, err)
+			log.Error().Err(err).Int("port", p.port).Msg("VHost: tls.Listen failed")
 			return
 		}
 		p.s.Serve(l)
 	} else {
-		log.Printf("VHost: serving on port %d", p.port)
+		log.Info().Int("port", p.port).Msg("VHost: serving")
 		p.s.ListenAndServe()
 	}
 
