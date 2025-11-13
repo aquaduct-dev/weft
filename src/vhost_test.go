@@ -9,6 +9,8 @@ import (
 	"net/http/httptest"
 	"net/http/httputil"
 	"net/url"
+	"os"
+	"path/filepath"
 	"testing"
 	"time"
 )
@@ -30,9 +32,7 @@ func TestVHost_AddHostAndServeHTTP(t *testing.T) {
 	}
 
 	manager := NewVHostProxyManager()
-	vp := NewVHostProxy(0, manager)
-
-	// Add a reverse proxy directly into the hosts map (bypass AddHost which requires a device).
+	vp := NewVHostProxy(VHostKey{Port: 0}, manager)
 	vp.mu.Lock()
 	vp.hosts["example.test"] = httputil.NewSingleHostReverseProxy(u)
 	vp.mu.Unlock()
@@ -66,13 +66,13 @@ func TestVHost_AddHostWithTLSAndRetrieval(t *testing.T) {
 	}
 
 	manager := NewVHostProxyManager()
-	vp := NewVHostProxy(0, manager)
+	vp := NewVHostProxy(VHostKey{Port: 0}, manager)
 	certPEM, keyPEM, err := GenerateCert("secure.test")
 	if err != nil {
 		t.Fatalf("GenerateCert failed: %v", err)
 	}
 
-	closer, err := vp.AddHostWithTLS("secure.test", u, string(certPEM), string(keyPEM))
+	closer, err := vp.AddHostWithTLS("secure.test", u, nil, string(certPEM), string(keyPEM))
 	if err != nil {
 		t.Fatalf("AddHostWithTLS failed: %v", err)
 	}
@@ -122,7 +122,7 @@ func TestVHost_AddHostWithTLSAndRetrieval(t *testing.T) {
 
 func TestVHost_UnknownHostReturns404(t *testing.T) {
 	manager := NewVHostProxyManager()
-	vp := NewVHostProxy(0, manager)
+	vp := NewVHostProxy(VHostKey{Port: 0}, manager)
 
 	req := httptest.NewRequest("GET", "http://unknown/", nil)
 	req.Host = "unknown"
@@ -136,6 +136,24 @@ func TestVHost_UnknownHostReturns404(t *testing.T) {
 	}
 }
 
+func TestVHost_CertsCachePath(t *testing.T) {
+	manager := NewVHostProxyManager()
+	home, err := os.UserHomeDir()
+	if err != nil {
+		t.Fatalf("failed to get user home directory: %v", err)
+	}
+	expectedDefaultPath := filepath.Join(home, ".certs")
+	if manager.certsCachePath != expectedDefaultPath {
+		t.Fatalf("expected default certs cache path to be %s; got %s", expectedDefaultPath, manager.certsCachePath)
+	}
+
+	newPath := "/tmp/certs"
+	manager.SetCertsCachePath(newPath)
+	if manager.certsCachePath != newPath {
+		t.Fatalf("expected certs cache path to be %s; got %s", newPath, manager.certsCachePath)
+	}
+}
+
 func TestVHost_ACMEChallengeWithExistingVHost(t *testing.T) {
 	// 1. Setup VHostProxyManager and set a custom ACME port
 	manager := NewVHostProxyManager()
@@ -143,7 +161,7 @@ func TestVHost_ACMEChallengeWithExistingVHost(t *testing.T) {
 	manager.SetACMEPort(acmeTestPort)
 
 	// 2. Get the proxy for the ACME port and add a regular vhost to it
-	proxy := manager.Proxy(acmeTestPort)
+	proxy := manager.Proxy("", acmeTestPort)
 	proxy.defaultHandler = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "custom not found", http.StatusNotFound)
 	})
@@ -157,10 +175,10 @@ func TestVHost_ACMEChallengeWithExistingVHost(t *testing.T) {
 	if err != nil {
 		t.Fatalf("parse upstream url: %v", err)
 	}
-	proxy.AddHost("example.test", u)
+	proxy.AddHost("example.test", u, nil)
 
 	// 3. Start serving on the proxy
-	go proxy.Serve()
+	go proxy.Start()
 	// wait for it to be ready
 	time.Sleep(100 * time.Millisecond)
 
@@ -180,7 +198,7 @@ func TestVHost_ACMEChallengeWithExistingVHost(t *testing.T) {
 
 	// 5. Test the ACME challenge
 	// To test the ACME challenge, we need to add a host to acmeHosts
-	manager.AddACMEHost("acme.test")
+	manager.AddACMEHost("acme.test", "")
 
 	// The autocert manager's HTTPHandler will serve a challenge.
 	// We can't easily get the token, so we'll just check that we don't get our custom 404.

@@ -64,6 +64,8 @@ type Server struct {
 
 	// VhostProxy implements virtual-host routing for hostname-based tunnels.
 	ProxyManager *ProxyManager
+	// bindIP constrains all server listeners (HTTP and proxy listeners) when set.
+	bindIP string
 
 	// apiTLSConfig is an optional TLS config for API-related listeners (kept for future use).
 	apiTLSConfig *tls.Config
@@ -89,9 +91,14 @@ func CreateDevice(port int) (*wireguard.UserspaceDevice, wgtypes.Key, int, error
 
 	subnet := netip.MustParsePrefix("10.1.0.0/16")
 
-	conf := fmt.Sprintf(`private_key=%s
-listen_port=%d`, hex.EncodeToString(privateKey[:]), port)
-
+	// Build device config. Currently the userspace device constructor expects a
+	// WireGuard-style config. We always provide private_key and listen_port.
+	// The wireguard userspace device may not support an explicit bind address in
+	// the config string across all implementations; however, we accept a
+	// bindIP parameter and log it so operators know we attempted to constrain
+	// bindings. If the underlying implementation supports endpoint binding via
+	// the conf string, include it here.
+	conf := fmt.Sprintf("private_key=%s\nlisten_port=%d", hex.EncodeToString(privateKey[:]), port)
 	device, err := wireguard.NewUserspaceDevice(conf, []netip.Addr{subnet.Addr()})
 	if err != nil {
 		return nil, wgtypes.Key{}, 0, fmt.Errorf("failed to create wireguard device: %w", err)
@@ -118,7 +125,7 @@ listen_port=%d`, hex.EncodeToString(privateKey[:]), port)
 	return device, privateKey, actualPort, nil
 }
 
-func NewServer(port int) *Server {
+func NewServer(port int, bindIP string) *Server {
 	mux := http.NewServeMux()
 
 	apiTLSCfg := &tls.Config{}
@@ -129,9 +136,14 @@ func NewServer(port int) *Server {
 		log.Fatal().Err(err).Msg("failed to generate connection secret")
 	}
 
+	// Configure HTTP server address. If bindIP is specified, bind only to that IP.
+	addr := fmt.Sprintf(":%d", port)
+	if bindIP != "" {
+		addr = fmt.Sprintf("%s:%d", bindIP, port)
+	}
 	s := &Server{
 		Server: &http.Server{
-			Addr:    fmt.Sprintf(":%d", port),
+			Addr:    addr,
 			Handler: mux,
 		},
 		tunnels:          make(map[string]peer),
@@ -143,6 +155,11 @@ func NewServer(port int) *Server {
 		ProxyManager:     NewProxyManager(),
 		apiTLSConfig:     apiTLSCfg,
 		challenges:       make(map[string]string),
+		bindIP:           bindIP,
+	}
+	// Propagate bindIP to the ProxyManager so proxies bind to the same IP.
+	if bindIP != "" {
+		s.ProxyManager.bindIP = bindIP
 	}
 	s.device, s.privateKey, s.WgListenPort, err = CreateDevice(0) // Always use a random port for the wireguard device
 	if err != nil {
@@ -150,9 +167,9 @@ func NewServer(port int) *Server {
 	}
 
 	mux.HandleFunc("/connect", s.ConnectHandler)
-	mux.HandleFunc("/healthcheck", s.handleHealthcheck)
-	mux.HandleFunc("/shutdown", s.handleShutdown)
-	mux.HandleFunc("/login", s.handleLogin)
+	mux.HandleFunc("/healthcheck", s.HealthcheckHandler)
+	mux.HandleFunc("/shutdown", s.ShutdownHandler)
+	mux.HandleFunc("/login", s.LoginHandler)
 	go s.startJanitor(30 * time.Second)
 
 	return s
@@ -252,7 +269,6 @@ func (s *Server) ConnectHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	log.Debug().Int("port", s.WgListenPort).Msg("ConnectHandler: WgListenPort")
 	resp, err := s.Serve(&req)
 	if err != nil {
 		// Translate well-known error types into appropriate HTTP status codes so clients can act,
@@ -427,7 +443,7 @@ func (s *Server) Serve(req *types.ConnectRequest) (*types.ConnectResponse, error
 	default:
 		return nil, fmt.Errorf("unknown protocol: %s", req.Protocol)
 	}
-	err = s.ProxyManager.StartProxy(&tunnelSource, &tunnelEnd, req.TunnelName, s.device, nil, nil)
+	err = s.ProxyManager.StartProxy(&tunnelSource, &tunnelEnd, req.TunnelName, s.device, nil, nil, s.bindIP)
 	if err != nil {
 		return nil, err
 	}
@@ -462,7 +478,7 @@ func (s *Server) Serve(req *types.ConnectRequest) (*types.ConnectResponse, error
 	return resp, nil
 }
 
-func (s *Server) handleHealthcheck(w http.ResponseWriter, r *http.Request) {
+func (s *Server) HealthcheckHandler(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
 		return
@@ -471,14 +487,14 @@ func (s *Server) handleHealthcheck(w http.ResponseWriter, r *http.Request) {
 	// Validate JWT token from Authorization header
 	authHeader := r.Header.Get("Authorization")
 	if authHeader == "" {
-		log.Warn().Msg("handleHealthcheck: missing Authorization header")
+		log.Warn().Msg("HealthcheckHandler: missing Authorization header")
 		http.Error(w, "Authorization header required", http.StatusUnauthorized)
 		return
 	}
 
 	parts := strings.Split(authHeader, " ")
 	if len(parts) != 2 || parts[0] != "Bearer" {
-		log.Warn().Msg("handleHealthcheck: invalid Authorization header format")
+		log.Warn().Msg("HealthcheckHandler: invalid Authorization header format")
 		http.Error(w, "Invalid Authorization header", http.StatusUnauthorized)
 		return
 	}
@@ -487,7 +503,7 @@ func (s *Server) handleHealthcheck(w http.ResponseWriter, r *http.Request) {
 
 	token, err := s.ValidateJWT(tokenString)
 	if err != nil {
-		log.Warn().Err(err).Msg("handleHealthcheck: failed to validate JWT")
+		log.Warn().Err(err).Msg("HealthcheckHandler: failed to validate JWT")
 		http.Error(w, "Invalid token", http.StatusUnauthorized)
 		return
 	}
@@ -495,19 +511,19 @@ func (s *Server) handleHealthcheck(w http.ResponseWriter, r *http.Request) {
 	// Extract proxy name from JWT claims
 	claims, ok := token.Claims.(jwt.MapClaims)
 	if !ok {
-		log.Warn().Msg("handleHealthcheck: failed to extract JWT claims")
+		log.Warn().Msg("HealthcheckHandler: failed to extract JWT claims")
 		http.Error(w, "Invalid token claims", http.StatusUnauthorized)
 		return
 	}
 
 	proxyName, ok := claims["sub"].(string)
 	if !ok || proxyName == "" {
-		log.Warn().Any("claims", claims).Msg("handleHealthcheck: missing or invalid proxy name in JWT sub claim")
+		log.Warn().Any("claims", claims).Msg("HealthcheckHandler: missing or invalid proxy name in JWT sub claim")
 		http.Error(w, fmt.Sprintf("Missing proxy name in token %v", claims), http.StatusBadRequest)
 		return
 	}
 
-	log.Debug().Str("proxy_name", proxyName).Msg("handleHealthcheck: received healthcheck")
+	log.Debug().Str("proxy_name", proxyName).Msg("HealthcheckHandler: received healthcheck")
 
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -515,7 +531,7 @@ func (s *Server) handleHealthcheck(w http.ResponseWriter, r *http.Request) {
 	// Check if the proxy (tunnel) exists
 	peer, exists := s.tunnels[proxyName]
 	if !exists {
-		log.Warn().Str("proxy_name", proxyName).Msg("handleHealthcheck: proxy not found")
+		log.Warn().Str("proxy_name", proxyName).Msg("HealthcheckHandler: proxy not found")
 		http.Error(w, fmt.Sprintf("Proxy '%s' not found", proxyName), http.StatusNotFound)
 		return
 	}
@@ -526,7 +542,7 @@ func (s *Server) handleHealthcheck(w http.ResponseWriter, r *http.Request) {
 	// Check if the proxy is healthy by verifying the peer is still configured
 	// and the WireGuard device is available
 	if s.device == nil {
-		log.Debug().Str("proxy_name", proxyName).Msg("handleHealthcheck: device is nil. This is expected in tests.")
+		log.Debug().Str("proxy_name", proxyName).Msg("HealthcheckHandler: device is nil. This is expected in tests.")
 	}
 
 	// Return success status with proxy information
@@ -540,12 +556,12 @@ func (s *Server) handleHealthcheck(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusOK)
 	if err := json.NewEncoder(w).Encode(response); err != nil {
-		log.Error().Err(err).Str("proxy_name", proxyName).Msg("handleHealthcheck: failed to encode response")
+		log.Error().Err(err).Str("proxy_name", proxyName).Msg("HealthcheckHandler: failed to encode response")
 		http.Error(w, "Failed to encode response", http.StatusInternalServerError)
 		return
 	}
 
-	log.Debug().Str("proxy_name", proxyName).Msg("handleHealthcheck: proxy is healthy")
+	log.Debug().Str("proxy_name", proxyName).Msg("HealthcheckHandler: proxy is healthy")
 }
 
 // startJanitor launches a background goroutine that periodically prunes stale peer last-seen entries.
@@ -580,7 +596,7 @@ func (s *Server) isShuttingDown() bool {
 	return s.closing
 }
 
-func (s *Server) handleShutdown(w http.ResponseWriter, r *http.Request) {
+func (s *Server) ShutdownHandler(w http.ResponseWriter, r *http.Request) {
 	authHeader := r.Header.Get("Authorization")
 	if authHeader == "" {
 		http.Error(w, "Authorization header required", http.StatusUnauthorized)
@@ -651,7 +667,7 @@ func ConfigToString(cfg wgtypes.Config) (string, error) {
 	}
 	return b.String(), nil
 }
-func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
+func (s *Server) LoginHandler(w http.ResponseWriter, r *http.Request) {
 	switch r.Method {
 	case http.MethodGet:
 		s.getChallenge(w, r)

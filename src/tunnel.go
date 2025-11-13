@@ -46,13 +46,18 @@ func Tunnel(serverIP string, localUrl *url.URL, resp *types.ConnectResponse, pri
 	// Log the assigned client address so tests and debugging can confirm we used the server-assigned IP.
 	log.Info().Str("client_ip", clientAddress.String()).Msg("Tunnel: using assigned client IP from server response")
 
+	host, _, err := net.SplitHostPort(serverIP)
+	if err != nil {
+		host = serverIP
+	}
+
 	// Create device config with the client's private key.
 	peerConf := fmt.Sprintf("private_key=%s\nreplace_peers=true\npublic_key=%s\nallowed_ip=%s\nendpoint=%s\npersistent_keepalive_interval=1",
 		hex.EncodeToString(privateKey[:]),
 		resp.ServerPublicKey,
 		"0.0.0.0/0",
 		// Use ServerWGPort (server WireGuard UDP listen port) as the endpoint port.
-		fmt.Sprintf("%s:%d", serverIP, resp.ServerWGPort),
+		fmt.Sprintf("%s:%d", host, resp.ServerWGPort),
 	)
 
 	// Create the userspace WireGuard device bound to the assigned client address.
@@ -82,7 +87,7 @@ func Tunnel(serverIP string, localUrl *url.URL, resp *types.ConnectResponse, pri
 	}
 
 	// 5. Start the proxy
-	if err := p.StartProxy(localUrl, remoteUrl, tunnelName, device, nil, nil); err != nil {
+	if err := p.StartProxy(localUrl, remoteUrl, tunnelName, device, nil, nil, remoteUrl.Hostname()); err != nil {
 		log.Fatal().Err(err).Msg("Failed to start proxy")
 	}
 

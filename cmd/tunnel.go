@@ -56,16 +56,17 @@ var tunnelCmd = &cobra.Command{
 		if err != nil {
 			log.Fatal().Err(err).Msg("Invalid remote URL")
 		}
-		remotePort, err := strconv.Atoi(remoteURL.Port())
-		if err != nil {
-			log.Fatal().Err(err).Msg("Invalid remote port")
+		remotePort := 0
+		switch strings.ToLower(remoteURL.Scheme) {
+		case "http":
+			remotePort = 80
+		case "https":
+			remotePort = 443
 		}
-		if remotePort == 0 {
-			switch strings.ToLower(remoteURL.Scheme) {
-			case "http":
-				remotePort = 80
-			case "https":
-				remotePort = 443
+		if remoteURL.Port() != "" {
+			remotePort, err = strconv.Atoi(remoteURL.Port())
+			if err != nil {
+				log.Fatal().Err(err).Msg("Invalid remote port")
 			}
 		}
 
@@ -105,11 +106,11 @@ var tunnelCmd = &cobra.Command{
 		var jwtMutex sync.Mutex
 
 		// Determine protocol and hostname to send to the control API.
-		proto := strings.ToLower(localURL.Scheme)
-		hostname := localURL.Hostname()
+		proto := strings.ToLower(remoteURL.Scheme)
+		hostname := remoteURL.Hostname()
 		// If localURL doesn't have a hostname (e.g., "tcp://10.0.0.1:1234"), fall back to remoteURL.
 		if hostname == "" {
-			log.Fatal().Str("url", localURL.String()).Msg("URL missing hostname")
+			log.Fatal().Str("url", remoteURL.String()).Msg("URL missing hostname")
 		}
 
 		// Generate a new private key.

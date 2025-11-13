@@ -14,7 +14,9 @@ import (
 )
 
 type ProxyManager struct {
-	proxies           map[string]io.Closer
+	proxies map[string]io.Closer
+	// bindIP constrains proxy listeners to a specific IP when set.
+	bindIP            string
 	hostToProxyName   map[string]string // New map to store host to proxyName mapping
 	proxyNameToHost   map[string]string // New map to store proxyName to host mapping
 	VHostProxyManager *VHostProxyManager
@@ -178,8 +180,37 @@ func (p *ProxyManager) Close(proxyName string) {
 	}
 }
 
-func (p *ProxyManager) StartProxy(srcURL *url.URL, dstURL *url.URL, proxyName string, device *wireguard.UserspaceDevice, certPEM, keyPEM []byte) error {
+func ensurePort(u *url.URL) error {
+	if u.Port() == "" {
+		switch u.Scheme {
+		case "http":
+			u.Host += ":80"
+		case "https":
+			u.Host += ":443"
+		default:
+			return fmt.Errorf("unsupported scheme for missing port: %s", u.String())
+		}
+	}
+	return nil
+}
+func rewriteHost(u *url.URL, host string) {
+	if host == "0.0.0.0" || host == "" {
+		return
+	}
+	u.Host = host + ":" + u.Port()
+}
+
+func (p *ProxyManager) StartProxy(srcURL *url.URL, dstURL *url.URL, proxyName string, device *wireguard.UserspaceDevice, certPEM, keyPEM []byte, bindIp string) error {
+	log.Info().Str("src", srcURL.String()).Str("dst", dstURL.String()).Str("proxy", proxyName).Msg("Proxy: starting proxy")
 	var err error
+	// Ensure ports are set in the URLs.
+	if ensurePort(srcURL) != nil {
+		return err
+	}
+	if ensurePort(dstURL) != nil {
+		return err
+	}
+	// Validate by checking for WireGuard.
 	if device == nil {
 		if strings.HasPrefix(dstURL.Host, "10.1") {
 			return fmt.Errorf("no wireguard device but destination %s can only be served on wireguard", dstURL.String())
@@ -188,36 +219,39 @@ func (p *ProxyManager) StartProxy(srcURL *url.URL, dstURL *url.URL, proxyName st
 			return fmt.Errorf("no wireguard device but source %s can only be served on wireguard", srcURL.String())
 		}
 	}
-	// remoteURL.Host is expected to include the desired bind IP (e.g. the assigned WG IP) and port.
+	// Validate by checking that no other proxies exist with this name
 	if _, ok := p.proxies[proxyName]; ok {
 		return fmt.Errorf("proxy %s already exists", proxyName)
 	}
 	if existingProxyName, ok := p.hostToProxyName[dstURL.Host]; ok {
 		return fmt.Errorf("proxy for host %s already exists (named %s)", dstURL.Host, existingProxyName)
 	}
-	if existingProxyName, ok := p.hostToProxyName[srcURL.Host]; ok {
-		return fmt.Errorf("proxy for host %s already exists (named %s)", srcURL.Host, existingProxyName)
-	}
+
 	proxyType := fmt.Sprintf("%s>%s", srcURL.Scheme, dstURL.Scheme)
 	switch proxyType {
 	case "tcp>tcp", "https>https", "http>tcp":
 		var ln net.Listener
 		var err error
-		if strings.HasPrefix(dstURL.Host, "10.1") {
+		// Enforce that the TCP listener host must be the same as bindIP.
+		rewriteHost(dstURL, bindIp)
+		// Create a listener on the validated host:port. If host is in the wireguard subnet and we
+		// have a device, listen via the device's NetStack; otherwise use the system net.Listen.
+		if strings.HasPrefix(dstURL.Host, "10.1.") {
 			tcpAddr, err := net.ResolveTCPAddr("tcp", dstURL.Host)
 			if err != nil {
 				return fmt.Errorf("resolve tcp address %s: %w", dstURL.Host, err)
 			}
+			if device == nil {
+				return fmt.Errorf("cannot listen on WireGuard host %s without wireguard device", dstURL.Host)
+			}
 			ln, err = device.NetStack.ListenTCP(tcpAddr)
 			log.Info().Str("proxy_type", proxyType).Str("src", srcURL.Host).Str("dst", dstURL.Host).Msg("Proxy: listening tcp on wireguard")
-			if err != nil {
-				return fmt.Errorf("ListenTCP error for %s: %w", dstURL.Host, err)
-			}
 		} else {
 			ln, err = net.Listen("tcp", dstURL.Host)
-			log.Info().Str("proxy_type", proxyType).Str("src", srcURL.Host).Str("dst", dstURL.Host).Msg("Proxy: listening tcp")
+			log.Info().Str("proxy_type", proxyType).Str("src", srcURL.String()).Str("dst", dstURL.String()).Msg("Proxy: listening tcp")
 		}
 		if err != nil {
+			log.Warn().Str("proxy_type", proxyType).Str("src", srcURL.String()).Str("dst", dstURL.String()).Err(err).Msg("Proxy: listen tcp failed")
 			return fmt.Errorf("listen tcp %s: %w", dstURL.Host, err)
 		}
 		go func() {
@@ -234,6 +268,8 @@ func (p *ProxyManager) StartProxy(srcURL *url.URL, dstURL *url.URL, proxyName st
 		p.hostToProxyName[dstURL.Host] = proxyName
 		p.proxyNameToHost[proxyName] = dstURL.Host
 	case "udp>udp":
+		// Enforce that the UDP listener host must be the same as bindIP.
+		rewriteHost(dstURL, bindIp)
 		// For UDP, bind explicitly to the provided host (which may be a WG IP).
 		addr, err := net.ResolveUDPAddr("udp", dstURL.Host)
 		if err != nil {
@@ -300,7 +336,7 @@ func (p *ProxyManager) StartProxy(srcURL *url.URL, dstURL *url.URL, proxyName st
 		p.proxies[proxyName] = l
 		p.hostToProxyName[dstURL.Host] = proxyName
 		p.proxyNameToHost[proxyName] = dstURL.Host
-	case "http>http":
+	case "tcp>http", "http>http":
 		split := strings.Split(dstURL.Host, ":")
 		port := 80
 		if len(split) > 1 {
@@ -309,15 +345,16 @@ func (p *ProxyManager) StartProxy(srcURL *url.URL, dstURL *url.URL, proxyName st
 				return fmt.Errorf("invalid port %s: %w", split[1], err)
 			}
 		}
-		proxy := p.VHostProxyManager.Proxy(port)
-		closer, err := proxy.AddHost(split[0], srcURL)
+		proxy := p.VHostProxyManager.Proxy(bindIp, port)
+		// forward the provided wireguard device so upstream dialing can use its NetStack for WG IPs.
+		closer, err := proxy.AddHost(split[0], srcURL, device)
 		if err != nil {
 			return err
 		}
 		p.proxies[proxyName] = closer
 		p.hostToProxyName[dstURL.Host] = proxyName
 		p.proxyNameToHost[proxyName] = dstURL.Host
-	case "http>https":
+	case "tcp>https", "http>https":
 		split := strings.Split(dstURL.Host, ":")
 		port := 443
 		if len(split) > 1 {
@@ -326,13 +363,10 @@ func (p *ProxyManager) StartProxy(srcURL *url.URL, dstURL *url.URL, proxyName st
 				return fmt.Errorf("invalid port %s: %w", split[1], err)
 			}
 		}
-		proxy := p.VHostProxyManager.Proxy(port)
+		proxy := p.VHostProxyManager.Proxy(bindIp, port)
 		// If certPEM/keyPEM not provided, configure automatic issuance via ACME HTTP-01.
 		if len(certPEM) == 0 || len(keyPEM) == 0 {
-			// Ensure port 80 proxy is running to serve ACME challenges.
-			httpProxy := p.VHostProxyManager.Proxy(p.VHostProxyManager.ACMEPort())
-			go httpProxy.Serve()
-			closer, err := proxy.AddHostWithACME(split[0], srcURL)
+			closer, err := proxy.AddHostWithACME(split[0], srcURL, device, bindIp)
 			if err != nil {
 				return err
 			}
@@ -340,7 +374,7 @@ func (p *ProxyManager) StartProxy(srcURL *url.URL, dstURL *url.URL, proxyName st
 			p.hostToProxyName[dstURL.Host] = proxyName
 			p.proxyNameToHost[proxyName] = dstURL.Host
 		} else {
-			closer, err := proxy.AddHostWithTLS(split[0], srcURL, string(certPEM), string(keyPEM))
+			closer, err := proxy.AddHostWithTLS(split[0], srcURL, device, string(certPEM), string(keyPEM))
 			if err != nil {
 				return err
 			}

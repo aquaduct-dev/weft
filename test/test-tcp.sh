@@ -1,165 +1,169 @@
 #!/usr/bin/env bash
 # test/test-tcp.sh
 # Purpose: end-to-end script that uses the compiled weft CLI to:
-#  1) start a simple python TCP server
-#  2) start the weft server
+#  1) start a simple python http.server on a free port
+#  2) start the weft server on a free port
 #  3) start a weft tunnel that exposes the python server over the weft server
-#  4) verify TCP access works over the tunnel
+#  4) verify HTTP access works over the tunnel
 #
 # Notes:
-# - Assumes the weft CLI binary is built and available as `./weft` by default.
+# - Assumes the weft CLI binary is built and available as "./weft" by default.
 #   You can override with WEFT_BIN environment variable.
-# - Uses ports that are unlikely to conflict with system services.
+# - Uses dynamic ports to avoid conflicts.
 # - Emits verbose logging to help debug failures.
 #
 # Exit codes:
-#  0 = success (tcp reached over tunnel)
+#  0 = success (http request successful over tunnel)
 #  non-zero = failure
 
-set -euo pipefail
+set -uo pipefail
 IFS=$'\n\t'
 
-# Configuration
-WEFT_BIN=${WEFT_BIN:-./weft}   # path to compiled binary (allow override)
-PY_PORT=18080                  # local python server port
-REMOTE_PORT=29090              # remote port the tunnel will request on server (public facing)
-SERVER_BIND_PORT=9092          # server's wireguard/listen port used by server CLI
+# --- Configuration and Setup ---
+WEFT_BIN=${WEFT_BIN:-./weft}
 LOGDIR=$(mktemp -d /tmp/weft-test-XXXX)
-PY_LOG="$LOGDIR/python.log"
-SERVER_LOG="$LOGDIR/server.log"
-TUNNEL_LOG="$LOGDIR/tunnel.log"
 SHUTDOWN_WAIT=1
+RESULT=1 # Default to failure
 
-trap 'echo "Test interrupted, cleaning up..."; pkill -P $$ || true; sleep 1; rm -rf "$LOGDIR"' EXIT
+# Keep track of PIDs to kill them individually.
+pids=()
+
+# Cleanup function to be called on exit.
+cleanup() {
+    echo "Cleaning up..."
+    # Kill all tracked processes in reverse order
+    for pid in "${pids[@]}"; do
+        kill "$pid" >/dev/null 2>&1 || true
+    done
+    
+    # Decide whether to keep logs.
+    if [[ "$RESULT" -ne 0 ]]; then
+        echo "Test failed. Logs retained at $LOGDIR"
+    else
+        rm -rf "$LOGDIR"
+        echo "Test passed."
+    fi
+}
+
+trap cleanup EXIT
 
 echo "Logs will be written to $LOGDIR"
 
-# 1) Start a simple Python TCP echo server that replies with a fixed message.
-cat > "$LOGDIR/py_server.py" <<'PY'
-import socket
-import sys
+# --- Port and Process Management ---
 
-HOST = "127.0.0.1"
-PORT = int(sys.argv[1])
+# Find a free TCP port.
+find_free_port() {
+    python3 -c 'import socket; s=socket.socket(); s.bind(("", 0)); print(s.getsockname()[1]); s.close()'
+}
 
-with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
-    s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-    s.bind((HOST, PORT))
-    s.listen(1)
-    print(f"python server listening on {HOST}:{PORT}", flush=True)
-    conn, addr = s.accept()
-    with conn:
-        print("connected by", addr, flush=True)
-        data = conn.recv(1024)
-        if not data:
-            sys.exit(0)
-        conn.sendall(b"hello-from-py-server")
-PY
+# Wait for a port to be open.
+wait_for_port() {
+    local port=$1
+    local host=${2:-127.0.0.1}
+    local timeout=${3:-10}
+    echo "Waiting for $host:$port to be open..."
+    for i in $(seq 1 "$timeout"); do
+        if nc -z "$host" "$port" >/dev/null 2>&1;
+        then
+            echo "$host:$port is open."
+            return 0
+        fi
+        sleep 0.5
+    done
+    echo "Timed out waiting for $host:$port."
+    return 1
+}
 
-echo "Starting python TCP server on port $PY_PORT..."
-python3 "$LOGDIR/py_server.py" "$PY_PORT" >"$PY_LOG" 2>&1 &
-PY_PID=$!
-sleep 0.2
+# --- Test Steps ---
 
-# 2) Start the weft server (uses the same binary as CLI subcommand `server`)
-echo "Starting weft server..."
-"$WEFT_BIN" server --verbose --port "$SERVER_BIND_PORT" &>"$SERVER_LOG" &
-SERVER_PID=$!
+# 1) Start Python HTTP Server
+PY_PORT=$(find_free_port)
+PY_LOG="$LOGDIR/python.log"
+# Create a dummy index.html for the http.server to serve
+echo "hello-from-http-server" > "$LOGDIR/index.html"
 
-# Wait for the server to print the connection secret (with timeout)
-TIMEOUT=5
-SECS=0
-CONN_SECRET=""
-while [ $SECS -lt $TIMEOUT ]; do
-  if grep -q "Connection Secret" "$SERVER_LOG"; then
-    CONN_SECRET=$(grep -m1 "Connection Secret" "$SERVER_LOG" | awk -F': ' '{print $2}' || true)
-    break
-  fi
-  sleep 1
-  SECS=$((SECS+1))
+echo "Starting python http.server on port $PY_PORT..."
+python3 -m http.server "$PY_PORT" --directory "$LOGDIR" >"$PY_LOG" 2>&1 &
+pids+=($!)
+wait_for_port "$PY_PORT"
+echo "Python http.server is ready."
+
+# 2) Start Weft Server
+SERVER_BIND_PORT=$(find_free_port)
+SERVER_LOG="$LOGDIR/server.log"
+SECRET_FILE="$LOGDIR/secret"
+
+echo "Starting weft server on port $SERVER_BIND_PORT..."
+"$WEFT_BIN" server --verbose --port "$SERVER_BIND_PORT" --secret-file "$SECRET_FILE" >"$SERVER_LOG" 2>&1 &
+pids+=($!)
+
+# Wait for the secret file to be created
+for i in $(seq 1 10); do
+    if [ -f "$SECRET_FILE" ]; then
+        break
+    fi
+    sleep 0.5
 done
 
-if [ -z "$CONN_SECRET" ]; then
-  echo "Failed to find connection secret in server log ($SERVER_LOG):"
-  sed -n '1,200p' "$SERVER_LOG"
-  kill "$SERVER_PID" || true
-  kill "$PY_PID" || true
-  exit 2
+if [ ! -f "$SECRET_FILE" ]; then
+    echo "Failed to find secret file."
+    cat "$SERVER_LOG"
+    exit 2
 fi
+
+CONN_SECRET=$(cat "$SECRET_FILE" | tr -d '\n')
 echo "Found connection secret: $CONN_SECRET"
 
-# 3) Start the weft tunnel connecting to the local python server and requesting remote port REMOTE_PORT
-# The tunnel expects weft://{connection-secret}@{server-ip}
-# Since server is local in tests, we use 127.0.0.1 as server-ip
-# The server control API is addressed on port 9092 per README; point the weft URL at that control port so the tunnel POSTs to /connect.
-WEFT_URL="weft://:${CONN_SECRET}@127.0.0.1:9092"
-LOCAL_URL="tcp://127.0.0.1:${PY_PORT}"
-REMOTE_URL="tcp://127.0.0.1:${REMOTE_PORT}"
+# 3) Start Weft Tunnel
+REMOTE_PORT=$(find_free_port)
+TUNNEL_LOG="$LOGDIR/tunnel.log"
+WEFT_URL="weft://${CONN_SECRET}@127.0.0.1:${SERVER_BIND_PORT}"
+LOCAL_URL="http://127.0.0.1:${PY_PORT}"
+REMOTE_URL="http://127.0.0.1:${REMOTE_PORT}"
 
-# Wait for server control port to become ready before starting tunnel (avoid race)
-echo "Waiting for server control port 9092 to be ready..."
-READY=0
-for i in $(seq 1 10); do
-  if nc -z 127.0.0.1 9092 >/dev/null 2>&1; then
-    READY=1
-    break
-  fi
-  sleep 0.5
-done
-if [ "$READY" -ne 1 ]; then
-  echo "Server control port 9092 did not become ready in time; dumping server log:"
-  sed -n '1,200p' "$SERVER_LOG"
-  kill "$SERVER_PID" || true
-  kill "$PY_PID" || true
-  exit 4
-fi
+wait_for_port "$SERVER_BIND_PORT"
 
 echo "Starting weft tunnel to expose $LOCAL_URL at remote $REMOTE_URL..."
 "$WEFT_BIN" tunnel --verbose "$WEFT_URL" "$LOCAL_URL" "$REMOTE_URL" >"$TUNNEL_LOG" 2>&1 &
-TUNNEL_PID=$!
+pids+=($!)
 
 # Give processes time to settle
-sleep 1
+sleep 2
 
-# 4) Verify TCP can be accessed over the tunnel.
-# The server, on successful connect, will listen on REMOTE_PORT on localhost (see server.Serve listening behavior).
-echo "Attempting to connect to tunneled service at 127.0.0.1:$REMOTE_PORT..."
+# 4) Verify HTTP Access
+wait_for_port "$REMOTE_PORT"
+
+echo "Attempting to connect to tunneled service at $REMOTE_URL..."
 set +e
-NC_OUTPUT=$(printf "ping\n" | nc -w 3 127.0.0.1 "$REMOTE_PORT" 2>&1) || NC_EXIT=$?
-NC_EXIT=${NC_EXIT:-0}
+CURL_OUTPUT=""
+for i in $(seq 1 5); do
+    CURL_OUTPUT=$(curl -s "http://127.0.0.1:$REMOTE_PORT")
+    CURL_EXIT=$?
+    if echo "$CURL_OUTPUT" | grep -q "hello-from-http-server"; then
+        break
+    fi
+    sleep 1
+done
 set -e
 
-echo "nc exit: $NC_EXIT"
-echo "nc output:"
-echo "$NC_OUTPUT"
+echo "curl exit: $CURL_EXIT"
+echo "curl output: $CURL_OUTPUT"
 
-if echo "$NC_OUTPUT" | grep -q "hello-from-py-server"; then
-  echo "SUCCESS: received expected response from python server over tunnel."
-  RESULT=0
+if echo "$CURL_OUTPUT" | grep -q "hello-from-http-server"; then
+    echo "SUCCESS: received expected response from python server over tunnel."
+    RESULT=0
 else
-  echo "FAIL: did not receive expected response over tunnel."
-  echo "----- server log -----"
-  sed -n '1,200p' "$SERVER_LOG"
-  echo "----- tunnel log -----"
-  sed -n '1,200p' "$TUNNEL_LOG"
-  echo "----- python log -----"
-  sed -n '1,200p' "$PY_LOG"
-  RESULT=3
-fi
-
-# Cleanup
-echo "Shutting down processes..."
-kill "$TUNNEL_PID" >/dev/null 2>&1 || true
-kill "$SERVER_PID" >/dev/null 2>&1 || true
-kill "$PY_PID" >/dev/null 2>&1 || true
-sleep "$SHUTDOWN_WAIT"
-
-# Preserve logs on failure, remove on success
-if [ "$RESULT" -eq 0 ]; then
-  rm -rf "$LOGDIR"
-  echo "Test passed."
-else
-  echo "Test failed. Logs retained at $LOGDIR"
+    echo "FAIL: did not receive expected response over tunnel."
+    echo "-----"
+    echo "server log -----"
+    cat "$SERVER_LOG"
+    echo "-----"
+    echo "tunnel log -----"
+    cat "$TUNNEL_LOG"
+    echo "-----"
+    echo "python log -----"
+    cat "$PY_LOG"
+    RESULT=3
 fi
 
 exit "$RESULT"

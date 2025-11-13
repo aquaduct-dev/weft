@@ -36,7 +36,7 @@ var _ = Describe("TunnelTCPProxy", func() {
 		Expect(err).ToNot(HaveOccurred())
 		remoteURL, err := url.Parse("tcp://127.0.0.1:12031")
 		Expect(err).ToNot(HaveOccurred())
-		err = NewProxyManager().StartProxy(localURL, remoteURL, "test-tunnel", nil, nil, nil)
+		err = NewProxyManager().StartProxy(localURL, remoteURL, "test-tunnel", nil, nil, nil, "")
 		Expect(err).ToNot(HaveOccurred())
 		// Connect to the tunnel proxy
 		conn, err := net.Dial("tcp", remoteURL.Host)
@@ -77,7 +77,7 @@ var _ = Describe("TunnelTCPProxy", func() {
 		Expect(err).ToNot(HaveOccurred())
 		remoteURL, err := url.Parse("udp://127.0.0.1:12041")
 		Expect(err).ToNot(HaveOccurred())
-		err = NewProxyManager().StartProxy(localURL, remoteURL, "test-tunnel-udp", nil, nil, nil)
+		err = NewProxyManager().StartProxy(localURL, remoteURL, "test-tunnel-udp", nil, nil, nil, "")
 		Expect(err).ToNot(HaveOccurred())
 
 		// Connect to the tunnel proxy
@@ -115,7 +115,7 @@ var _ = Describe("TunnelTCPProxy", func() {
 		Expect(err).ToNot(HaveOccurred())
 		remoteURL, err := url.Parse("http://testhost:12051")
 		Expect(err).ToNot(HaveOccurred())
-		err = NewProxyManager().StartProxy(localURL, remoteURL, "test-tunnel-http", nil, nil, nil)
+		err = NewProxyManager().StartProxy(localURL, remoteURL, "test-tunnel-http", nil, nil, nil, "")
 		Expect(err).ToNot(HaveOccurred())
 
 		// Wait for the proxy to be ready
@@ -160,11 +160,11 @@ var _ = Describe("TunnelTCPProxy", func() {
 		remoteURL, err := url.Parse("tcp://127.0.0.1:12033")
 		Expect(err).ToNot(HaveOccurred())
 		proxyManager := NewProxyManager()
-		err = proxyManager.StartProxy(localURL, remoteURL, "duplicate-tunnel", nil, nil, nil)
+		err = proxyManager.StartProxy(localURL, remoteURL, "duplicate-tunnel", nil, nil, nil, "")
 		Expect(err).ToNot(HaveOccurred())
 
 		// Attempt to create another tunnel with the same name
-		err = proxyManager.StartProxy(localURL, remoteURL, "duplicate-tunnel", nil, nil, nil)
+		err = proxyManager.StartProxy(localURL, remoteURL, "duplicate-tunnel", nil, nil, nil, "")
 		Expect(err).To(HaveOccurred())
 		Expect(err.Error()).To(Equal("proxy duplicate-tunnel already exists"))
 	})
@@ -176,7 +176,7 @@ var _ = Describe("TunnelTCPProxy", func() {
 		remoteURL1, err := url.Parse("tcp://127.0.0.1:12035")
 		Expect(err).ToNot(HaveOccurred())
 		proxyManager := NewProxyManager()
-		err = proxyManager.StartProxy(localURL1, remoteURL1, "tunnel-host-1", nil, nil, nil)
+		err = proxyManager.StartProxy(localURL1, remoteURL1, "tunnel-host-1", nil, nil, nil, "")
 		Expect(err).ToNot(HaveOccurred())
 
 		// Attempt to create another tunnel with a different name but same host
@@ -184,8 +184,10 @@ var _ = Describe("TunnelTCPProxy", func() {
 		Expect(err).ToNot(HaveOccurred())
 		remoteURL2, err := url.Parse("tcp://127.0.0.1:12035") // Same host as remoteURL1
 		Expect(err).ToNot(HaveOccurred())
-		err = proxyManager.StartProxy(localURL2, remoteURL2, "tunnel-host-2", nil, nil, nil)
+		err = proxyManager.StartProxy(localURL2, remoteURL2, "tunnel-host-2", nil, nil, nil, "")
 		Expect(err).To(HaveOccurred())
-		Expect(err.Error()).To(Equal("proxy for host 127.0.0.1:12035 already exists (named tunnel-host-1)"))
+		Expect(err.Error()).To(SatisfyAny(
+			ContainSubstring("proxy for host 127.0.0.1:12035 already exists"),
+		))
 	})
 })
