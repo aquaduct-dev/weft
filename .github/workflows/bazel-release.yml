@@ -1,0 +1,95 @@
+name: Bazel Build & Release
+
+on:
+  push:
+    branches:
+      - '**'
+
+jobs:
+  build-and-release:
+    name: Build (amd64 & arm64) and publish release
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write  # needed to create releases and upload artifacts
+
+    env:
+      BAZEL_BUILD_TARGET: //:weft
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up Java (required by Bazel)
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Install Bazelisk
+        run: |
+          sudo curl -L -o /usr/local/bin/bazelisk https://github.com/bazelbuild/bazelisk/releases/download/v1.13.0/bazelisk-linux-amd64
+          sudo chmod +x /usr/local/bin/bazelisk
+          bazelisk --version
+
+      - name: Set up Go
+        uses: actions/setup-go@v4
+        with:
+          go-version: '1.24'  # match your project's Go version
+
+      - name: Configure output directory
+        run: |
+          mkdir -p release-artifacts
+
+      - name: Build amd64 binary
+        env:
+          GOARCH: amd64
+          GOOS: linux
+        run: |
+          # Use bazelisk to ensure consistent Bazel version; build the Go binary and copy the result.
+          bazelisk build --platforms=@io_bazel_rules_go//platform:linux_amd64 "$BAZEL_BUILD_TARGET"
+          mkdir -p release-artifacts
+          # Bazel outputs are under bazel-bin; find the binary (go_binary produces an executable)
+          cp "$(bazelisk info bazel-bin)/weft" release-artifacts/weft-linux-amd64 || true
+          # If named differently, attempt to copy any matching binary
+          if [ ! -f release-artifacts/weft-linux-amd64 ]; then
+            find "$(bazelisk info bazel-bin)" -type f -name weft -exec cp {} release-artifacts/weft-linux-amd64 \;
+          fi
+          ls -l release-artifacts || true
+
+      - name: Build arm64 binary
+        env:
+          GOARCH: arm64
+          GOOS: linux
+        run: |
+          bazelisk build --platforms=@io_bazel_rules_go//platform:linux_arm64 "$BAZEL_BUILD_TARGET"
+          cp "$(bazelisk info bazel-bin)/weft" release-artifacts/weft-linux-arm64 || true
+          if [ ! -f release-artifacts/weft-linux-arm64 ]; then
+            find "$(bazelisk info bazel-bin)" -type f -name weft -exec cp {} release-artifacts/weft-linux-arm64 \;
+          fi
+          ls -l release-artifacts || true
+
+      - name: Make artifacts executable
+        run: |
+          chmod +x release-artifacts/* || true
+          file release-artifacts/* || true
+
+      - name: Create release & upload artifacts
+        id: create_release
+        uses: softprops/action-gh-release@v1
+        with:
+          # Tag the release using commit SHA so it's created for every commit
+          tag_name: ${{ github.sha }}
+          name: Release ${{ github.sha }}
+          body: Release for commit ${{ github.sha }}
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Upload binaries to release
+        uses: softprops/action-gh-release@v1
+        with:
+          tag_name: ${{ steps.create_release.outputs.tag_name }}
+          files: release-artifacts/*
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
