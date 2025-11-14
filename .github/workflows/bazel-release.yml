@@ -42,6 +42,12 @@ jobs:
         run: |
           mkdir -p release-artifacts
 
+      - name: Mount bazel cache
+        uses: actions/cache@v3
+        with:
+          path: "/home/runner/.cache/bazel"
+          key: bazel
+
       - name: Build amd64 binary
         env:
           GOARCH: amd64
