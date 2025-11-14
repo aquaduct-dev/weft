@@ -1,5 +1,6 @@
 load("@gazelle//:def.bzl", "gazelle", "gazelle_test")
-load("@io_bazel_rules_go//go:def.bzl", "go_binary", "go_library")
+load("@rules_go//go:def.bzl", "go_binary", "go_library")
+load("@rules_pkg//pkg:pkg.bzl", _pkg_deb = "pkg_deb", _pkg_tar = "pkg_tar")
 
 # gazelle:prefix aquaduct.dev/weft
 gazelle(name = "gazelle")

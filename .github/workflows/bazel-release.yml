@@ -48,7 +48,7 @@ jobs:
           GOOS: linux
         run: |
           # Use bazelisk to ensure consistent Bazel version; build the Go binary and copy the result.
-          bazelisk build --platforms=@io_bazel_rules_go//platform:linux_amd64 "$BAZEL_BUILD_TARGET"
+          bazelisk build --platforms=@rules_go//platform:linux_amd64 "$BAZEL_BUILD_TARGET"
           mkdir -p release-artifacts
           # Bazel outputs are under bazel-bin; find the binary (go_binary produces an executable)
           cp "$(bazelisk info bazel-bin)/weft" release-artifacts/weft-linux-amd64 || true
@@ -63,7 +63,7 @@ jobs:
           GOARCH: arm64
           GOOS: linux
         run: |
-          bazelisk build --platforms=@io_bazel_rules_go//platform:linux_arm64 "$BAZEL_BUILD_TARGET"
+          bazelisk build --platforms=@rules_go//platform:linux_arm64 "$BAZEL_BUILD_TARGET"
           cp "$(bazelisk info bazel-bin)/weft" release-artifacts/weft-linux-arm64 || true
           if [ ! -f release-artifacts/weft-linux-arm64 ]; then
             find "$(bazelisk info bazel-bin)" -type f -name weft -exec cp {} release-artifacts/weft-linux-arm64 \;
