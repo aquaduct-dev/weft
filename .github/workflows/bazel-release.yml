@@ -44,7 +44,6 @@ jobs:
           key: bazel
       
       - name: Create Tag
-        uses: actions/checkout@v2
         run: |
             git config --local user.email "action@aquaduct.dev"
             git config --local user.name "Aquaduct System Action Daemon"
