@@ -62,7 +62,7 @@ jobs:
           if [ ! -f release-artifacts/weft-linux-amd64 ]; then
             find "$(bazelisk info bazel-bin)" -type f -name weft -exec cp {} release-artifacts/weft-linux-amd64 \;
           fi
-          ls -l release-artifacts
+          ls -lh release-artifacts
 
       - name: Build arm64 binary
         env:
@@ -74,7 +74,7 @@ jobs:
           if [ ! -f release-artifacts/weft-linux-arm64 ]; then
             find "$(bazelisk info bazel-bin)" -type f -name weft -exec cp {} release-artifacts/weft-linux-arm64 \;
           fi
-          ls -l release-artifacts 
+          ls -lh release-artifacts 
 
       - name: Make artifacts executable
         run: |
@@ -86,7 +86,7 @@ jobs:
         uses: softprops/action-gh-release@v1
         with:
           # Tag the release using commit SHA so it's created for every commit
-          tag_name: ${{ github.sha }}
+          tag_name: ${{ github.run_number }}
           name: Release ${{ github.sha }}
           body: Release for commit ${{ github.sha }}
         env:
