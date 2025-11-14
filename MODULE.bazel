@@ -37,8 +37,8 @@ use_repo(
     "com_github_onsi_gomega",
     "com_github_rs_zerolog",
     "com_github_spf13_cobra",
-    "org_golang_x_crypto",
-    "com_zx2c4_golang_wireguard_wgctrl",
     "com_zx2c4_golang_wireguard",
-    "dev_gvisor_gvisor"
+    "com_zx2c4_golang_wireguard_wgctrl",
+    "dev_gvisor_gvisor",
+    "org_golang_x_crypto",
 )
