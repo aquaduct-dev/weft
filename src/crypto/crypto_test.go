@@ -2,6 +2,7 @@ package crypto_test
 
 import (
 	"bytes"
+	"testing"
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
@@ -9,9 +10,11 @@ import (
 	"aquaduct.dev/weft/src/crypto"
 )
 
-// This file intentionally provides only Ginkgo specs. The Ginkgo entrypoint
-// TestCryptoSuite is defined in crypto_ginkgo_test.go to avoid duplicate
-// RunSpecs calls.
+// Ginkgo entrypoint for the crypto suite.
+func TestCryptoSuite(t *testing.T) {
+	RegisterFailHandler(Fail)
+	RunSpecs(t, "Crypto Suite")
+}
 
 var _ = Describe("Encrypt/Decrypt", func() {
 	It("round-trips for several inputs", func() {
