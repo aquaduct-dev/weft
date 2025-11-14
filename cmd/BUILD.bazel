@@ -1,0 +1,23 @@
+load("@io_bazel_rules_go//go:def.bzl", "go_library")
+
+go_library(
+    name = "cmd",
+    srcs = [
+        "auth.go",
+        "proxy.go",
+        "root.go",
+        "server.go",
+        "tunnel.go",
+    ],
+    importpath = "aquaduct.dev/weft/cmd",
+    visibility = ["//visibility:public"],
+    deps = [
+        "//src",
+        "//types",
+        "//wireguard",
+        "@com_github_golang_jwt_jwt_v4//:go_default_library",
+        "@com_github_rs_zerolog//:go_default_library",
+        "@com_github_rs_zerolog//log:go_default_library",
+        "@com_github_spf13_cobra//:go_default_library",
+    ],
+)

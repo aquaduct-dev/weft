@@ -3,3 +3,6 @@ weft
 .gemini/settings.json
 GEMINI.md
 .roo/mcp.json
+
+# Bazel generated directories
+bazel-*

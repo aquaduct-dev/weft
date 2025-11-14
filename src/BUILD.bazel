@@ -1,0 +1,39 @@
+load("@io_bazel_rules_go//go:def.bzl", "go_library", "go_test")
+
+go_library(
+    name = "src",
+    srcs = [
+        "acme.go",
+        "crypto.go",
+        "logging.go",
+        "proxy.go",
+        "server.go",
+        "tunnel.go",
+        "vhost.go",
+    ],
+    importpath = "aquaduct.dev/weft/src",
+    visibility = ["//visibility:public"],
+    deps = [
+        "//types",
+        "//wireguard",
+        "@com_github_golang_jwt_jwt_v4//:go_default_library",
+        "@com_github_rs_zerolog//:go_default_library",
+        "@com_github_rs_zerolog//log:go_default_library",
+        "@com_zx2c4_golang_wireguard_wgctrl//wgtypes:go_default_library",
+        "@org_golang_x_crypto//acme/autocert:go_default_library",
+    ],
+)
+
+go_test(
+    name = "src_test",
+    srcs = [
+        "proxy_suite_test.go",
+        "proxy_test.go",
+        "vhost_test.go",
+    ],
+    embed = [":src"],
+    deps = [
+        "@com_github_onsi_ginkgo_v2//:go_default_library",
+        "@com_github_onsi_gomega//:go_default_library",
+    ],
+)
