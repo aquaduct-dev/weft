@@ -87,7 +87,7 @@ jobs:
         uses: softprops/action-gh-release@v1
         with:
           # Tag the release using commit SHA so it's created for every commit
-          tag_name: ${{ github.run_number }}
+          tag_name: v${{ github.run_number }}
           name: Release ${{ github.sha }}
           body: Release for commit ${{ github.sha }}
         env:
