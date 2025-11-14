@@ -6,3 +6,4 @@ GEMINI.md
 
 # Bazel generated directories
 bazel-*
+*.test
