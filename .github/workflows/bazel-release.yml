@@ -33,11 +33,6 @@ jobs:
           sudo chmod +x /usr/local/bin/bazelisk
           bazelisk --version
 
-      - name: Set up Go
-        uses: actions/setup-go@v4
-        with:
-          go-version: '1.24'  # match your project's Go version
-
       - name: Configure output directory
         run: |
           mkdir -p release-artifacts
