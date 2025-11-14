@@ -88,7 +88,7 @@ jobs:
         with:
           # Tag the release using commit SHA so it's created for every commit
           tag_name: v${{ github.run_number }}
-          name: Release ${{ github.sha }}
+          name: Release v${{ github.run_number }}
           body: Release for commit ${{ github.sha }}
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
