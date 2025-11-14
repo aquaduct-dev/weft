@@ -37,11 +37,11 @@ jobs:
         run: |
           mkdir -p release-artifacts
 
-      - name: Mount bazel cache
+      - name: Mount bazel cache (amd64)
         uses: actions/cache@v3
         with:
           path: "/home/runner/.cache/bazel"
-          key: bazel
+          key: bazel-amd64
       
       - name: Create Tag
         run: |
@@ -68,6 +68,11 @@ jobs:
           fi
           ls -lh release-artifacts
 
+      - name: Mount bazel cache (arm64)
+        uses: actions/cache@v3
+        with:
+          path: "/home/runner/.cache/bazel"
+          key: bazel-arm64
       - name: Build arm64 binary
         run: |
           bazelisk build --platforms=@rules_go//go/toolchain:linux_arm64 "$BAZEL_BUILD_TARGET"
