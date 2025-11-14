@@ -121,6 +121,27 @@ var tunnelCmd = &cobra.Command{
 			log.Fatal().Err(err).Msg("Failed to generate private key")
 		}
 
+		// Read TLS cert/key flags (test-only) and load them into memory if provided.
+		tlsCertPath, _ := command.Flags().GetString("tls-cert")
+		tlsKeyPath, _ := command.Flags().GetString("tls-key")
+		var tlsCertPEM []byte
+		var tlsKeyPEM []byte
+		if tlsCertPath != "" || tlsKeyPath != "" {
+			if tlsCertPath == "" || tlsKeyPath == "" {
+				log.Fatal().Msg("both --tls-cert and --tls-key must be provided together")
+			}
+			certBytes, err := os.ReadFile(tlsCertPath)
+			if err != nil {
+				log.Fatal().Err(err).Msg("failed to read tls-cert file")
+			}
+			keyBytes, err := os.ReadFile(tlsKeyPath)
+			if err != nil {
+				log.Fatal().Err(err).Msg("failed to read tls-key file")
+			}
+			tlsCertPEM = certBytes
+			tlsKeyPEM = keyBytes
+		}
+
 		// Build the ConnectRequest that will be sent to the server.
 		connectReq := types.ConnectRequest{
 			ClientPublicKey: privateKey.PublicKey().String(),
@@ -130,13 +151,18 @@ var tunnelCmd = &cobra.Command{
 			Upstream:        localURL.String(),
 			TunnelName:      tunnelNameFlag,
 		}
+		// If the user supplied TLS cert/key via flags (test only), include them in the
+		// connect request so the server will configure the vhost with the provided certs
+		// instead of attempting ACME issuance.
+		if len(tlsCertPEM) > 0 && len(tlsKeyPEM) > 0 {
+			connectReq.CertificatePEM = string(tlsCertPEM)
+			connectReq.PrivateKeyPEM = string(tlsKeyPEM)
+		}
 
 		reqBody, err := json.Marshal(connectReq)
 		if err != nil {
 			log.Fatal().Err(err).Msg("Failed to marshal connect request")
 		}
-		// Log the exact JSON payload we will send to the control API to aid debugging.
-		log.Debug().RawJSON("payload", reqBody).Msg("Connect request payload")
 
 		connectURL := fmt.Sprintf("http://%s/connect", connectHost)
 		log.Info().Str("url", connectURL).Msg("Posting connect request")
@@ -174,7 +200,10 @@ var tunnelCmd = &cobra.Command{
 
 		// 4. Create tunnel
 		pm := proxy.NewProxyManager()
-		device, err := tunnel.Tunnel(serverIP, localURL, &connectResp, privateKey, pm, tunnelNameFlag)
+
+		// Pass any already-loaded tlsCertPEM/tlsKeyPEM (read above) into the tunnel implementation
+		// so the remote proxy can present the provided certificate instead of using ACME.
+		_, err = tunnel.Tunnel(serverIP, localURL, &connectResp, privateKey, pm, tunnelNameFlag, tlsCertPEM, tlsKeyPEM)
 		if err != nil {
 			log.Fatal().Err(err).Msg("Failed to create tunnel")
 		}
@@ -270,7 +299,6 @@ var tunnelCmd = &cobra.Command{
 		}()
 		for {
 			time.Sleep(time.Minute)
-			device.Device.BatchSize()
 		}
 	},
 }
@@ -278,5 +306,9 @@ var tunnelCmd = &cobra.Command{
 func init() {
 	// Register the tunnel-name flag so users can set a logical name for the tunnel.
 	tunnelCmd.Flags().String("tunnel-name", "", "Logical name for the tunnel (defaults to sha256(local|remote) if not set)")
+	// TLS certificate and key to present on the remote endpoint. These are intended
+	// for tests that want to present a custom certificate without relying on ACME.
+	tunnelCmd.Flags().String("tls-cert", "", "Path to TLS certificate file to present on remote HTTPS endpoint (test-only)")
+	tunnelCmd.Flags().String("tls-key", "", "Path to TLS private key file to present on remote HTTPS endpoint (test-only)")
 	rootCmd.AddCommand(tunnelCmd)
 }

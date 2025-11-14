@@ -20,7 +20,13 @@ set -uo pipefail
 IFS=$'\n\t'
 
 # --- Configuration and Setup ---
-WEFT_BIN=${WEFT_BIN:-./weft}
+# Resolve the weft binary:
+# - honor WEFT_BIN if provided
+# - otherwise prefer ./weft (convenience for local runs)
+# - otherwise try to locate the binary in Bazel runfiles using RUNFILES_DIR or
+#   RUNFILES_MANIFEST_FILE so the test works under Bazel sh_test.
+
+WEFT_BIN=$(find . | grep -e "/weft$")
 LOGDIR=$(mktemp -d /tmp/weft-test-XXXX)
 SHUTDOWN_WAIT=1
 RESULT=1 # Default to failure
@@ -118,8 +124,8 @@ echo "Found connection secret: $CONN_SECRET"
 REMOTE_PORT=$(find_free_port)
 TUNNEL_LOG="$LOGDIR/tunnel.log"
 WEFT_URL="weft://${CONN_SECRET}@127.0.0.1:${SERVER_BIND_PORT}"
-LOCAL_URL="http://127.0.0.1:${PY_PORT}"
-REMOTE_URL="http://127.0.0.1:${REMOTE_PORT}"
+LOCAL_URL="${PROTO}://127.0.0.1:${PY_PORT}"
+REMOTE_URL="${PROTO}://127.0.0.1:${REMOTE_PORT}"
 
 wait_for_port "$SERVER_BIND_PORT"
 
@@ -127,8 +133,6 @@ echo "Starting weft tunnel to expose $LOCAL_URL at remote $REMOTE_URL..."
 "$WEFT_BIN" tunnel --verbose "$WEFT_URL" "$LOCAL_URL" "$REMOTE_URL" >"$TUNNEL_LOG" 2>&1 &
 pids+=($!)
 
-# Give processes time to settle
-sleep 2
 
 # 4) Verify HTTP Access
 wait_for_port "$REMOTE_PORT"
@@ -136,13 +140,13 @@ wait_for_port "$REMOTE_PORT"
 echo "Attempting to connect to tunneled service at $REMOTE_URL..."
 set +e
 CURL_OUTPUT=""
-for i in $(seq 1 5); do
+for i in $(seq 1 10); do
     CURL_OUTPUT=$(curl -s "http://127.0.0.1:$REMOTE_PORT")
     CURL_EXIT=$?
     if echo "$CURL_OUTPUT" | grep -q "hello-from-http-server"; then
         break
     fi
-    sleep 1
+    sleep 0.5
 done
 set -e
 

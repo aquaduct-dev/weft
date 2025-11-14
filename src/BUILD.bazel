@@ -8,6 +8,7 @@ go_test(
     ],
     deps = [
         "//src/auth",
+        "//src/crypto",
         "//src/proxy",
         "//src/server",
         "//src/tunnel",

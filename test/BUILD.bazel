@@ -1,0 +1,44 @@
+sh_test(
+    name = "test_tcp_tunnel",
+    srcs = ["test_tcp_tunnel.sh"],
+    data = [
+        "//:weft",
+    ],
+    env = {
+        "PROTO": "tcp",
+    },
+)
+
+sh_test(
+    name = "test_http_tunnel",
+    srcs = ["test_tcp_tunnel.sh"],
+    data = [
+        "//:weft",
+    ],
+    env = {
+        "PROTO": "http",
+    },
+)
+
+sh_test(
+    name = "test_https_tunnel",
+    srcs = ["test_https_tunnel.sh"],
+    data = [
+        "test_tcp_tunnel.sh",
+        "//:weft",
+    ],
+    env = {
+        "PROTO": "https",
+    },
+)
+
+sh_test(
+    name = "test_udp_tunnel",
+    srcs = ["test_udp_tunnel.sh"],
+    data = [
+        "//:weft",
+    ],
+    env = {
+        "PROTO": "udp",
+    },
+)

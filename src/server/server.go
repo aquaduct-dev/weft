@@ -174,7 +174,6 @@ func NewServer(port int, bindIP string) *Server {
 	mux.HandleFunc("/login", s.LoginHandler)
 	go s.startJanitor(30 * time.Second)
 
-	time.Sleep(1 * time.Second)
 	return s
 }
 
@@ -446,7 +445,23 @@ func (s *Server) Serve(req *types.ConnectRequest) (*types.ConnectResponse, error
 	default:
 		return nil, fmt.Errorf("unknown protocol: %s", req.Protocol)
 	}
-	err = s.ProxyManager.StartProxy(&tunnelSource, &tunnelEnd, req.TunnelName, s.device, nil, nil, s.bindIP)
+	// If protocol is https and client supplied certs, pass them to the proxy so the server
+	// can terminate TLS using the provided certificate. Both certificate and private key
+	// must be provided together.
+	var certBytes, keyBytes []byte
+	if req.Protocol == "https" {
+		if req.CertificatePEM != "" || req.PrivateKeyPEM != "" {
+			// Require both fields when one is present.
+			if req.CertificatePEM == "" || req.PrivateKeyPEM == "" {
+				return nil, fmt.Errorf("missing certificate or private key for https protocol")
+			}
+			// Do not log certificate contents; only log that certs were provided.
+			log.Info().Str("tunnel", req.TunnelName).Msg("Serve: using provided TLS certificate for https proxy")
+			certBytes = []byte(req.CertificatePEM)
+			keyBytes = []byte(req.PrivateKeyPEM)
+		}
+	}
+	err = s.ProxyManager.StartProxy(&tunnelSource, &tunnelEnd, req.TunnelName, s.device, certBytes, keyBytes, s.bindIP)
 	if err != nil {
 		return nil, err
 	}

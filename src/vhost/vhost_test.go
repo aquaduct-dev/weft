@@ -183,8 +183,6 @@ func TestVHost_ACMEChallengeWithExistingVHost(t *testing.T) {
 
 	// 3. Start serving on the proxy
 	go proxy.Start()
-	// wait for it to be ready
-	time.Sleep(100 * time.Millisecond)
 
 	// 4. Test the regular vhost
 	req := httptest.NewRequest("GET", "http://example.test/", nil)

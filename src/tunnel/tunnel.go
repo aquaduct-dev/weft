@@ -35,7 +35,7 @@ import (
 //
 // Note: endpoint is currently set to the control API loopback (127.0.0.1:9092) as a
 // default placeholder to match the prior in-repo behaviour.
-func Tunnel(serverIP string, localUrl *url.URL, resp *types.ConnectResponse, privateKey wgtypes.Key, p *proxy.ProxyManager, tunnelName string) (*wireguard.UserspaceDevice, error) {
+func Tunnel(serverIP string, localUrl *url.URL, resp *types.ConnectResponse, privateKey wgtypes.Key, p *proxy.ProxyManager, tunnelName string, tlsCertPEM []byte, tlsKeyPEM []byte) (*wireguard.UserspaceDevice, error) {
 	// Build peer UAPI config using server-provided values.
 
 	// Parse and validate the client address assigned by the server.
@@ -88,7 +88,11 @@ func Tunnel(serverIP string, localUrl *url.URL, resp *types.ConnectResponse, pri
 	}
 
 	// 5. Start the proxy
-	if err := p.StartProxy(localUrl, remoteUrl, tunnelName, device, nil, nil, "0.0.0.0"); err != nil {
+	// Start proxy. If TLS cert/key paths were provided, forward them to StartProxy
+	// so the proxy manager can present the provided certificate on the remote
+	// HTTPS endpoint. The proxy.StartProxy signature accepts optional cert/key
+	// arguments via the last two parameters (pass nil when not used).
+	if err := p.StartProxy(localUrl, remoteUrl, tunnelName, device, tlsCertPEM, tlsKeyPEM, "0.0.0.0"); err != nil {
 		log.Fatal().Err(err).Msg("Failed to start proxy")
 	}
 

@@ -13,6 +13,7 @@ import (
 	"aquaduct.dev/weft/src/vhost"
 	"aquaduct.dev/weft/wireguard"
 	"github.com/rs/zerolog/log"
+	"gvisor.dev/gvisor/pkg/tcpip/adapters/gonet"
 )
 
 type ProxyManager struct {
@@ -42,51 +43,58 @@ func (p *ProxyManager) SetBindIP(bindIP string) {
 // ProxyTCP is a generic TCP proxy that forwards connections.
 func ProxyTCP(publicConn net.Conn, target string, device *wireguard.UserspaceDevice) {
 	log.Debug().Str("target", target).Msg("ProxyTCP: accepted public connection")
-	if device == nil {
-		if strings.HasPrefix(target, "10.1") {
-			log.Warn().Str("target", target).Msg("ProxyTCP: no wireguard device but destination can only be served on wireguard!")
-		}
+	dialAddr, err := net.ResolveTCPAddr("tcp", target)
+	if err != nil {
+		log.Error().Err(err).Str("target", target).Msg("ProxyTCP: resolve target failed")
+		publicConn.Close()
+		return
 	}
-	var targetConn net.Conn
-	var err error
-	if strings.HasPrefix(target, "10.1") {
-		log.Debug().Str("target", target).Msg("ProxyTCP: dial to target via wireguard")
-		targetConn, err = device.NetStack.Dial("tcp", target)
-	} else {
-		log.Debug().Str("target", target).Msg("ProxyTCP: dial to target")
-		targetConn, err = net.Dial("tcp", target)
-	}
+	targetConn, err := WGAwareTCPDial(dialAddr, device)
 	if err != nil {
 		log.Error().Err(err).Str("target", target).Msg("ProxyTCP: dial to target failed")
 		publicConn.Close()
 		return
 	}
 
-	// Wire up copy in both directions. Close both sides when done.
+	// copy target->public
 	go func() {
-		defer publicConn.Close()
-		defer targetConn.Close()
-		log.Debug().Str("target_addr", targetConn.RemoteAddr().String()).Str("public_addr", publicConn.RemoteAddr().String()).Msg("ProxyTCP: proxy start")
-
-		// copy target->public
-		done := make(chan struct{})
-		go func() {
-			_, err := io.Copy(publicConn, targetConn)
+		for {
+			buf := make([]byte, 0xffff)
+			n, err := targetConn.Read(buf)
 			if err != nil {
-				log.Error().Err(err).Msg("ProxyTCP: copy target->public error")
+				targetConn.Close()
+				publicConn.Close()
+				return
 			}
-			close(done)
-		}()
-
-		// copy public->target (will return when pub closed)
-		_, err := io.Copy(targetConn, publicConn)
-		if err != nil {
-			log.Error().Err(err).Msg("ProxyTCP: copy public->target error")
-		} else {
-			log.Debug().Str("target_addr", targetConn.RemoteAddr().String()).Str("public_addr", publicConn.RemoteAddr().String()).Msg("ProxyTCP: proxy finished")
+			_, err = publicConn.Write(buf[:n])
+			if err != nil {
+				targetConn.Close()
+				publicConn.Close()
+				return
+			}
 		}
-		<-done
 	}()
+
+	// copy public->target (will return when pub closed)
+	go func() {
+		for {
+			buf := make([]byte, 0xffff)
+			n, err := publicConn.Read(buf)
+			if err != nil {
+				targetConn.Close()
+				publicConn.Close()
+				return
+			}
+			_, err = targetConn.Write(buf[:n])
+			if err != nil {
+				log.Debug().Err(err).Msg("ProxyTCP: copy error")
+				targetConn.Close()
+				publicConn.Close()
+				return
+			}
+		}
+	}()
+	log.Debug().Str("target_addr", targetConn.RemoteAddr().String()).Str("public_addr", publicConn.RemoteAddr().String()).Msg("ProxyTCP: started bidirectional proxy")
 }
 
 func UDPListen(publicConn *net.UDPConn, clientAddr netip.Addr) {
@@ -209,6 +217,89 @@ func rewriteHost(u *url.URL, host string) {
 	u.Host = host + ":" + u.Port()
 }
 
+type WGAwareUDPConn struct {
+	goNetConn *gonet.UDPConn
+	netConn   *net.UDPConn
+}
+
+func (w *WGAwareUDPConn) ReadFromUDP(b []byte) (int, *net.UDPAddr, error) {
+	if w.netConn != nil {
+		return w.netConn.ReadFromUDP(b)
+	}
+	n, addr, err := w.goNetConn.ReadFrom(b)
+	return n, addr.(*net.UDPAddr), err
+}
+
+func (w *WGAwareUDPConn) Write(b []byte) (int, error) {
+	if w.netConn != nil {
+		return w.netConn.Write(b)
+	}
+	return w.goNetConn.Write(b)
+}
+
+func (w *WGAwareUDPConn) WriteToUDP(b []byte, addr *net.UDPAddr) (int, error) {
+	if w.netConn != nil {
+		return w.netConn.WriteToUDP(b, addr)
+	}
+	return w.goNetConn.WriteTo(b, addr)
+}
+
+func (w WGAwareUDPConn) Close() error {
+	if w.netConn != nil {
+		return w.netConn.Close()
+	}
+	return w.goNetConn.Close()
+}
+
+func WGAwareUDPDial(addr *net.UDPAddr, device *wireguard.UserspaceDevice) (WGAwareUDPConn, error) {
+	if strings.HasPrefix(addr.String(), "10.1.") {
+		if device == nil {
+			return WGAwareUDPConn{}, fmt.Errorf("cannot dial on WireGuard host %s without wireguard device", addr.String())
+		}
+		outgoingConn, err := device.NetStack.DialUDP(nil, addr)
+		return WGAwareUDPConn{goNetConn: outgoingConn, netConn: nil}, err
+	} else {
+		outgoingConn, err := net.DialUDP("udp", nil, addr)
+		return WGAwareUDPConn{goNetConn: nil, netConn: outgoingConn}, err
+
+	}
+}
+
+func WGAwareUDPListen(addr *net.UDPAddr, device *wireguard.UserspaceDevice) (WGAwareUDPConn, error) {
+	if strings.HasPrefix(addr.String(), "10.1.") {
+		rawListener, err := device.NetStack.ListenUDP(addr)
+		if device == nil {
+			return WGAwareUDPConn{}, fmt.Errorf("cannot listen on WireGuard host %s without wireguard device", addr.String())
+		}
+		return WGAwareUDPConn{goNetConn: rawListener, netConn: nil}, err
+	} else {
+		rawListener, err := net.ListenUDP("udp", addr)
+		return WGAwareUDPConn{goNetConn: nil, netConn: rawListener}, err
+	}
+}
+
+func WGAwareTCPDial(addr *net.TCPAddr, device *wireguard.UserspaceDevice) (net.Conn, error) {
+	if strings.HasPrefix(addr.String(), "10.1.") {
+		if device == nil {
+			return nil, fmt.Errorf("cannot dial on WireGuard host %s without wireguard device", addr.String())
+		}
+		return device.NetStack.DialTCP(addr)
+	} else {
+		return net.DialTCP("tcp", nil, addr)
+	}
+}
+
+func WGAwareTCPListen(addr *net.TCPAddr, device *wireguard.UserspaceDevice) (net.Listener, error) {
+	if strings.HasPrefix(addr.String(), "10.1.") {
+		if device == nil {
+			return nil, fmt.Errorf("cannot listen on WireGuard host %s without wireguard device", addr.String())
+		}
+		return device.NetStack.ListenTCP(addr)
+	} else {
+		return net.ListenTCP("tcp", addr)
+	}
+}
+
 func (p *ProxyManager) StartProxy(srcURL *url.URL, dstURL *url.URL, proxyName string, device *wireguard.UserspaceDevice, certPEM, keyPEM []byte, bindIp string) error {
 	log.Info().Str("src", srcURL.String()).Str("dst", dstURL.String()).Str("proxy", proxyName).Msg("Proxy: starting proxy")
 	var err error
@@ -219,15 +310,7 @@ func (p *ProxyManager) StartProxy(srcURL *url.URL, dstURL *url.URL, proxyName st
 	if ensurePort(dstURL) != nil {
 		return err
 	}
-	// Validate by checking for WireGuard.
-	if device == nil {
-		if strings.HasPrefix(dstURL.Host, "10.1") {
-			return fmt.Errorf("no wireguard device but destination %s can only be served on wireguard", dstURL.String())
-		}
-		if strings.HasPrefix(srcURL.Host, "10.1") {
-			return fmt.Errorf("no wireguard device but source %s can only be served on wireguard", srcURL.String())
-		}
-	}
+
 	// Validate by checking that no other proxies exist with this name
 	if _, ok := p.proxies[proxyName]; ok {
 		return fmt.Errorf("proxy %s already exists", proxyName)
@@ -239,26 +322,15 @@ func (p *ProxyManager) StartProxy(srcURL *url.URL, dstURL *url.URL, proxyName st
 	proxyType := fmt.Sprintf("%s>%s", srcURL.Scheme, dstURL.Scheme)
 	switch proxyType {
 	case "tcp>tcp", "https>https", "http>tcp":
-		var ln net.Listener
-		var err error
 		// Enforce that the TCP listener host must be the same as bindIP.
 		rewriteHost(dstURL, bindIp)
 		// Create a listener on the validated host:port. If host is in the wireguard subnet and we
 		// have a device, listen via the device's NetStack; otherwise use the system net.Listen.
-		if strings.HasPrefix(dstURL.Host, "10.1.") {
-			tcpAddr, err := net.ResolveTCPAddr("tcp", dstURL.Host)
-			if err != nil {
-				return fmt.Errorf("resolve tcp address %s: %w", dstURL.Host, err)
-			}
-			if device == nil {
-				return fmt.Errorf("cannot listen on WireGuard host %s without wireguard device", dstURL.Host)
-			}
-			ln, err = device.NetStack.ListenTCP(tcpAddr)
-			log.Info().Str("proxy_type", proxyType).Str("src", srcURL.Host).Str("dst", dstURL.Host).Msg("Proxy: listening tcp on wireguard")
-		} else {
-			ln, err = net.Listen("tcp", dstURL.Host)
-			log.Info().Str("proxy_type", proxyType).Str("src", srcURL.String()).Str("dst", dstURL.String()).Msg("Proxy: listening tcp")
+		listenAddr, err := net.ResolveTCPAddr("tcp", dstURL.Host)
+		if err != nil {
+			return fmt.Errorf("resolve tcp %s: %w", dstURL.Host, err)
 		}
+		ln, err := WGAwareTCPListen(listenAddr, device)
 		if err != nil {
 			log.Warn().Str("proxy_type", proxyType).Str("src", srcURL.String()).Str("dst", dstURL.String()).Err(err).Msg("Proxy: listen tcp failed")
 			return fmt.Errorf("listen tcp %s: %w", dstURL.Host, err)
@@ -285,16 +357,21 @@ func (p *ProxyManager) StartProxy(srcURL *url.URL, dstURL *url.URL, proxyName st
 		if err != nil {
 			return fmt.Errorf("resolve udp %s: %w", dstURL.Host, err)
 		}
-		l, err := net.ListenUDP("udp", addr)
+		srcAddr, err := net.ResolveUDPAddr("udp", srcURL.Host)
+		if err != nil {
+			return fmt.Errorf("resolve udp %s: %w", srcURL.Host, err)
+		}
+		l, err := WGAwareUDPListen(addr, device)
 		if err != nil {
 			return fmt.Errorf("listen udp %s: %w", dstURL.Host, err)
 		}
 		log.Info().Str("proxy_type", proxyType).Str("src", srcURL.Host).Str("dst", dstURL.Host).Msg("Proxy: listening udp")
 		go func() {
-			sessions := make(map[string]*net.UDPConn)
+			sessions := make(map[string]WGAwareUDPConn)
 			buf := make([]byte, 65535)
 			for {
 				n, publicAddr, err := l.ReadFromUDP(buf)
+
 				if err != nil {
 					log.Error().Err(err).Str("dst", dstURL.Host).Msg("udp read error")
 					return
@@ -303,44 +380,39 @@ func (p *ProxyManager) StartProxy(srcURL *url.URL, dstURL *url.URL, proxyName st
 				key := publicAddr.String()
 				targetConn, ok := sessions[key]
 				if !ok {
-					dst, err := net.ResolveUDPAddr("udp", srcURL.Host)
 					if err != nil {
 						log.Error().Err(err).Str("src", srcURL.Host).Msg("udp resolve local error")
 						continue
 					}
-					newTargetConn, err := net.DialUDP("udp", nil, dst)
-					if err != nil {
-						log.Error().Err(err).Str("src", srcURL.Host).Msg("udp dial error")
-						continue
-					}
-					targetConn = newTargetConn
+					targetConn, err = WGAwareUDPDial(srcAddr, device)
 					sessions[key] = targetConn
+				}
+				targetConn.Write(buf[:n])
 
-					// goroutine to copy from target to public
-					go func(pubAddr *net.UDPAddr, tconn *net.UDPConn) {
-						defer func() {
-							targetConn.Close()
-							delete(sessions, pubAddr.String())
-						}()
-						respBuf := make([]byte, 65535)
-						for {
-							// TODO: add timeout and session cleanup
-							n, _, err := tconn.ReadFrom(respBuf)
-							if err != nil {
-								return
-							}
-							_, err = l.WriteToUDP(respBuf[:n], pubAddr)
-							if err != nil {
-								return
-							}
+				// goroutine to copy from target to public
+				go func(pubAddr net.Addr, tconn WGAwareUDPConn) {
+					defer func() {
+						targetConn.Close()
+						delete(sessions, pubAddr.String())
+					}()
+					respBuf := make([]byte, 65535)
+					if err != nil {
+						return
+					}
+					for {
+						n, _, err := tconn.ReadFromUDP(respBuf)
+						if err != nil {
+							log.Error().Err(err).Str("src", publicAddr.String()).Msg("Proxy: failed to read from UDP")
+							return
 						}
-					}(publicAddr, newTargetConn)
-				}
+						_, err = l.WriteToUDP(respBuf[:n], publicAddr)
+						if err != nil {
+							log.Error().Err(err).Str("target", srcAddr.String()).Msg("Proxy: failed to write")
+							return
+						}
+					}
+				}(publicAddr, targetConn)
 
-				if _, err := targetConn.Write(buf[:n]); err != nil {
-					log.Error().Err(err).Str("src", srcURL.Host).Msg("udp write error")
-					// handle error, maybe close and delete session
-				}
 			}
 		}()
 		p.proxies[proxyName] = l

@@ -3,6 +3,7 @@ package vhost
 import (
 	"context"
 	"crypto/tls"
+	"crypto/x509"
 	"fmt"
 	"io"
 	"net"
@@ -256,7 +257,50 @@ func (p *VHostProxy) AddHostWithTLS(host string, target *url.URL, device *wiregu
 	if p.tlsConfigs == nil {
 		p.tlsConfigs = make(map[string]*tls.Config)
 	}
+
+	// Register TLS config for the provided host key.
 	p.tlsConfigs[host] = tlsConfig
+
+	// Additionally, attempt to register the certificate for any DNS names or IPs
+	// present in the leaf certificate so SNI lookups (or client connections using
+	// the IP string) will be able to find the certificate.
+	// Parse the leaf ASN.1 certificate to discover SANs and common name.
+	parsedCerts, err := tls.X509KeyPair([]byte(certPEM), []byte(keyPEM))
+	if err == nil {
+		// Attempt to extract DNSNames/IPs from certificate.
+		// Use x509 parsing on the first certificate in DER form if possible.
+		// This code is best-effort; failures here should not prevent registering the primary host.
+		if len(parsedCerts.Certificate) > 0 {
+			if x509Cert, err := x509.ParseCertificate(parsedCerts.Certificate[0]); err == nil {
+				// Register for CommonName if present and not empty.
+				if x509Cert.Subject.CommonName != "" {
+					if _, exists := p.tlsConfigs[x509Cert.Subject.CommonName]; !exists {
+						p.tlsConfigs[x509Cert.Subject.CommonName] = tlsConfig
+					}
+				}
+				// Register for all DNS SANs.
+				for _, dns := range x509Cert.DNSNames {
+					if dns == "" {
+						continue
+					}
+					if _, exists := p.tlsConfigs[dns]; !exists {
+						p.tlsConfigs[dns] = tlsConfig
+					}
+				}
+				// Register for IP SANs (as string form).
+				for _, ip := range x509Cert.IPAddresses {
+					ipStr := ip.String()
+					if ipStr == "" {
+						continue
+					}
+					if _, exists := p.tlsConfigs[ipStr]; !exists {
+						p.tlsConfigs[ipStr] = tlsConfig
+					}
+				}
+			}
+		}
+	}
+
 	if err = p.Start(); err != nil {
 		return VHostCloser{}, err
 	}
@@ -400,6 +444,17 @@ func (p *VHostProxy) hasTLS() bool {
 	return false
 }
 
+func keys(mymap map[string]*tls.Config) []string {
+	keys := make([]string, len(mymap))
+
+	i := 0
+	for k := range mymap {
+		keys[i] = k
+		i++
+	}
+	return keys
+}
+
 func (p *VHostProxy) Start() error {
 	if p.s != nil {
 		log.Debug().Int("port", p.port).Msg("VHost: already serving")
@@ -420,6 +475,7 @@ func (p *VHostProxy) Start() error {
 						return &cfg.Certificates[0], nil
 					}
 				}
+				log.Info().Any("tls_config", keys(p.tlsConfigs)).Str("requested", hello.ServerName).Msg("VHost: no certificate found")
 				return nil, fmt.Errorf("no certificate for server name %s", hello.ServerName)
 			},
 		}

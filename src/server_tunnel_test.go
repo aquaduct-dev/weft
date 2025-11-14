@@ -10,6 +10,7 @@ import (
 	"bytes"
 	"context"
 	"crypto/rand"
+	"crypto/tls"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -18,13 +19,13 @@ import (
 	"net/http/httptest"
 	"net/url"
 	"strings"
-	"testing"
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 	"golang.zx2c4.com/wireguard/wgctrl/wgtypes"
 
 	"aquaduct.dev/weft/src/auth"
+	aqcrypto "aquaduct.dev/weft/src/crypto"
 	"aquaduct.dev/weft/src/proxy"
 	"aquaduct.dev/weft/src/server"
 	"aquaduct.dev/weft/src/tunnel"
@@ -47,11 +48,6 @@ func randomBody() string {
 	return fmt.Sprintf("%x", b)
 }
 
-func TestGinkgoSuite(t *testing.T) {
-	RegisterFailHandler(Fail)
-	RunSpecs(t, "ServerTunnel Ginkgo Suite")
-}
-
 func encodeRequest(req types.ConnectRequest, token string) *http.Request {
 	data, err := json.Marshal(req)
 	Expect(err).ToNot(HaveOccurred())
@@ -65,6 +61,9 @@ func decodeResponse(data *bytes.Buffer) types.ConnectResponse {
 	fmt.Printf("%s", data.Bytes())
 	resp := types.ConnectResponse{}
 	err := json.Unmarshal(data.Bytes(), &resp)
+	if err != nil {
+		fmt.Printf(string(data.Bytes()))
+	}
 	Expect(err).ToNot(HaveOccurred())
 	return resp
 }
@@ -85,6 +84,7 @@ var _ = Describe("ServerTunnel integration (Ginkgo) - separate file", func() {
 
 	BeforeEach(func() {
 		_, cancel = context.WithCancel(context.Background())
+		By("creating a test backend http server on a free port")
 		backendLn, backendPort = openPort()
 		backendSrv = &http.Server{
 			Handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -99,6 +99,7 @@ var _ = Describe("ServerTunnel integration (Ginkgo) - separate file", func() {
 		remoteLn, remotePort = openPort()
 		remoteLn.Close() // we only needed the free port number
 
+		By("finding a free port for the tunnel server")
 		var tunnelLn net.Listener
 		tunnelLn, controlPort = openPort()
 		tunnelLn.Close() // we only needed the free port number
@@ -106,12 +107,20 @@ var _ = Describe("ServerTunnel integration (Ginkgo) - separate file", func() {
 		go tunnelSrv.ListenAndServe()
 
 		// Generate a new private key.
+		By("generating a WireGuard keypair for the client")
 		var err error
 		privateKey, err = wireguard.GeneratePrivateKey()
 		Expect(err).ToNot(HaveOccurred())
 
-		token, err = auth.Login(fmt.Sprintf("127.0.0.1:%d", controlPort), tunnelSrv.ConnectionSecret, "test-tunnel")
-		Expect(err).ToNot(HaveOccurred())
+		By("logging in to the test server")
+		// Server may not be immediately ready to accept connections after ListenAndServe is started.
+		// Use Gomega's Eventually to retry auth.Login until it succeeds to avoid a race where
+		// the test attempts to contact /login before the server is listening.
+		Eventually(func() error {
+			var e error
+			token, e = auth.Login(fmt.Sprintf("127.0.0.1:%d", controlPort), tunnelSrv.ConnectionSecret, "test-tunnel")
+			return e
+		}).Should(Succeed(), "auth.Login should eventually succeed once server is accepting connections")
 	})
 
 	AfterEach(func() {
@@ -123,7 +132,7 @@ var _ = Describe("ServerTunnel integration (Ginkgo) - separate file", func() {
 			_ = tunnelSrv.Close()
 		}
 	})
-	It("proxies http > http", func() {
+	It("tunnels http>http", func() {
 
 		w := httptest.NewRecorder()
 		r := encodeRequest(types.ConnectRequest{
@@ -139,7 +148,7 @@ var _ = Describe("ServerTunnel integration (Ginkgo) - separate file", func() {
 		connectResp := decodeResponse(w.Body)
 
 		// TODO: Remove extra args
-		device, err := tunnel.Tunnel("127.0.0.1", &url.URL{Scheme: "http", Host: fmt.Sprintf("127.0.0.1:%d", backendPort)}, &connectResp, privateKey, proxy.NewProxyManager(), "test-tunnel")
+		device, err := tunnel.Tunnel("127.0.0.1", &url.URL{Scheme: "http", Host: fmt.Sprintf("127.0.0.1:%d", backendPort)}, &connectResp, privateKey, proxy.NewProxyManager(), "test-tunnel", nil, nil)
 		Expect(err).ToNot(HaveOccurred())
 		defer device.Device.Close()
 
@@ -151,10 +160,131 @@ var _ = Describe("ServerTunnel integration (Ginkgo) - separate file", func() {
 		}).Should(Succeed())
 
 		defer resp.Body.Close()
-		//Expect(resp.StatusCode).To(Equal(http.StatusOK))
+		Expect(resp.StatusCode).To(Equal(http.StatusOK))
 		body, err := io.ReadAll(resp.Body)
 		Expect(err).ToNot(HaveOccurred())
 		Expect(string(body)).To(Equal("backend:" + expectedBody))
 		Expect(resp.Header.Get("X-Test-Body")).To(Equal(expectedBody))
+	})
+	It("tunnels http>https", func() {
+		// Prepare connect request for http->https tunnel. Upstream uses https.
+		By("requesting a new tunnel from the server")
+		w := httptest.NewRecorder()
+		certPem, keyPem, err := aqcrypto.GenerateCert("test.com")
+		Expect(err).ToNot(HaveOccurred())
+		r := encodeRequest(types.ConnectRequest{
+			ClientPublicKey: privateKey.PublicKey().String(),
+			RemotePort:      remotePort,
+			Protocol:        "https",
+			Hostname:        "test.com",
+			Upstream:        fmt.Sprintf("http://127.0.0.1:%d", backendPort),
+			TunnelName:      "test-tunnel",
+			CertificatePEM:  string(certPem),
+			PrivateKeyPEM:   string(keyPem),
+		}, token)
+
+		tunnelSrv.ConnectHandler(w, r)
+		connectResp := decodeResponse(w.Body)
+
+		// Create tunnel device; pass upstream URL so the tunnel knows it's https.
+		By("connecting to the tunnel from the server")
+		device, err := tunnel.Tunnel("127.0.0.1", &url.URL{Scheme: "http", Host: fmt.Sprintf("127.0.0.1:%d", backendPort)}, &connectResp, privateKey, proxy.NewProxyManager(), "test-tunnel", certPem, keyPem)
+		Expect(err).ToNot(HaveOccurred())
+		defer device.Device.Close()
+
+		// HTTPS client to talk to the remote port (https) — the tunnel should forward to upstream https.
+		By("reading HTTPS data from the server")
+		var resp *http.Response
+		Eventually(func() error {
+			var err error
+			// Use https scheme when connecting to the remote forwarded port so the client performs TLS.
+			req, err := http.NewRequest("GET", "https://test.com:443", nil)
+			if err != nil {
+				return err
+			}
+			req.Header.Set("Host", "test.com")
+
+			transport := http.DefaultTransport.(*http.Transport).Clone()
+			transport.TLSClientConfig = &tls.Config{InsecureSkipVerify: true}
+			transport.DialContext = func(ctx context.Context, network, addr string) (net.Conn, error) {
+				if addr == "test.com:443" {
+					return net.Dial(network, fmt.Sprintf("127.0.0.1:%d", remotePort))
+				}
+				return net.Dial(network, addr)
+			}
+			client := http.Client{
+				Transport: transport,
+			}
+			resp, err = (&client).Do(req)
+			return err
+		}).Should(Succeed())
+
+		defer resp.Body.Close()
+		Expect(resp.StatusCode).To(Equal(http.StatusOK))
+		body, err := io.ReadAll(resp.Body)
+		Expect(err).ToNot(HaveOccurred())
+		Expect(string(body)).To(Equal("backend:" + expectedBody))
+		Expect(resp.Header.Get("X-Test-Body")).To(Equal(expectedBody))
+	})
+
+	It("tunnels tcp>tcp", func() {
+		// Start a simple TCP backend that echoes a random body.
+		var (
+			echoLn   net.Listener
+			echoPort int
+		)
+		echoLn, echoPort = openPort()
+		defer echoLn.Close()
+
+		// Accept a single connection and respond with a header and body.
+		go func() {
+			conn, err := echoLn.Accept()
+			if err != nil {
+				GinkgoWriter.Printf("echo backend accept error: %v\n", err)
+				return
+			}
+			defer conn.Close()
+			body := randomBody()
+			GinkgoWriter.Printf("echo backend got connection, writing body %s\n", body)
+			_, _ = conn.Write([]byte("ECHO:" + body))
+		}()
+
+		// Prepare connect request for tcp tunnel.
+		w := httptest.NewRecorder()
+		r := encodeRequest(types.ConnectRequest{
+			ClientPublicKey: privateKey.PublicKey().String(),
+			RemotePort:      remotePort,
+			Protocol:        "tcp",
+			Hostname:        "127.0.0.1",
+			Upstream:        fmt.Sprintf("tcp://127.0.0.1:%d", echoPort),
+			TunnelName:      "test-tunnel",
+		}, token)
+
+		tunnelSrv.ConnectHandler(w, r)
+		connectResp := decodeResponse(w.Body)
+
+		device, err := tunnel.Tunnel("127.0.0.1", &url.URL{Scheme: "tcp", Host: fmt.Sprintf("127.0.0.1:%d", echoPort)}, &connectResp, privateKey, proxy.NewProxyManager(), "test-tunnel", nil, nil)
+		Expect(err).ToNot(HaveOccurred())
+		defer device.Device.Close()
+
+		// Try to connect to the remote port and read the echoed body.
+		var conn net.Conn
+		Eventually(func() error {
+			var err error
+			conn, err = net.Dial("tcp", fmt.Sprintf("127.0.0.1:%d", remotePort))
+			return err
+		}).Should(Succeed())
+		defer conn.Close()
+
+		buf := make([]byte, 1024)
+		n, err := io.ReadFull(conn, buf[:6]) // read the "ECHO:" prefix first
+		if err != nil && err != io.ErrUnexpectedEOF {
+			Fail(fmt.Sprintf("failed to read from tcp connection: %v", err))
+		}
+		// read the rest (up to remaining bytes)
+		rest := make([]byte, 1024)
+		m, _ := conn.Read(rest)
+		data := string(buf[:n]) + string(rest[:m])
+		Expect(strings.HasPrefix(data, "ECHO:")).To(BeTrue())
 	})
 })

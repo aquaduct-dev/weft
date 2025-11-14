@@ -9,6 +9,7 @@ go_library(
         "//src/vhost",
         "//wireguard",
         "@com_github_rs_zerolog//log",
+        "@dev_gvisor_gvisor//pkg/tcpip/adapters/gonet",
     ],
 )
 
