@@ -51,12 +51,12 @@ jobs:
           bazelisk build --platforms=@rules_go//go/toolchain:linux_amd64 "$BAZEL_BUILD_TARGET"
           mkdir -p release-artifacts
           # Bazel outputs are under bazel-bin; find the binary (go_binary produces an executable)
-          cp "$bazel-bin/weft" release-artifacts/weft-linux-amd64 || true
+          cp "$bazel-bin/weft" release-artifacts/weft-linux-amd64
           # If named differently, attempt to copy any matching binary
           if [ ! -f release-artifacts/weft-linux-amd64 ]; then
             find "$(bazelisk info bazel-bin)" -type f -name weft -exec cp {} release-artifacts/weft-linux-amd64 \;
           fi
-          ls -l release-artifacts || true
+          ls -l release-artifacts
 
       - name: Build arm64 binary
         env:
@@ -64,16 +64,16 @@ jobs:
           GOOS: linux
         run: |
           bazelisk build --platforms=@rules_go//go/toolchain:linux_arm64 "$BAZEL_BUILD_TARGET"
-          cp "bazel-bin/weft" release-artifacts/weft-linux-arm64 || true
+          cp "bazel-bin/weft" release-artifacts/weft-linux-arm64
           if [ ! -f release-artifacts/weft-linux-arm64 ]; then
             find "$(bazelisk info bazel-bin)" -type f -name weft -exec cp {} release-artifacts/weft-linux-arm64 \;
           fi
-          ls -l release-artifacts || true
+          ls -l release-artifacts 
 
       - name: Make artifacts executable
         run: |
-          chmod +x release-artifacts/* || true
-          file release-artifacts/* || true
+          chmod +x release-artifacts/*
+          file release-artifacts/*
 
       - name: Create release & upload artifacts
         id: create_release
