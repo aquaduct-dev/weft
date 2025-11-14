@@ -42,6 +42,16 @@ jobs:
         with:
           path: "/home/runner/.cache/bazel"
           key: bazel
+      
+      - name: Create Tag
+        uses: actions/checkout@v2
+        run: |
+            git config --local user.email "action@aquaduct.dev"
+            git config --local user.name "Aquaduct System Action Daemon"
+            git tag -a "v${{ github.run_number }}" -m "Release v${{ github.run_number }}"
+            git push origin "v${{ github.run_number }}"
+        env:
+            GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Build amd64 binary
         env:
@@ -60,9 +70,6 @@ jobs:
           ls -lh release-artifacts
 
       - name: Build arm64 binary
-        env:
-          GOARCH: arm64
-          GOOS: linux
         run: |
           bazelisk build --platforms=@rules_go//go/toolchain:linux_arm64 "$BAZEL_BUILD_TARGET"
           cp "bazel-bin/weft_/weft" release-artifacts/weft-linux-arm64
