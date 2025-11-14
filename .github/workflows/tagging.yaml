@@ -1,17 +1,19 @@
 name: Automated Tagging
 on:
-  push:
-    branches:
-      - main
+    push:
+        branches:
+            - main
 
 jobs:
-  tag:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v2
-      - name: Create Tag
-        run: |
-          git config --local user.email "action@aquaduct.dev"
-          git config --local user.name "Aquaduct System Action Daemon"
-          git tag -a "v${{ github.run_number }}" -m "Release v${{ github.run_number }}"
-          git push origin "v${{ github.run_number }}"
+    tag:
+        runs-on: ubuntu-latest
+        steps:
+            - uses: actions/checkout@v2
+            - name: Create Tag
+              run: |
+                  git config --local user.email "action@aquaduct.dev"
+                  git config --local user.name "Aquaduct System Action Daemon"
+                  git tag -a "v${{ github.run_number }}" -m "Release v${{ github.run_number }}"
+                  git push origin "v${{ github.run_number }}"
+        env:
+            GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
