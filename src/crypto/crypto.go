@@ -2,7 +2,7 @@
 This file contains encryption helpers used by the server for
 the login challenge exchange.
 */
-package server
+package crypto
 
 import (
 	"crypto/aes"

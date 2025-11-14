@@ -1,0 +1,15 @@
+load("@io_bazel_rules_go//go:def.bzl", "go_library")
+
+go_library(
+    name = "tunnel",
+    srcs = ["tunnel.go"],
+    importpath = "aquaduct.dev/weft/src/tunnel",
+    visibility = ["//visibility:public"],
+    deps = [
+        "//src/proxy",
+        "//types",
+        "//wireguard",
+        "@com_github_rs_zerolog//log",
+        "@com_zx2c4_golang_wireguard_wgctrl//wgtypes",
+    ],
+)

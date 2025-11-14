@@ -21,6 +21,8 @@ import (
 	"sync"
 	"time"
 
+	"aquaduct.dev/weft/src/crypto"
+	proxy "aquaduct.dev/weft/src/proxy"
 	"aquaduct.dev/weft/types"
 	"aquaduct.dev/weft/wireguard"
 	"github.com/golang-jwt/jwt/v4"
@@ -63,7 +65,7 @@ type Server struct {
 	ConnectionSecret string
 
 	// VhostProxy implements virtual-host routing for hostname-based tunnels.
-	ProxyManager *ProxyManager
+	ProxyManager *proxy.ProxyManager
 	// bindIP constrains all server listeners (HTTP and proxy listeners) when set.
 	bindIP string
 
@@ -152,14 +154,14 @@ func NewServer(port int, bindIP string) *Server {
 		subnet:           netip.MustParsePrefix("10.1.0.0/16"),
 		usedIPs:          make(map[netip.Addr]bool),
 		ConnectionSecret: connectionSecret,
-		ProxyManager:     NewProxyManager(),
+		ProxyManager:     proxy.NewProxyManager(),
 		apiTLSConfig:     apiTLSCfg,
 		challenges:       make(map[string]string),
 		bindIP:           bindIP,
 	}
 	// Propagate bindIP to the ProxyManager so proxies bind to the same IP.
 	if bindIP != "" {
-		s.ProxyManager.bindIP = bindIP
+		s.ProxyManager.SetBindIP(bindIP)
 	}
 	s.device, s.privateKey, s.WgListenPort, err = CreateDevice(0) // Always use a random port for the wireguard device
 	if err != nil {
@@ -172,6 +174,7 @@ func NewServer(port int, bindIP string) *Server {
 	mux.HandleFunc("/login", s.LoginHandler)
 	go s.startJanitor(30 * time.Second)
 
+	time.Sleep(1 * time.Second)
 	return s
 }
 
@@ -690,7 +693,7 @@ func (s *Server) getChallenge(w http.ResponseWriter, r *http.Request) {
 	s.challenges[r.RemoteAddr] = challenge
 	s.mu.Unlock()
 
-	encrypted, err := Encrypt(s.ConnectionSecret, "server-"+challenge)
+	encrypted, err := crypto.Encrypt(s.ConnectionSecret, "server-"+challenge)
 	if err != nil {
 		http.Error(w, "Failed to encrypt challenge", http.StatusInternalServerError)
 		return
@@ -745,7 +748,7 @@ func (s *Server) verifyChallenge(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	decrypted, err := Decrypt(s.ConnectionSecret, encrypted)
+	decrypted, err := crypto.Decrypt(s.ConnectionSecret, encrypted)
 	if err != nil {
 		http.Error(w, "Failed to decrypt challenge", http.StatusUnauthorized)
 		return

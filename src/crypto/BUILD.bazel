@@ -1,0 +1,21 @@
+load("@io_bazel_rules_go//go:def.bzl", "go_library", "go_test")
+
+go_library(
+    name = "crypto",
+    srcs = ["crypto.go"],
+    importpath = "aquaduct.dev/weft/src/crypto",
+    visibility = ["//visibility:public"],
+)
+
+go_test(
+    name = "crypto_test",
+    srcs = [
+        "crypto_ginkgo_test.go",
+        "crypto_test.go",
+    ],
+    deps = [
+        ":crypto",
+        "@com_github_onsi_ginkgo_v2//:ginkgo",
+        "@com_github_onsi_gomega//:gomega",
+    ],
+)

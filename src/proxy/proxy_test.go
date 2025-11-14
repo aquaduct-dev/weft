@@ -1,4 +1,4 @@
-package server
+package proxy
 
 import (
 	"context"
@@ -189,5 +189,111 @@ var _ = Describe("TunnelTCPProxy", func() {
 		Expect(err.Error()).To(SatisfyAny(
 			ContainSubstring("proxy for host 127.0.0.1:12035 already exists"),
 		))
+	})
+
+	It("enforces bindIp strictness for tcp listeners", func() {
+		// Start a real backend to be proxied
+		backend, err := net.Listen("tcp", "127.0.0.1:12060")
+		Expect(err).ToNot(HaveOccurred())
+		defer backend.Close()
+		go func() {
+			for {
+				c, err := backend.Accept()
+				if err != nil {
+					return
+				}
+				go func(cc net.Conn) {
+					defer cc.Close()
+					io.Copy(cc, cc)
+				}(c)
+			}
+		}()
+
+		// Request a proxy whose dst host is 127.0.0.1:12060 but ask StartProxy to bind to 0.0.0.0
+		localURL, err := url.Parse("tcp://127.0.0.1:12060")
+		Expect(err).ToNot(HaveOccurred())
+		// dst originally different host; StartProxy should rewrite dst to bindIp
+		remoteURL, err := url.Parse("tcp://127.0.0.1:12061")
+		Expect(err).ToNot(HaveOccurred())
+
+		pm := NewProxyManager()
+		// bindIp empty: it will listen on dst host (127.0.0.1:12061)
+		err = pm.StartProxy(localURL, remoteURL, "bindip-test-1", nil, nil, nil, "")
+		Expect(err).ToNot(HaveOccurred())
+		// connect should succeed to the configured host (127.0.0.1:12061)
+		conn1, err := net.Dial("tcp", "127.0.0.1:12061")
+		Expect(err).ToNot(HaveOccurred())
+		conn1.Close()
+		pm.Close("bindip-test-1")
+
+		// Now request proxy but force bindIp of 0.0.0.0 and ensure StartProxy rewrites dst to that host.
+		err = pm.StartProxy(localURL, remoteURL, "bindip-test-2", nil, nil, nil, "0.0.0.0")
+		// When bindIp is 0.0.0.0 rewriteHost is a no-op (per implementation), so it should still succeed.
+		Expect(err).ToNot(HaveOccurred())
+		// connecting to 127.0.0.1:12061 should still work because listener on 0.0.0.0 accepts connections for loopback
+		conn2, err := net.Dial("tcp", "127.0.0.1:12061")
+		Expect(err).ToNot(HaveOccurred())
+		conn2.Close()
+		pm.Close("bindip-test-2")
+	})
+
+	It("enforces bindIp strictness for udp listeners", func() {
+		// Setup UDP echo backend
+		backendAddr, err := net.ResolveUDPAddr("udp", "127.0.0.1:12070")
+		Expect(err).ToNot(HaveOccurred())
+		backendConn, err := net.ListenUDP("udp", backendAddr)
+		Expect(err).ToNot(HaveOccurred())
+		defer backendConn.Close()
+		go func() {
+			buf := make([]byte, 1024)
+			for {
+				n, addr, err := backendConn.ReadFromUDP(buf)
+				if err != nil {
+					return
+				}
+				backendConn.WriteToUDP(buf[:n], addr)
+			}
+		}()
+
+		localURL, err := url.Parse("udp://127.0.0.1:12070")
+		Expect(err).ToNot(HaveOccurred())
+		remoteURL, err := url.Parse("udp://127.0.0.1:12071")
+		Expect(err).ToNot(HaveOccurred())
+
+		pm := NewProxyManager()
+		// Start proxy without bindIp -> listens on remoteURL host (127.0.0.1:12071)
+		err = pm.StartProxy(localURL, remoteURL, "bindip-udp-1", nil, nil, nil, "")
+		Expect(err).ToNot(HaveOccurred())
+
+		// Talk to proxy
+		conn, err := net.Dial("udp", "127.0.0.1:12071")
+		Expect(err).ToNot(HaveOccurred())
+		defer conn.Close()
+		msg := []byte("ping")
+		_, err = conn.Write(msg)
+		Expect(err).ToNot(HaveOccurred())
+
+		buf := make([]byte, 10)
+		conn.SetReadDeadline(time.Now().Add(200 * time.Millisecond))
+		n, err := conn.Read(buf)
+		Expect(err).ToNot(HaveOccurred())
+		Expect(string(buf[:n])).To(Equal("ping"))
+
+		pm.Close("bindip-udp-1")
+
+		// Now test with bindIp set to 0.0.0.0 (should still succeed - rewriteHost is noop for 0.0.0.0)
+		err = pm.StartProxy(localURL, remoteURL, "bindip-udp-2", nil, nil, nil, "0.0.0.0")
+		Expect(err).ToNot(HaveOccurred())
+		conn2, err := net.Dial("udp", "127.0.0.1:12071")
+		Expect(err).ToNot(HaveOccurred())
+		defer conn2.Close()
+		_, err = conn2.Write([]byte("ping2"))
+		Expect(err).ToNot(HaveOccurred())
+		buf2 := make([]byte, 10)
+		conn2.SetReadDeadline(time.Now().Add(200 * time.Millisecond))
+		n2, err := conn2.Read(buf2)
+		Expect(err).ToNot(HaveOccurred())
+		Expect(string(buf2[:n2])).To(Equal("ping2"))
+		pm.Close("bindip-udp-2")
 	})
 })

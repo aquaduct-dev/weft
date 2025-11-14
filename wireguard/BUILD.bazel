@@ -6,10 +6,10 @@ go_library(
     importpath = "aquaduct.dev/weft/wireguard",
     visibility = ["//visibility:public"],
     deps = [
-        "@com_zx2c4_golang_wireguard//conn:go_default_library",
-        "@com_zx2c4_golang_wireguard//device:go_default_library",
-        "@com_zx2c4_golang_wireguard//tun:go_default_library",
-        "@com_zx2c4_golang_wireguard//tun/netstack:go_default_library",
-        "@com_zx2c4_golang_wireguard_wgctrl//wgtypes:go_default_library",
+        "@com_zx2c4_golang_wireguard//conn",
+        "@com_zx2c4_golang_wireguard//device",
+        "@com_zx2c4_golang_wireguard//tun",
+        "@com_zx2c4_golang_wireguard//tun/netstack",
+        "@com_zx2c4_golang_wireguard_wgctrl//wgtypes",
     ],
 )

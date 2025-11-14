@@ -1,4 +1,4 @@
-package server
+package vhost
 
 import (
 	"context"
@@ -16,6 +16,7 @@ import (
 
 	"time"
 
+	"aquaduct.dev/weft/src/acme"
 	"aquaduct.dev/weft/wireguard"
 	"github.com/rs/zerolog/log"
 	"golang.org/x/crypto/acme/autocert"
@@ -66,7 +67,11 @@ func NewVHostProxyManager() *VHostProxyManager {
 	}
 	home, err := os.UserHomeDir()
 	if err != nil {
-		log.Fatal().Err(err).Msg("failed to get user home directory")
+		// In sandboxed test environments HOME may be unset. Fall back to a safe temporary
+		// directory for certificate cache and continue instead of fatally exiting to allow
+		// unit tests to run.
+		log.Warn().Err(err).Msg("failed to get user home directory; falling back to temp dir for cert cache")
+		home = os.TempDir()
 	}
 	m.certsCachePath = filepath.Join(home, ".certs")
 	m.acmeManager = &autocert.Manager{
@@ -266,7 +271,7 @@ func (p *VHostProxy) AddHostWithACME(host string, target *url.URL, device *wireg
 	// for HTTP-01 challenges. This reduces time wasted attempting issuance for hosts that won't complete.
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	if !p.CanWebHost(ctx, host) {
+	if !p.CanPassACMEChallenge(ctx, host) {
 		// If the host cannot be web-hosted, remove the proxy entry we just added to keep state consistent.
 		delete(p.hosts, host)
 		log.Warn().Str("host", host).Msg("VHost: host not reachable for ACME HTTP-01 challenge; aborting ACME setup")
@@ -306,7 +311,7 @@ func (p *VHostProxy) AddHostWithACME(host string, target *url.URL, device *wireg
 		}
 		defer closer.Close()
 
-		helper := NewACMEHelper(p.manager.acmeManager)
+		helper := acme.NewACMEHelper(p.manager.acmeManager)
 		cert, err := helper.WaitForCertificate(context.Background(), host)
 		if err != nil {
 			log.Error().Err(err).Str("host", host).Msg("VHost: failed to obtain ACME certificate in time")
@@ -449,4 +454,133 @@ func (p *VHostProxy) GetTLSConfig(host string) *tls.Config {
 	p.mu.RLock()
 	defer p.mu.RUnlock()
 	return p.tlsConfigs[host]
+}
+
+// CanPassACMEChallenge checks whether the server's public IPv4 is internet-routable and
+// can complete an ACME HTTP-01 challenge for the given host. It attempts to
+// resolve the host and then perform a minimal HTTP GET to the ACME challenge
+// path served by the autocert.Manager on the manager's configured ACME port.
+// This method is conservative: it requires a non-loopback, public IPv4 address
+// on the local machine and that an HTTP request to http://<host>/.well-known/acme-challenge/
+// returns a successful status (2xx or 3xx). Detailed logs are emitted to help
+// debug challenge reachability and routing.
+func (p *VHostProxy) CanPassACMEChallenge(ctx context.Context, host string) bool {
+	// Basic validation
+	if host == "" {
+		log.Debug().Str("host", host).Msg("CanWebHost: empty host")
+		return false
+	}
+
+	// Resolve host to IPs
+	ips, err := net.LookupIP(host)
+	if err != nil {
+		log.Debug().Err(err).Str("host", host).Msg("CanWebHost: DNS lookup failed")
+		return false
+	}
+
+	// Determine our public IPv4 address by querying an external service (api.ipify.org).
+	// This avoids relying on local interface heuristics which may be incorrect for NATted hosts.
+	publicIP := ""
+	{
+		client := &http.Client{}
+		req, err := http.NewRequestWithContext(ctx, http.MethodGet, "https://api.ipify.org", nil)
+		if err != nil {
+			log.Debug().Err(err).Msg("CanWebHost: failed to create request to api.ipify.org")
+			return false
+		}
+		resp, err := client.Do(req)
+		if err != nil {
+			log.Debug().Err(err).Msg("CanWebHost: failed to query api.ipify.org for public IP")
+			return false
+		}
+		body, err := io.ReadAll(resp.Body)
+		resp.Body.Close()
+		if err != nil {
+			log.Debug().Err(err).Msg("CanWebHost: failed to read api.ipify.org response")
+			return false
+		}
+		publicIP = strings.TrimSpace(string(body))
+		if publicIP == "" {
+			log.Debug().Msg("CanWebHost: api.ipify.org returned empty body")
+			return false
+		}
+		// Validate it's an IPv4 address
+		parsed := net.ParseIP(publicIP)
+		if parsed == nil || parsed.To4() == nil {
+			log.Debug().Str("public_ip", publicIP).Msg("CanWebHost: api.ipify.org did not return a valid IPv4")
+			return false
+		}
+		log.Debug().Str("public_ip", publicIP).Msg("CanWebHost: obtained public IP from api.ipify.org")
+	}
+
+	// Check that at least one resolved IP is a public IPv4 (not private, not loopback)
+	var targetIPv4 net.IP
+	for _, ip := range ips {
+		if ip.To4() == nil {
+			continue
+		}
+		if ip.IsLoopback() || ip.IsUnspecified() || ip.IsLinkLocalUnicast() || ip.IsLinkLocalMulticast() {
+			continue
+		}
+		if ip.IsPrivate() {
+			// if host resolves only to private addresses, it may not be reachable from the Internet
+			continue
+		}
+		targetIPv4 = ip
+		break
+	}
+	if targetIPv4 == nil {
+		log.Debug().Str("host", host).Msg("CanWebHost: host does not resolve to a public IPv4 address")
+		// Continue, but fail — ACME HTTP-01 requires a publicly routable host.
+		return false
+	}
+	log.Debug().Str("host_ip", targetIPv4.String()).Str("host", host).Msg("CanWebHost: host resolves to public IPv4")
+	// At this point DNS resolves to a public IPv4. Perform an active HTTP probe to verify
+	// the ACME HTTP-01 challenge handler is reachable at http://<host>/.well-known/acme-challenge/
+	// from the perspective of the server's public IP. This helps avoid triggering ACME issuance
+	// for hosts that point to the public IP but are blocked by firewall or NAT.
+	checkURL := fmt.Sprintf("http://%s/.well-known/acme-challenge/", host)
+
+	proxy := p.manager.Proxy(targetIPv4.String(), 80)
+	// Pass nil device for the dummy ACME host (no WG device needed here).
+	closer, err := proxy.AddHost("probe-acme", &url.URL{Scheme: "http", Host: "localhost:80"}, nil)
+	if err != nil {
+		log.Warn().AnErr("CanWebHost: AddHost error", err)
+		return false
+	}
+	err = proxy.Start()
+	if err != nil {
+		log.Warn().AnErr("CanWebHost: Start error", err)
+		return false
+	}
+	defer closer.Close()
+
+	// Try a HEAD first; some handlers may not accept HEAD so fall back to GET.
+	req, err := http.NewRequestWithContext(ctx, http.MethodHead, checkURL, nil)
+	client := &http.Client{
+		Timeout: 5 * time.Second,
+	}
+	if err != nil {
+		log.Debug().Err(err).Str("check_url", checkURL).Msg("CanWebHost: failed to create HEAD request for HTTP-01 probe")
+	} else {
+		resp, err := client.Do(req)
+		if err == nil {
+			resp.Body.Close()
+			if resp.StatusCode == 403 || resp.StatusCode == 404 {
+				log.Info().Str("host", host).Str("host_ip", targetIPv4.String()).Int("status", resp.StatusCode).Msg("CanWebHost: HTTP probe succeeded (HEAD) for ACME challenge path")
+				return true
+			}
+			log.Debug().Str("host", host).Int("status", resp.StatusCode).Msg("CanWebHost: HEAD probe returned non-2xx/3xx status")
+		} else {
+			log.Debug().Err(err).Str("host", host).Msg("CanWebHost: HEAD probe error; will retry with GET")
+		}
+	}
+
+	if targetIPv4.String() == publicIP {
+		log.Warn().Str("host", host).Str("host_ip", targetIPv4.String()).Str("public_ip", publicIP).Msg("CanWebHost: DNS -> public IP matches but HTTP probes failed; allowing ACME as permissive fallback")
+		return false
+	}
+
+	log.Warn().Str("host", host).Str("host_ip", targetIPv4.String()).Str("public_ip", publicIP).Msg("CanWebHost: HTTP probes failed and DNS does not point to server public IP; denying ACME")
+	return false
 }

@@ -19,7 +19,9 @@ import (
 	"syscall"
 	"time"
 
-	server "aquaduct.dev/weft/src"
+	"aquaduct.dev/weft/src/auth"
+	"aquaduct.dev/weft/src/proxy"
+	"aquaduct.dev/weft/src/tunnel"
 	"aquaduct.dev/weft/wireguard"
 
 	"aquaduct.dev/weft/types"
@@ -32,9 +34,9 @@ var tunnelCmd = &cobra.Command{
 	Use:   "tunnel [weft://connection-secret@server-ip] [local url] [remote url]",
 	Short: "Run the Weft tunnel",
 	Args:  cobra.ExactArgs(3),
-	Run: func(cmd *cobra.Command, args []string) {
+	Run: func(command *cobra.Command, args []string) {
 		// Add tunnel-name flag (can be empty; we compute default below)
-		tunnelNameFlag, _ := cmd.Flags().GetString("tunnel-name")
+		tunnelNameFlag, _ := command.Flags().GetString("tunnel-name")
 
 		// 1. Parse arguments
 		weftURL, err := url.Parse(args[0])
@@ -85,9 +87,9 @@ var tunnelCmd = &cobra.Command{
 		}
 
 		// Provide proxy_name (tunnel name) to login so server issues a JWT scoped to this tunnel.
-		jwtTokenString, err := Login(connectHost, connectionSecret, tunnelNameFlag)
+		jwtTokenString, err := auth.Login(connectHost, connectionSecret, tunnelNameFlag)
 		if err != nil {
-			log.Fatal().Err(err).Msg("Login failed")
+			log.Fatal().Err(err).Msg("login failed")
 		}
 
 		token, _, err := jwt.NewParser().ParseUnverified(jwtTokenString, jwt.MapClaims{})
@@ -171,8 +173,8 @@ var tunnelCmd = &cobra.Command{
 		log.Info().Str("ip", connectResp.ClientAddress).Int("port", connectResp.TunnelProxyPort).Msg("Assigned IP and proxy port")
 
 		// 4. Create tunnel
-		p := server.NewProxyManager()
-		device, err := server.Tunnel(serverIP, localURL, &connectResp, privateKey, p, tunnelNameFlag)
+		pm := proxy.NewProxyManager()
+		device, err := tunnel.Tunnel(serverIP, localURL, &connectResp, privateKey, pm, tunnelNameFlag)
 		if err != nil {
 			log.Fatal().Err(err).Msg("Failed to create tunnel")
 		}
@@ -196,7 +198,7 @@ var tunnelCmd = &cobra.Command{
 					jwtMutex.Lock()
 					if time.Until(jwtExpiry) < 1*time.Minute {
 						log.Info().Msg("JWT is about to expire, refreshing...")
-						newJwtTokenString, err := Login(connectHost, connectionSecret, tunnelNameFlag)
+						newJwtTokenString, err := auth.Login(connectHost, connectionSecret, tunnelNameFlag)
 						if err != nil {
 							log.Error().Err(err).Msg("Failed to refresh JWT")
 							jwtMutex.Unlock()

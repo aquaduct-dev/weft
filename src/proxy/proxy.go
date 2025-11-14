@@ -1,4 +1,4 @@
-package server
+package proxy
 
 import (
 	"fmt"
@@ -8,7 +8,9 @@ import (
 	"net/url"
 	"strconv"
 	"strings"
+	"time"
 
+	"aquaduct.dev/weft/src/vhost"
 	"aquaduct.dev/weft/wireguard"
 	"github.com/rs/zerolog/log"
 )
@@ -19,7 +21,7 @@ type ProxyManager struct {
 	bindIP            string
 	hostToProxyName   map[string]string // New map to store host to proxyName mapping
 	proxyNameToHost   map[string]string // New map to store proxyName to host mapping
-	VHostProxyManager *VHostProxyManager
+	VHostProxyManager *vhost.VHostProxyManager
 }
 
 func NewProxyManager() *ProxyManager {
@@ -27,8 +29,14 @@ func NewProxyManager() *ProxyManager {
 		proxies:           make(map[string]io.Closer),
 		hostToProxyName:   make(map[string]string), // Initialize the new map
 		proxyNameToHost:   make(map[string]string), // Initialize the new map
-		VHostProxyManager: NewVHostProxyManager(),
+		VHostProxyManager: vhost.NewVHostProxyManager(),
 	}
+}
+
+// SetBindIP updates the ProxyManager's bind IP in a safe, exported way.
+// Server should call this instead of modifying the unexported field directly.
+func (p *ProxyManager) SetBindIP(bindIP string) {
+	p.bindIP = bindIP
 }
 
 // ProxyTCP is a generic TCP proxy that forwards connections.
@@ -74,13 +82,14 @@ func ProxyTCP(publicConn net.Conn, target string, device *wireguard.UserspaceDev
 		_, err := io.Copy(targetConn, publicConn)
 		if err != nil {
 			log.Error().Err(err).Msg("ProxyTCP: copy public->target error")
+		} else {
+			log.Debug().Str("target_addr", targetConn.RemoteAddr().String()).Str("public_addr", publicConn.RemoteAddr().String()).Msg("ProxyTCP: proxy finished")
 		}
 		<-done
-		log.Debug().Str("target_addr", targetConn.RemoteAddr().String()).Str("public_addr", publicConn.RemoteAddr().String()).Msg("ProxyTCP: proxy finished")
 	}()
 }
 
-func UDPListen(s *Server, publicConn *net.UDPConn, clientAddr netip.Addr) {
+func UDPListen(publicConn *net.UDPConn, clientAddr netip.Addr) {
 	// Maintain per-public-source mapping to a target UDP connection.
 	// This lets concurrent public clients each get their own UDP "session".
 	type session struct {
@@ -259,7 +268,8 @@ func (p *ProxyManager) StartProxy(srcURL *url.URL, dstURL *url.URL, proxyName st
 				conn, err := ln.Accept()
 				if err != nil {
 					log.Error().Err(err).Str("dst", dstURL.Host).Msg("proxy accept error")
-					return
+					time.Sleep(250 * time.Millisecond)
+					continue
 				}
 				go ProxyTCP(conn, srcURL.Host, device)
 			}

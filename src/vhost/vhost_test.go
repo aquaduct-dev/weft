@@ -1,4 +1,4 @@
-package server
+package vhost
 
 import (
 	"crypto/tls"
@@ -13,6 +13,8 @@ import (
 	"path/filepath"
 	"testing"
 	"time"
+
+	"aquaduct.dev/weft/src/crypto"
 )
 
 // Tests for vhost.go: GetTLSHandler, GetTLSConfig and ServeHTTP routing.
@@ -67,7 +69,7 @@ func TestVHost_AddHostWithTLSAndRetrieval(t *testing.T) {
 
 	manager := NewVHostProxyManager()
 	vp := NewVHostProxy(VHostKey{Port: 0}, manager)
-	certPEM, keyPEM, err := GenerateCert("secure.test")
+	certPEM, keyPEM, err := crypto.GenerateCert("secure.test")
 	if err != nil {
 		t.Fatalf("GenerateCert failed: %v", err)
 	}
@@ -140,7 +142,9 @@ func TestVHost_CertsCachePath(t *testing.T) {
 	manager := NewVHostProxyManager()
 	home, err := os.UserHomeDir()
 	if err != nil {
-		t.Fatalf("failed to get user home directory: %v", err)
+		// In sandbox/test environments HOME may be unset; the implementation falls
+		// back to os.TempDir(), so accept that behavior.
+		home = os.TempDir()
 	}
 	expectedDefaultPath := filepath.Join(home, ".certs")
 	if manager.certsCachePath != expectedDefaultPath {

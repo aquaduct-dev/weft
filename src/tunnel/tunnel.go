@@ -7,7 +7,7 @@ private key, creates a userspace WireGuard device configured for the tunnel, and
 This follows the tunnel construction logic previously present in cmd/tunnel.go but
 is factored into a reusable package-level function so other packages can call it.
 */
-package server
+package tunnel
 
 import (
 	"encoding/hex"
@@ -18,6 +18,7 @@ import (
 	"strconv"
 	"strings"
 
+	"aquaduct.dev/weft/src/proxy"
 	"aquaduct.dev/weft/types"
 	"aquaduct.dev/weft/wireguard"
 	"github.com/rs/zerolog/log"
@@ -34,7 +35,7 @@ import (
 //
 // Note: endpoint is currently set to the control API loopback (127.0.0.1:9092) as a
 // default placeholder to match the prior in-repo behaviour.
-func Tunnel(serverIP string, localUrl *url.URL, resp *types.ConnectResponse, privateKey wgtypes.Key, p *ProxyManager, tunnelName string) (*wireguard.UserspaceDevice, error) {
+func Tunnel(serverIP string, localUrl *url.URL, resp *types.ConnectResponse, privateKey wgtypes.Key, p *proxy.ProxyManager, tunnelName string) (*wireguard.UserspaceDevice, error) {
 	// Build peer UAPI config using server-provided values.
 
 	// Parse and validate the client address assigned by the server.
@@ -87,7 +88,7 @@ func Tunnel(serverIP string, localUrl *url.URL, resp *types.ConnectResponse, pri
 	}
 
 	// 5. Start the proxy
-	if err := p.StartProxy(localUrl, remoteUrl, tunnelName, device, nil, nil, remoteUrl.Hostname()); err != nil {
+	if err := p.StartProxy(localUrl, remoteUrl, tunnelName, device, nil, nil, "0.0.0.0"); err != nil {
 		log.Fatal().Err(err).Msg("Failed to start proxy")
 	}
 

@@ -1,4 +1,4 @@
-package server_test
+package proxy
 
 import (
 	. "github.com/onsi/ginkgo/v2"

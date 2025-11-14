@@ -1,0 +1,21 @@
+load("@io_bazel_rules_go//go:def.bzl", "go_library", "go_test")
+
+go_library(
+    name = "vhost",
+    srcs = ["vhost.go"],
+    importpath = "aquaduct.dev/weft/src/vhost",
+    visibility = ["//visibility:public"],
+    deps = [
+        "//src/acme",
+        "//wireguard",
+        "@com_github_rs_zerolog//log",
+        "@org_golang_x_crypto//acme/autocert",
+    ],
+)
+
+go_test(
+    name = "vhost_test",
+    srcs = ["vhost_test.go"],
+    embed = [":vhost"],
+    deps = ["//src/crypto"],
+)

@@ -8,7 +8,7 @@ import (
 	"os/signal"
 	"syscall"
 
-	server "aquaduct.dev/weft/src"
+	"aquaduct.dev/weft/src/proxy"
 	"github.com/rs/zerolog/log"
 	"github.com/spf13/cobra"
 )
@@ -35,7 +35,7 @@ var proxyCmd = &cobra.Command{
 			h := sha256.Sum256([]byte(args[0] + "|" + args[1]))
 			proxyNameFlag = hex.EncodeToString(h[:])
 		}
-		pm := server.NewProxyManager()
+		pm := proxy.NewProxyManager()
 		log.Debug().Str("src", srcURL.String()).Str("dst", dstURL.String()).Str("proxy_name", proxyNameFlag).Msg("Starting proxy")
 		if err := pm.StartProxy(srcURL, dstURL, proxyNameFlag, nil, nil, nil, "0.0.0.0"); err != nil {
 			log.Fatal().Err(err).Msg("Failed to start proxy")

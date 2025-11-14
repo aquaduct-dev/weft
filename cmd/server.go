@@ -12,7 +12,7 @@ import (
 	"strings"
 	"syscall"
 
-	server "aquaduct.dev/weft/src"
+	"aquaduct.dev/weft/src/server"
 	"github.com/rs/zerolog/log"
 	"github.com/spf13/cobra"
 )
@@ -176,7 +176,6 @@ var serverCmd = &cobra.Command{
 		opentelemetryConnectionString, _ := cmd.Flags().GetString("opentelemetry-connection-string")
 		secretFile, _ := cmd.Flags().GetString("secret-file")
 
-		log.Info().Int("port", port).Msg("Starting Weft server")
 		if email != "" {
 			log.Info().Str("email", email).Msg("LetsEncrypt email")
 		}
@@ -184,6 +183,7 @@ var serverCmd = &cobra.Command{
 			log.Info().Str("opentelemetry_connection_string", opentelemetryConnectionString).Msg("OpenTelemetry")
 		}
 
+		log.Info().Int("port", port).Msg("Starting Weft server")
 		srv := server.NewServer(port, bindIP)
 		if email != "" {
 			srv.ProxyManager.VHostProxyManager.SetACMEEmail(email)

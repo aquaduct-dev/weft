@@ -3,7 +3,7 @@ package cmd
 import (
 	"os"
 
-	"aquaduct.dev/weft/src"
+	"aquaduct.dev/weft/src/logging"
 	"github.com/rs/zerolog"
 	"github.com/rs/zerolog/log"
 
@@ -22,7 +22,7 @@ var rootCmd = &cobra.Command{
 			wireguard.Verbose = true
 			level = zerolog.DebugLevel
 		}
-		server.Init(level)
+		logging.Init(level)
 	},
 	Run: func(cmd *cobra.Command, args []string) {
 		cmd.Help()
