@@ -51,7 +51,7 @@ jobs:
           bazelisk build --platforms=@rules_go//go/toolchain:linux_amd64 "$BAZEL_BUILD_TARGET"
           mkdir -p release-artifacts
           # Bazel outputs are under bazel-bin; find the binary (go_binary produces an executable)
-          cp "$bazel-bin/weft" release-artifacts/weft-linux-amd64
+          cp "bazel-bin/weft" release-artifacts/weft-linux-amd64
           # If named differently, attempt to copy any matching binary
           if [ ! -f release-artifacts/weft-linux-amd64 ]; then
             find "$(bazelisk info bazel-bin)" -type f -name weft -exec cp {} release-artifacts/weft-linux-amd64 \;
