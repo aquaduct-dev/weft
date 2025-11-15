@@ -48,7 +48,7 @@ jobs:
           mkdir -p release-artifacts
 
       - name: Mount Bazel cache
-        uses: actions/cache@v3
+        uses: actions/cache/restore@v4
         with:
           path: "/home/runner/.cache/bazel"
           key: bazel
@@ -83,6 +83,12 @@ jobs:
       - name: Deploy multiarch container
         run: |
           bazelisk run //container:weft_image_push -- --tag v${{ github.run_number }}
+      - name: Save Bazel cache
+        uses: actions/cache/save@v4
+        with:
+          path: "/home/runner/.cache/bazel"
+          key: bazel
+
       - name: Make artifacts executable
         run: |
           chmod +x release-artifacts/*
