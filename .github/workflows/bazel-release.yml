@@ -33,6 +33,7 @@ jobs:
 
       - name: "Verify login to `ghcr.io"
         run: |
+          docker pull docker.io/library/alpine
           docker tag docker.io/library/alpine ghcr.io/aquaduct-dev/alpine:latest
           docker push ghcr.io/aquaduct-dev/alpine
 
