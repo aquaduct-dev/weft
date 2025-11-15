@@ -13,7 +13,8 @@ jobs:
       contents: write  # needed to create releases and upload artifacts
       packages: write
     env:
-      BAZEL_BUILD_TARGET: //:weft
+      BAZEL_BUILD_TARGET_AMD64: //:weft
+      BAZEL_BUILD_TARGET_ARM64: //:weft_arm64
 
     steps:
       - name: Check out repository
@@ -37,11 +38,11 @@ jobs:
         run: |
           mkdir -p release-artifacts
 
-      - name: Mount bazel cache (amd64)
+      - name: Mount Bazel cache
         uses: actions/cache@v3
         with:
           path: "/home/runner/.cache/bazel"
-          key: bazel-amd64
+          key: bazel
 
       - name: Test All
         run: |
@@ -62,7 +63,7 @@ jobs:
           GOOS: linux
         run: |
           # Use bazelisk to ensure consistent Bazel version; build the Go binary and copy the result.
-          bazelisk build --platforms=@rules_go//go/toolchain:linux_amd64 "$BAZEL_BUILD_TARGET"
+          bazelisk build --platforms=@rules_go//go/toolchain:linux_amd64 "$BAZEL_BUILD_TARGET_AMD64"
           mkdir -p release-artifacts
           # Bazel outputs are under bazel-bin; find the binary (go_binary produces an executable)
           cp "bazel-bin/weft_/weft" release-artifacts/weft-linux-amd64
@@ -71,16 +72,10 @@ jobs:
             find "$(bazelisk info bazel-bin)" -type f -name weft -exec cp {} release-artifacts/weft-linux-amd64 \;
           fi
           ls -lh release-artifacts
-
-      - name: Mount bazel cache (arm64)
-        uses: actions/cache@v3
-        with:
-          path: "/home/runner/.cache/bazel"
-          key: bazel-arm64
       - name: Build arm64 binary
         run: |
-          bazelisk build --platforms=@rules_go//go/toolchain:linux_arm64 "$BAZEL_BUILD_TARGET"
-          cp "bazel-bin/weft_/weft" release-artifacts/weft-linux-arm64
+          bazelisk build "$BAZEL_BUILD_TARGET_ARM64"
+          cp "bazel-bin/weft_/weft_arm64" release-artifacts/weft-linux-arm64
           if [ ! -f release-artifacts/weft-linux-arm64 ]; then
             find "$(bazelisk info bazel-bin)" -type f -name weft -exec cp {} release-artifacts/weft-linux-arm64 \;
           fi

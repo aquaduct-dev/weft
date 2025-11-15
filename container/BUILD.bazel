@@ -8,6 +8,11 @@ tar(
     srcs = ["//:weft"],
 )
 
+tar(
+    name = "weft_tar_arm64",
+    srcs = ["//:weft_arm64"],
+)
+
 oci_image(
     name = "weft_image_amd64",
     base = "@alpine_linux_amd64",
@@ -18,8 +23,8 @@ oci_image(
 oci_image(
     name = "weft_image_arm64_v8",
     base = "@alpine_linux_arm64_v8",
-    cmd = ["/weft"],
-    tars = [":weft_tar"],
+    cmd = ["/weft_arm64"],
+    tars = [":weft_tar_arm64"],
 )
 
 oci_image_index(
