@@ -14,7 +14,7 @@ go_library(
 )
 
 go_binary(
-    name = "weft",
+    name = "weft_raw",
     embed = [":weft_lib"],
     visibility = ["//visibility:public"],
 )
@@ -22,7 +22,14 @@ go_binary(
 go_cross_binary(
     name = "weft_arm64",
     platform = "@rules_go//go/toolchain:linux_arm64",
-    target = ":weft",
+    target = ":weft_raw",
+    visibility = ["//visibility:public"],
+)
+
+go_cross_binary(
+    name = "weft",
+    platform = "@rules_go//go/toolchain:linux_amd64",
+    target = ":weft_raw",
     visibility = ["//visibility:public"],
 )
 
