@@ -29,3 +29,16 @@ type ConnectResponse struct {
 	// port the server will proxy to the client's WireGuard IP.
 	TunnelProxyPort int `json:"tunnel_proxy_port"`
 }
+
+// HealthcheckRequest is the request body for health checks.
+type HealthcheckRequest struct {
+	// Optional: A message to include in the health check request.
+	Message string `json:"message,omitempty"`
+}
+
+// HealthcheckResponse is the response body for health checks.
+type HealthcheckResponse struct {
+	Status  string `json:"status"`
+	Message string `json:"message,omitempty"`
+}
+

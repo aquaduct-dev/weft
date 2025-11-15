@@ -207,70 +207,88 @@ var tunnelCmd = &cobra.Command{
 			log.Fatal().Err(err).Msg("Failed to create tunnel")
 		}
 
-		// Start background healthchecks to the control API to keep the server-side proxy alive.
-		// Send GET /healthcheck every 10s. Also register a shutdown handler to notify server on exit.
-		healthURL := func() string {
-			if _, _, perr := net.SplitHostPort(serverIP); perr == nil {
-				return fmt.Sprintf("http://%s/healthcheck", serverIP)
-			}
-			return fmt.Sprintf("http://%s/healthcheck", net.JoinHostPort(serverIP, "9092"))
-		}()
-		done := make(chan struct{})
-		go func() {
-			ticker := time.NewTicker(10 * time.Second)
-			defer ticker.Stop()
-			client := &http.Client{Timeout: 5 * time.Second}
-			for {
-				select {
-				case <-ticker.C:
-					jwtMutex.Lock()
-					if time.Until(jwtExpiry) < 1*time.Minute {
-						log.Info().Msg("JWT is about to expire, refreshing...")
-						newJwtTokenString, err := auth.Login(connectHost, connectionSecret, tunnelNameFlag)
-						if err != nil {
-							log.Error().Err(err).Msg("Failed to refresh JWT")
-							jwtMutex.Unlock()
-							continue
-						}
-						jwtTokenString = newJwtTokenString
-						token, _, err := jwt.NewParser().ParseUnverified(jwtTokenString, jwt.MapClaims{})
-						if err != nil {
-							log.Error().Err(err).Msg("Failed to parse new JWT")
-							jwtMutex.Unlock()
-							continue
-						}
-						claims, ok := token.Claims.(jwt.MapClaims)
-						if !ok {
-							log.Error().Msg("Failed to get new JWT claims")
-							jwtMutex.Unlock()
-							continue
-						}
-						exp := int64(claims["exp"].(float64))
-						jwtExpiry = time.Unix(exp, 0)
-						log.Info().Msg("JWT refreshed")
+				// Start background healthchecks to the control API to keep the server-side proxy alive.
+				// Send POST /healthcheck every 10s. Also register a shutdown handler to notify server on exit.
+				healthURL := func() string {
+					if _, _, perr := net.SplitHostPort(serverIP); perr == nil {
+						return fmt.Sprintf("http://%s/healthcheck", serverIP)
 					}
-
-					req, _ := http.NewRequest(http.MethodGet, healthURL, nil)
-					req.Header.Set("Authorization", "Bearer "+jwtTokenString)
-					jwtMutex.Unlock()
-
-					resp, err := client.Do(req)
-					if err != nil || resp.StatusCode != http.StatusOK {
-						body := []byte("(no data)")
-						statusCode := 0
-						if resp != nil && resp.Body != nil {
-							body, _ = io.ReadAll(resp.Body)
-							statusCode = resp.StatusCode
+					return fmt.Sprintf("http://%s/healthcheck", net.JoinHostPort(serverIP, "9092"))
+				}()
+				done := make(chan struct{})
+				go func() {
+					ticker := time.NewTicker(10 * time.Second)
+					defer ticker.Stop()
+					client := &http.Client{Timeout: 5 * time.Second}
+					for {
+						select {
+						case <-ticker.C:
+							jwtMutex.Lock()
+							if time.Until(jwtExpiry) < 1*time.Minute {
+								log.Info().Msg("JWT is about to expire, refreshing...")
+								newJwtTokenString, err := auth.Login(connectHost, connectionSecret, tunnelNameFlag)
+								if err != nil {
+									log.Error().Err(err).Msg("Failed to refresh JWT")
+									jwtMutex.Unlock()
+									continue
+								}
+								jwtTokenString = newJwtTokenString
+								token, _, err := jwt.NewParser().ParseUnverified(jwtTokenString, jwt.MapClaims{})
+								if err != nil {
+									log.Error().Err(err).Msg("Failed to parse new JWT")
+									jwtMutex.Unlock()
+									continue
+								}
+								claims, ok := token.Claims.(jwt.MapClaims)
+								if !ok {
+									log.Error().Msg("Failed to get new JWT claims")
+									jwtMutex.Unlock()
+									continue
+								}
+								exp := int64(claims["exp"].(float64))
+								jwtExpiry = time.Unix(exp, 0)
+								log.Info().Msg("JWT refreshed")
+							}
+		
+							healthReq := types.HealthcheckRequest{
+								Message: fmt.Sprintf("Healthcheck from tunnel %s at %s", tunnelNameFlag, time.Now().Format(time.RFC3339)),
+							}
+							reqBody, err := json.Marshal(healthReq)
+							if err != nil {
+								log.Error().Err(err).Msg("Failed to marshal healthcheck request")
+								jwtMutex.Unlock()
+								continue
+							}
+		
+							req, _ := http.NewRequest(http.MethodPost, healthURL, bytes.NewBuffer(reqBody))
+							req.Header.Set("Content-Type", "application/json")
+							req.Header.Set("Authorization", "Bearer "+jwtTokenString)
+							jwtMutex.Unlock()
+		
+							resp, err := client.Do(req)
+							if err != nil {
+								log.Error().Err(err).Msg("Healthcheck request failed")
+								os.Exit(1)
+							}
+							defer resp.Body.Close()
+		
+							var healthResp types.HealthcheckResponse
+							if err := json.NewDecoder(resp.Body).Decode(&healthResp); err != nil {
+								log.Error().Err(err).Msg("Failed to decode healthcheck response")
+								os.Exit(1)
+							}
+		
+							if resp.StatusCode != http.StatusOK {
+								log.Error().Int("status_code", resp.StatusCode).Str("status", healthResp.Status).Str("message", healthResp.Message).Msg("Healthcheck request failed")
+								os.Exit(1)
+							}
+							log.Debug().Str("status", healthResp.Status).Str("message", healthResp.Message).Msg("Healthcheck successful")
+		
+						case <-done:
+							return
 						}
-						log.Error().Int("status_code", statusCode).Str("body", string(body)).Msg("Healthcheck request failed")
-						os.Exit(1)
 					}
-				case <-done:
-					return
-				}
-			}
-		}()
-
+				}()
 		// Capture interrupts to allow the client to tell server to close its proxy.
 		go func() {
 			c := make(chan os.Signal, 1)

@@ -501,8 +501,15 @@ func (s *Server) Serve(req *types.ConnectRequest) (*types.ConnectResponse, error
 }
 
 func (s *Server) HealthcheckHandler(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodGet {
+	if r.Method != http.MethodPost { // Changed to POST to receive a body
 		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	var req types.HealthcheckRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil && err != io.EOF {
+		// io.EOF means an empty body, which is acceptable for healthchecks
+		http.Error(w, fmt.Sprintf("Invalid request body: %v", err), http.StatusBadRequest)
 		return
 	}
 
@@ -545,7 +552,7 @@ func (s *Server) HealthcheckHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	log.Debug().Str("proxy_name", proxyName).Msg("HealthcheckHandler: received healthcheck")
+	log.Debug().Str("proxy_name", proxyName).Str("message", req.Message).Msg("HealthcheckHandler: received healthcheck")
 
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -568,16 +575,14 @@ func (s *Server) HealthcheckHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Return success status with proxy information
-	response := map[string]any{
-		"status":    "healthy",
-		"proxy":     proxyName,
-		"ip":        peer.ip.String(),
-		"timestamp": time.Now().Unix(),
+	resp := types.HealthcheckResponse{
+		Status:  "healthy",
+		Message: fmt.Sprintf("Proxy '%s' is healthy. IP: %s. Request message: '%s'", proxyName, peer.ip.String(), req.Message),
 	}
 
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusOK)
-	if err := json.NewEncoder(w).Encode(response); err != nil {
+	if err := json.NewEncoder(w).Encode(resp); err != nil {
 		log.Error().Err(err).Str("proxy_name", proxyName).Msg("HealthcheckHandler: failed to encode response")
 		http.Error(w, "Failed to encode response", http.StatusInternalServerError)
 		return
