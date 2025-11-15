@@ -47,11 +47,11 @@ jobs:
         run: |
           mkdir -p release-artifacts
 
-      - name: Mount Bazel cache
+      - name: Restore Bazel cache
         uses: actions/cache/restore@v4
         with:
           path: "/home/runner/.cache/bazel"
-          key: bazel
+          key: bazel-main
 
       - name: Test all
         run: |
@@ -87,7 +87,7 @@ jobs:
         uses: actions/cache/save@v4
         with:
           path: "/home/runner/.cache/bazel"
-          key: bazel
+          key: bazel-main
 
       - name: Make artifacts executable
         run: |
