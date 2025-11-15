@@ -136,7 +136,6 @@ var _ = Describe("ServerTunnel integration (Ginkgo) - separate file", func() {
 			RemotePort:      remotePort,
 			Protocol:        "http",
 			Hostname:        "127.0.0.1",
-			Upstream:        fmt.Sprintf("http://127.0.0.1:%d", backendPort),
 			TunnelName:      "test-tunnel",
 		}, token)
 
@@ -173,7 +172,6 @@ var _ = Describe("ServerTunnel integration (Ginkgo) - separate file", func() {
 			RemotePort:      remotePort,
 			Protocol:        "https",
 			Hostname:        "test.com",
-			Upstream:        fmt.Sprintf("http://127.0.0.1:%d", backendPort),
 			TunnelName:      "test-tunnel",
 			CertificatePEM:  string(certPem),
 			PrivateKeyPEM:   string(keyPem),
@@ -252,7 +250,6 @@ var _ = Describe("ServerTunnel integration (Ginkgo) - separate file", func() {
 			RemotePort:      remotePort,
 			Protocol:        "tcp",
 			Hostname:        "127.0.0.1",
-			Upstream:        fmt.Sprintf("tcp://127.0.0.1:%d", echoPort),
 			TunnelName:      "test-tunnel",
 		}, token)
 

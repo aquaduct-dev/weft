@@ -148,7 +148,6 @@ var tunnelCmd = &cobra.Command{
 			RemotePort:      remotePort,
 			Protocol:        proto,
 			Hostname:        hostname,
-			Upstream:        localURL.String(),
 			TunnelName:      tunnelNameFlag,
 		}
 		// If the user supplied TLS cert/key via flags (test only), include them in the

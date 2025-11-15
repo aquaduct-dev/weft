@@ -15,8 +15,7 @@ type ConnectRequest struct {
 	// TunnelName is an optional logical identifier for the tunnel. If empty, the client will
 	// default it to a sha256(src|dst) so tunnels can be referenced by name on the server.
 	TunnelName string `json:"tunnel_name,omitempty"`
-	// Upstream is the target URL for vhost proxying.
-	Upstream string `json:"upstream,omitempty"`
+
 }
 
 // ConnectResponse is the response body for the /connect endpoint.
