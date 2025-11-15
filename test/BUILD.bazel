@@ -42,3 +42,25 @@ sh_test(
         "PROTO": "udp",
     },
 )
+
+sh_test(
+    name = "test_tcp_proxy",
+    srcs = ["test_tcp_proxy.sh"],
+    data = [
+        "//:weft",
+    ],
+    env = {
+        "PROTO": "tcp",
+    },
+)
+
+sh_test(
+    name = "test_http_proxy",
+    srcs = ["test_tcp_proxy.sh"],
+    data = [
+        "//:weft",
+    ],
+    env = {
+        "PROTO": "http",
+    },
+)
