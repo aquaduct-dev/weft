@@ -45,6 +45,7 @@ use_repo(
     "com_github_onsi_gomega",
     "com_github_rs_zerolog",
     "com_github_spf13_cobra",
+    "com_github_vishvananda_netlink",
     "com_zx2c4_golang_wireguard",
     "com_zx2c4_golang_wireguard_wgctrl",
     "dev_gvisor_gvisor",

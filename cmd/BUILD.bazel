@@ -23,5 +23,6 @@ go_library(
         "@com_github_rs_zerolog//:zerolog",
         "@com_github_rs_zerolog//log",
         "@com_github_spf13_cobra//:cobra",
+        "@com_github_vishvananda_netlink//:netlink",
     ],
 )

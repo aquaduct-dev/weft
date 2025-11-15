@@ -6,7 +6,6 @@ import (
 	"net"
 	"net/http"
 	"os"
-	"os/exec"
 	"os/signal"
 	"strconv"
 	"strings"
@@ -15,6 +14,7 @@ import (
 	"aquaduct.dev/weft/src/server"
 	"github.com/rs/zerolog/log"
 	"github.com/spf13/cobra"
+	"github.com/vishvananda/netlink"
 )
 
 func isLikelyPublic(addr string) bool {
@@ -159,15 +159,21 @@ var serverCmd = &cobra.Command{
 
 		if bindInterface != "" {
 			log.Info().Str("interface", bindInterface).Str("ip", bindIP).Msg("Binding IP to interface")
-			out, err := exec.Command("ip", "addr", "add", bindIP+"/32", "dev", bindInterface).CombinedOutput()
+			link, err := netlink.LinkByName(bindInterface)
 			if err != nil {
-				log.Fatal().Err(err).Bytes("out", out).Msg("failed to bind IP to interface")
+				log.Fatal().Err(err).Msg("failed to find interface")
+			}
+			addr, err := netlink.ParseAddr(bindIP + "/32")
+			if err != nil {
+				log.Fatal().Err(err).Msg("failed to parse address")
+			}
+			if err := netlink.AddrAdd(link, addr); err != nil {
+				log.Fatal().Err(err).Msg("failed to bind IP to interface")
 			}
 			defer func() {
 				log.Info().Str("interface", bindInterface).Str("ip", bindIP).Msg("Unbinding IP from interface")
-				out, err := exec.Command("ip", "addr", "del", bindIP+"/32", "dev", bindInterface).CombinedOutput()
-				if err != nil {
-					log.Error().Err(err).Bytes("out", out).Msg("failed to unbind IP from interface")
+				if err := netlink.AddrDel(link, addr); err != nil {
+					log.Error().Err(err).Msg("failed to unbind IP from interface")
 				}
 			}()
 		}
