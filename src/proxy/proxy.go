@@ -351,19 +351,19 @@ func (p *ProxyManager) StartProxy(srcURL *url.URL, dstURL *url.URL, proxyName st
 		p.proxyNameToHost[proxyName] = dstURL.Host
 	case "udp>udp":
 		// Enforce that the UDP listener host must be the same as bindIP.
-		rewriteHost(dstURL, bindIp)
+		rewriteHost(srcURL, bindIp)
 		// For UDP, bind explicitly to the provided host (which may be a WG IP).
-		addr, err := net.ResolveUDPAddr("udp", dstURL.Host)
-		if err != nil {
-			return fmt.Errorf("resolve udp %s: %w", dstURL.Host, err)
-		}
-		srcAddr, err := net.ResolveUDPAddr("udp", srcURL.Host)
+		addr, err := net.ResolveUDPAddr("udp", srcURL.Host)
 		if err != nil {
 			return fmt.Errorf("resolve udp %s: %w", srcURL.Host, err)
 		}
+		srcAddr, err := net.ResolveUDPAddr("udp", dstURL.Host)
+		if err != nil {
+			return fmt.Errorf("resolve udp %s: %w", dstURL.Host, err)
+		}
 		l, err := WGAwareUDPListen(addr, device)
 		if err != nil {
-			return fmt.Errorf("listen udp %s: %w", dstURL.Host, err)
+			return fmt.Errorf("listen udp %s: %w", srcURL.Host, err)
 		}
 		log.Info().Str("proxy_type", proxyType).Str("src", srcURL.Host).Str("dst", dstURL.Host).Msg("Proxy: listening udp")
 		go func() {
@@ -373,7 +373,7 @@ func (p *ProxyManager) StartProxy(srcURL *url.URL, dstURL *url.URL, proxyName st
 				n, publicAddr, err := l.ReadFromUDP(buf)
 
 				if err != nil {
-					log.Error().Err(err).Str("dst", dstURL.Host).Msg("udp read error")
+					log.Error().Err(err).Str("dst", srcURL.Host).Msg("udp read error")
 					return
 				}
 
@@ -381,7 +381,7 @@ func (p *ProxyManager) StartProxy(srcURL *url.URL, dstURL *url.URL, proxyName st
 				targetConn, ok := sessions[key]
 				if !ok {
 					if err != nil {
-						log.Error().Err(err).Str("src", srcURL.Host).Msg("udp resolve local error")
+						log.Error().Err(err).Str("src", dstURL.Host).Msg("udp resolve local error")
 						continue
 					}
 					targetConn, err = WGAwareUDPDial(srcAddr, device)
@@ -416,8 +416,8 @@ func (p *ProxyManager) StartProxy(srcURL *url.URL, dstURL *url.URL, proxyName st
 			}
 		}()
 		p.proxies[proxyName] = l
-		p.hostToProxyName[dstURL.Host] = proxyName
-		p.proxyNameToHost[proxyName] = dstURL.Host
+		p.hostToProxyName[srcURL.Host] = proxyName
+		p.proxyNameToHost[proxyName] = srcURL.Host
 	case "tcp>http", "http>http":
 		split := strings.Split(dstURL.Host, ":")
 		port := 80
