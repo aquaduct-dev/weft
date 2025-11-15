@@ -31,10 +31,6 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: "Verify GH login"
-        run: |
-          cat $HOME/.docker/config.json
-
       - name: Set up Java (required by Bazel)
         uses: actions/setup-java@v4
         with:
