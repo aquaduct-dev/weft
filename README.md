@@ -17,6 +17,8 @@ There are optional arguments:
  - `--port` can be passed a port to change the server connection port (default 9092).
  - `--verbose` can be passed to have the server log detailed connection information.
  - `--opentelemetry-connection-string` can be passed to log OpenTelemetry metrics.
+ - `--certs-cache-path` can be passed to cache certificates.
+ - `--connection-secret` can be passed to directly provision a secret.
 
 The server will print a connection secret (and optionally write it to a file) on startup.
 
