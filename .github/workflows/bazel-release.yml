@@ -94,7 +94,7 @@ jobs:
           chmod +x release-artifacts/*
           file release-artifacts/*
 
-      - name: Create release & upload artifacts
+      - name: Create release
         id: create_release
         uses: softprops/action-gh-release@v1
         with:
