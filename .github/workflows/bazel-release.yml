@@ -19,6 +19,11 @@ jobs:
       BAZEL_BUILD_TARGET_ARM64: //:weft_arm64
 
     steps:
+      - name: Restore Bazel cache
+        uses: actions/cache/restore@v4
+        with:
+          path: "/home/runner/.cache/bazel"
+          key: bazel-main
       - name: Checkout repository
         uses: actions/checkout@v4
         with:
@@ -46,12 +51,6 @@ jobs:
       - name: Configure output directory
         run: |
           mkdir -p release-artifacts
-
-      - name: Restore Bazel cache
-        uses: actions/cache/restore@v4
-        with:
-          path: "/home/runner/.cache/bazel"
-          key: bazel-main
 
       - name: Test all
         run: |
