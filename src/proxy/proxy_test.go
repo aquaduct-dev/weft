@@ -36,7 +36,7 @@ var _ = Describe("TunnelTCPProxy", func() {
 		Expect(err).ToNot(HaveOccurred())
 		remoteURL, err := url.Parse("tcp://127.0.0.1:12031")
 		Expect(err).ToNot(HaveOccurred())
-		err = NewProxyManager().StartProxy(localURL, remoteURL, "test-tunnel", nil, nil, nil, "")
+		_, err = NewProxyManager().StartProxy(localURL, remoteURL, "test-tunnel", nil, nil, nil, "")
 		Expect(err).ToNot(HaveOccurred())
 		// Connect to the tunnel proxy
 		conn, err := net.Dial("tcp", remoteURL.Host)
@@ -77,7 +77,7 @@ var _ = Describe("TunnelTCPProxy", func() {
 		Expect(err).ToNot(HaveOccurred())
 		remoteURL, err := url.Parse("udp://127.0.0.1:12041")
 		Expect(err).ToNot(HaveOccurred())
-		err = NewProxyManager().StartProxy(localURL, remoteURL, "test-tunnel-udp", nil, nil, nil, "")
+		_, err = NewProxyManager().StartProxy(localURL, remoteURL, "test-tunnel-udp", nil, nil, nil, "")
 		Expect(err).ToNot(HaveOccurred())
 
 		// Connect to the tunnel proxy
@@ -115,7 +115,7 @@ var _ = Describe("TunnelTCPProxy", func() {
 		Expect(err).ToNot(HaveOccurred())
 		remoteURL, err := url.Parse("http://testhost:12051")
 		Expect(err).ToNot(HaveOccurred())
-		err = NewProxyManager().StartProxy(localURL, remoteURL, "test-tunnel-http", nil, nil, nil, "")
+		_, err = NewProxyManager().StartProxy(localURL, remoteURL, "test-tunnel-http", nil, nil, nil, "")
 		Expect(err).ToNot(HaveOccurred())
 
 		// Wait for the proxy to be ready
@@ -160,11 +160,10 @@ var _ = Describe("TunnelTCPProxy", func() {
 		remoteURL, err := url.Parse("tcp://127.0.0.1:12033")
 		Expect(err).ToNot(HaveOccurred())
 		proxyManager := NewProxyManager()
-		err = proxyManager.StartProxy(localURL, remoteURL, "duplicate-tunnel", nil, nil, nil, "")
-		Expect(err).ToNot(HaveOccurred())
-
+		        _, err = proxyManager.StartProxy(localURL, remoteURL, "duplicate-tunnel", nil, nil, nil, "")
+		        Expect(err).ToNot(HaveOccurred())
 		// Attempt to create another tunnel with the same name
-		err = proxyManager.StartProxy(localURL, remoteURL, "duplicate-tunnel", nil, nil, nil, "")
+		_, err = proxyManager.StartProxy(localURL, remoteURL, "duplicate-tunnel", nil, nil, nil, "")
 		Expect(err).To(HaveOccurred())
 		Expect(err.Error()).To(Equal("proxy duplicate-tunnel already exists"))
 	})
@@ -176,7 +175,7 @@ var _ = Describe("TunnelTCPProxy", func() {
 		remoteURL1, err := url.Parse("tcp://127.0.0.1:12035")
 		Expect(err).ToNot(HaveOccurred())
 		proxyManager := NewProxyManager()
-		err = proxyManager.StartProxy(localURL1, remoteURL1, "tunnel-host-1", nil, nil, nil, "")
+		_, err = proxyManager.StartProxy(localURL1, remoteURL1, "tunnel-host-1", nil, nil, nil, "")
 		Expect(err).ToNot(HaveOccurred())
 
 		// Attempt to create another tunnel with a different name but same host
@@ -184,10 +183,10 @@ var _ = Describe("TunnelTCPProxy", func() {
 		Expect(err).ToNot(HaveOccurred())
 		remoteURL2, err := url.Parse("tcp://127.0.0.1:12035") // Same host as remoteURL1
 		Expect(err).ToNot(HaveOccurred())
-		err = proxyManager.StartProxy(localURL2, remoteURL2, "tunnel-host-2", nil, nil, nil, "")
+		_, err = proxyManager.StartProxy(localURL2, remoteURL2, "tunnel-host-2", nil, nil, nil, "")
 		Expect(err).To(HaveOccurred())
 		Expect(err.Error()).To(SatisfyAny(
-			ContainSubstring("proxy for host 127.0.0.1:12035 already exists"),
+			ContainSubstring("proxy conflicts with tunnel-host-1"),
 		))
 	})
 
@@ -218,7 +217,7 @@ var _ = Describe("TunnelTCPProxy", func() {
 
 		pm := NewProxyManager()
 		// bindIp empty: it will listen on dst host (127.0.0.1:12061)
-		err = pm.StartProxy(localURL, remoteURL, "bindip-test-1", nil, nil, nil, "")
+		_, err = pm.StartProxy(localURL, remoteURL, "bindip-test-1", nil, nil, nil, "")
 		Expect(err).ToNot(HaveOccurred())
 		// connect should succeed to the configured host (127.0.0.1:12061)
 		conn1, err := net.Dial("tcp", "127.0.0.1:12061")
@@ -227,7 +226,7 @@ var _ = Describe("TunnelTCPProxy", func() {
 		pm.Close("bindip-test-1")
 
 		// Now request proxy but force bindIp of 0.0.0.0 and ensure StartProxy rewrites dst to that host.
-		err = pm.StartProxy(localURL, remoteURL, "bindip-test-2", nil, nil, nil, "0.0.0.0")
+		_, err = pm.StartProxy(localURL, remoteURL, "bindip-test-2", nil, nil, nil, "0.0.0.0")
 		// When bindIp is 0.0.0.0 rewriteHost is a no-op (per implementation), so it should still succeed.
 		Expect(err).ToNot(HaveOccurred())
 		// connecting to 127.0.0.1:12061 should still work because listener on 0.0.0.0 accepts connections for loopback
@@ -262,7 +261,7 @@ var _ = Describe("TunnelTCPProxy", func() {
 
 		pm := NewProxyManager()
 		// Start proxy without bindIp -> listens on remoteURL host (127.0.0.1:12071)
-		err = pm.StartProxy(localURL, remoteURL, "bindip-udp-1", nil, nil, nil, "")
+		_, err = pm.StartProxy(localURL, remoteURL, "bindip-udp-1", nil, nil, nil, "")
 		Expect(err).ToNot(HaveOccurred())
 
 		// Talk to proxy
@@ -282,7 +281,7 @@ var _ = Describe("TunnelTCPProxy", func() {
 		pm.Close("bindip-udp-1")
 
 		// Now test with bindIp set to 0.0.0.0 (should still succeed - rewriteHost is noop for 0.0.0.0)
-		err = pm.StartProxy(localURL, remoteURL, "bindip-udp-2", nil, nil, nil, "0.0.0.0")
+		_, err = pm.StartProxy(localURL, remoteURL, "bindip-udp-2", nil, nil, nil, "0.0.0.0")
 		Expect(err).ToNot(HaveOccurred())
 		conn2, err := net.Dial("udp", "127.0.0.1:12071")
 		Expect(err).ToNot(HaveOccurred())
@@ -297,3 +296,84 @@ var _ = Describe("TunnelTCPProxy", func() {
 		pm.Close("bindip-udp-2")
 	})
 })
+
+var _ = Describe("Proxy Conflicts", func() {
+	It("should return true for conflicting TCP proxies", func() {
+		l, err := net.Listen("tcp", "127.0.0.1:12080")
+		Expect(err).ToNot(HaveOccurred())
+		defer l.Close()
+		p1 := &TCPProxy{Listener: l}
+		p2 := &TCPProxy{Listener: l}
+		Expect(p1.Conflicts(p2)).To(BeTrue())
+	})
+
+	It("should return false for non-conflicting TCP proxies", func() {
+		l1, err := net.Listen("tcp", "127.0.0.1:12081")
+		Expect(err).ToNot(HaveOccurred())
+		defer l1.Close()
+		l2, err := net.Listen("tcp", "127.0.0.1:12082")
+		Expect(err).ToNot(HaveOccurred())
+		defer l2.Close()
+		p1 := &TCPProxy{Listener: l1}
+		p2 := &TCPProxy{Listener: l2}
+		Expect(p1.Conflicts(p2)).To(BeFalse())
+	})
+
+	It("should return true for conflicting UDP proxies", func() {
+		addr, err := net.ResolveUDPAddr("udp", "127.0.0.1:12090")
+		Expect(err).ToNot(HaveOccurred())
+		conn, err := net.ListenUDP("udp", addr)
+		Expect(err).ToNot(HaveOccurred())
+		defer conn.Close()
+		p1 := &UDPProxy{Conn: WGAwareUDPConn{netConn: conn}}
+		p2 := &UDPProxy{Conn: WGAwareUDPConn{netConn: conn}}
+		Expect(p1.Conflicts(p2)).To(BeTrue())
+	})
+
+	It("should return false for non-conflicting UDP proxies", func() {
+		addr1, err := net.ResolveUDPAddr("udp", "127.0.0.1:12091")
+		Expect(err).ToNot(HaveOccurred())
+		conn1, err := net.ListenUDP("udp", addr1)
+		Expect(err).ToNot(HaveOccurred())
+		defer conn1.Close()
+		addr2, err := net.ResolveUDPAddr("udp", "127.0.0.1:12092")
+		Expect(err).ToNot(HaveOccurred())
+		conn2, err := net.ListenUDP("udp", addr2)
+		Expect(err).ToNot(HaveOccurred())
+		defer conn2.Close()
+		p1 := &UDPProxy{Conn: WGAwareUDPConn{netConn: conn1}}
+		p2 := &UDPProxy{Conn: WGAwareUDPConn{netConn: conn2}}
+		Expect(p1.Conflicts(p2)).To(BeFalse())
+	})
+
+	It("should return true for conflicting VHost proxies", func() {
+		p1 := &VHostRouteProxy{Host: "example.com", Port: 80, BindIp: "0.0.0.0"}
+		p2 := &VHostRouteProxy{Host: "example.com", Port: 80, BindIp: "0.0.0.0"}
+		Expect(p1.Conflicts(p2)).To(BeTrue())
+	})
+
+	It("should return false for non-conflicting VHost proxies", func() {
+		p1 := &VHostRouteProxy{Host: "example.com", Port: 80, BindIp: "0.0.0.0"}
+		p2 := &VHostRouteProxy{Host: "example.org", Port: 80, BindIp: "0.0.0.0"}
+		Expect(p1.Conflicts(p2)).To(BeFalse())
+	})
+
+	It("should return false for proxies of different types", func() {
+		l, err := net.Listen("tcp", "127.0.0.1:12093")
+		Expect(err).ToNot(HaveOccurred())
+		defer l.Close()
+		p1 := &TCPProxy{Listener: l}
+		p2 := &VHostRouteProxy{Host: "example.com", Port: 80, BindIp: "0.0.0.0"}
+		Expect(p1.Conflicts(p2)).To(BeFalse())
+	})
+
+	It("should return true for conflicting TCP and VHost proxies", func() {
+		l, err := net.Listen("tcp", "127.0.0.1:12094")
+		Expect(err).ToNot(HaveOccurred())
+		defer l.Close()
+		p1 := &TCPProxy{Listener: l}
+		p2 := &VHostRouteProxy{Host: "example.com", Port: 12094, BindIp: "127.0.0.1"}
+		Expect(p1.Conflicts(p2)).To(BeTrue())
+	})
+})
+

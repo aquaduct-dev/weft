@@ -2,7 +2,6 @@ package proxy
 
 import (
 	"fmt"
-	"io"
 	"net"
 	"net/netip"
 	"net/url"
@@ -13,23 +12,18 @@ import (
 	"aquaduct.dev/weft/src/vhost"
 	"aquaduct.dev/weft/wireguard"
 	"github.com/rs/zerolog/log"
-	"gvisor.dev/gvisor/pkg/tcpip/adapters/gonet"
 )
 
 type ProxyManager struct {
-	proxies map[string]io.Closer
+	proxies map[string]Proxy
 	// bindIP constrains proxy listeners to a specific IP when set.
 	bindIP            string
-	hostToProxyName   map[string]string // New map to store host to proxyName mapping
-	proxyNameToHost   map[string]string // New map to store proxyName to host mapping
 	VHostProxyManager *vhost.VHostProxyManager
 }
 
 func NewProxyManager() *ProxyManager {
 	return &ProxyManager{
-		proxies:           make(map[string]io.Closer),
-		hostToProxyName:   make(map[string]string), // Initialize the new map
-		proxyNameToHost:   make(map[string]string), // Initialize the new map
+		proxies:           make(map[string]Proxy),
 		VHostProxyManager: vhost.NewVHostProxyManager(),
 	}
 }
@@ -190,10 +184,6 @@ func (p *ProxyManager) Close(proxyName string) {
 	if existingProxy, ok := p.proxies[proxyName]; ok {
 		existingProxy.Close()
 		delete(p.proxies, proxyName)
-		if host, ok := p.proxyNameToHost[proxyName]; ok {
-			delete(p.hostToProxyName, host)
-			delete(p.proxyNameToHost, proxyName)
-		}
 	}
 }
 
@@ -217,123 +207,45 @@ func rewriteHost(u *url.URL, host string) {
 	u.Host = host + ":" + u.Port()
 }
 
-type WGAwareUDPConn struct {
-	goNetConn *gonet.UDPConn
-	netConn   *net.UDPConn
-}
-
-func (w *WGAwareUDPConn) ReadFromUDP(b []byte) (int, *net.UDPAddr, error) {
-	if w.netConn != nil {
-		return w.netConn.ReadFromUDP(b)
-	}
-	n, addr, err := w.goNetConn.ReadFrom(b)
-	return n, addr.(*net.UDPAddr), err
-}
-
-func (w *WGAwareUDPConn) Write(b []byte) (int, error) {
-	if w.netConn != nil {
-		return w.netConn.Write(b)
-	}
-	return w.goNetConn.Write(b)
-}
-
-func (w *WGAwareUDPConn) WriteToUDP(b []byte, addr *net.UDPAddr) (int, error) {
-	if w.netConn != nil {
-		return w.netConn.WriteToUDP(b, addr)
-	}
-	return w.goNetConn.WriteTo(b, addr)
-}
-
-func (w WGAwareUDPConn) Close() error {
-	if w.netConn != nil {
-		return w.netConn.Close()
-	}
-	return w.goNetConn.Close()
-}
-
-func WGAwareUDPDial(addr *net.UDPAddr, device *wireguard.UserspaceDevice) (WGAwareUDPConn, error) {
-	if strings.HasPrefix(addr.String(), "10.1.") {
-		if device == nil {
-			return WGAwareUDPConn{}, fmt.Errorf("cannot dial on WireGuard host %s without wireguard device", addr.String())
-		}
-		outgoingConn, err := device.NetStack.DialUDP(nil, addr)
-		return WGAwareUDPConn{goNetConn: outgoingConn, netConn: nil}, err
-	} else {
-		outgoingConn, err := net.DialUDP("udp", nil, addr)
-		return WGAwareUDPConn{goNetConn: nil, netConn: outgoingConn}, err
-
-	}
-}
-
-func WGAwareUDPListen(addr *net.UDPAddr, device *wireguard.UserspaceDevice) (WGAwareUDPConn, error) {
-	if strings.HasPrefix(addr.String(), "10.1.") {
-		rawListener, err := device.NetStack.ListenUDP(addr)
-		if device == nil {
-			return WGAwareUDPConn{}, fmt.Errorf("cannot listen on WireGuard host %s without wireguard device", addr.String())
-		}
-		return WGAwareUDPConn{goNetConn: rawListener, netConn: nil}, err
-	} else {
-		rawListener, err := net.ListenUDP("udp", addr)
-		return WGAwareUDPConn{goNetConn: nil, netConn: rawListener}, err
-	}
-}
-
-func WGAwareTCPDial(addr *net.TCPAddr, device *wireguard.UserspaceDevice) (net.Conn, error) {
-	if strings.HasPrefix(addr.String(), "10.1.") {
-		if device == nil {
-			return nil, fmt.Errorf("cannot dial on WireGuard host %s without wireguard device", addr.String())
-		}
-		return device.NetStack.DialTCP(addr)
-	} else {
-		return net.DialTCP("tcp", nil, addr)
-	}
-}
-
-func WGAwareTCPListen(addr *net.TCPAddr, device *wireguard.UserspaceDevice) (net.Listener, error) {
-	if strings.HasPrefix(addr.String(), "10.1.") {
-		if device == nil {
-			return nil, fmt.Errorf("cannot listen on WireGuard host %s without wireguard device", addr.String())
-		}
-		return device.NetStack.ListenTCP(addr)
-	} else {
-		return net.ListenTCP("tcp", addr)
-	}
-}
-
-func (p *ProxyManager) StartProxy(srcURL *url.URL, dstURL *url.URL, proxyName string, device *wireguard.UserspaceDevice, certPEM, keyPEM []byte, bindIp string) error {
+func (p *ProxyManager) StartProxy(srcURL *url.URL, dstURL *url.URL, proxyName string, device *wireguard.UserspaceDevice, certPEM, keyPEM []byte, bindIp string) (Proxy, error) {
 	log.Info().Str("src", srcURL.String()).Str("dst", dstURL.String()).Str("proxy", proxyName).Msg("Proxy: starting proxy")
 	var err error
 	// Ensure ports are set in the URLs.
-	if ensurePort(srcURL) != nil {
-		return err
+	if err = ensurePort(srcURL); err != nil {
+		return nil, err
 	}
-	if ensurePort(dstURL) != nil {
-		return err
+	if err = ensurePort(dstURL); err != nil {
+		return nil, err
 	}
 
-	// Validate by checking that no other proxies exist with this name
+	// Check that no other proxies exist with this name
 	if _, ok := p.proxies[proxyName]; ok {
-		return fmt.Errorf("proxy %s already exists", proxyName)
-	}
-	if existingProxyName, ok := p.hostToProxyName[dstURL.Host]; ok {
-		return fmt.Errorf("proxy for host %s already exists (named %s)", dstURL.Host, existingProxyName)
+		return nil, fmt.Errorf("proxy %s already exists", proxyName)
 	}
 
 	proxyType := fmt.Sprintf("%s>%s", srcURL.Scheme, dstURL.Scheme)
+
 	switch proxyType {
 	case "tcp>tcp", "https>https", "http>tcp":
+		addr, err := net.ResolveTCPAddr("tcp", dstURL.Host)
+		if err != nil {
+			return nil, err
+		}
+		newProxy := &TCPProxy{Addr: addr}
+		for name, existingProxy := range p.proxies {
+			if newProxy.Conflicts(existingProxy) {
+				return nil, fmt.Errorf("proxy conflicts with %s", name)
+			}
+		}
+
 		// Enforce that the TCP listener host must be the same as bindIP.
 		rewriteHost(dstURL, bindIp)
 		// Create a listener on the validated host:port. If host is in the wireguard subnet and we
 		// have a device, listen via the device's NetStack; otherwise use the system net.Listen.
-		listenAddr, err := net.ResolveTCPAddr("tcp", dstURL.Host)
-		if err != nil {
-			return fmt.Errorf("resolve tcp %s: %w", dstURL.Host, err)
-		}
-		ln, err := WGAwareTCPListen(listenAddr, device)
+		ln, err := WGAwareTCPListen(addr, device)
 		if err != nil {
 			log.Warn().Str("proxy_type", proxyType).Str("src", srcURL.String()).Str("dst", dstURL.String()).Err(err).Msg("Proxy: listen tcp failed")
-			return fmt.Errorf("listen tcp %s: %w", dstURL.Host, err)
+			return nil, fmt.Errorf("listen tcp %s: %w", dstURL.Host, err)
 		}
 		go func() {
 			for {
@@ -346,24 +258,31 @@ func (p *ProxyManager) StartProxy(srcURL *url.URL, dstURL *url.URL, proxyName st
 				go ProxyTCP(conn, srcURL.Host, device)
 			}
 		}()
-		p.proxies[proxyName] = ln
-		p.hostToProxyName[dstURL.Host] = proxyName
-		p.proxyNameToHost[proxyName] = dstURL.Host
+		newProxy.Listener = ln
+		p.proxies[proxyName] = newProxy
+		return newProxy, nil
 	case "udp>udp":
-		// Enforce that the UDP listener host must be the same as bindIP.
-		rewriteHost(srcURL, bindIp)
-		// For UDP, bind explicitly to the provided host (which may be a WG IP).
-		addr, err := net.ResolveUDPAddr("udp", srcURL.Host)
+		addr, err := net.ResolveUDPAddr("udp", dstURL.Host)
 		if err != nil {
-			return fmt.Errorf("resolve udp %s: %w", srcURL.Host, err)
+			return nil, err
 		}
-		srcAddr, err := net.ResolveUDPAddr("udp", dstURL.Host)
+		newProxy := &UDPProxy{Addr: addr}
+		for name, existingProxy := range p.proxies {
+			if newProxy.Conflicts(existingProxy) {
+				return nil, fmt.Errorf("proxy conflicts with %s", name)
+			}
+		}
+
+		// Enforce that the UDP listener host must be the same as bindIP.
+		rewriteHost(dstURL, bindIp)
+		// For UDP, bind explicitly to the provided host (which may be a WG IP).
+		srcAddr, err := net.ResolveUDPAddr("udp", srcURL.Host)
 		if err != nil {
-			return fmt.Errorf("resolve udp %s: %w", dstURL.Host, err)
+			return nil, fmt.Errorf("resolve udp %s: %w", srcURL.Host, err)
 		}
 		l, err := WGAwareUDPListen(addr, device)
 		if err != nil {
-			return fmt.Errorf("listen udp %s: %w", srcURL.Host, err)
+			return nil, fmt.Errorf("listen udp %s: %w", dstURL.Host, err)
 		}
 		log.Info().Str("proxy_type", proxyType).Str("src", srcURL.Host).Str("dst", dstURL.Host).Msg("Proxy: listening udp")
 		go func() {
@@ -373,7 +292,7 @@ func (p *ProxyManager) StartProxy(srcURL *url.URL, dstURL *url.URL, proxyName st
 				n, publicAddr, err := l.ReadFromUDP(buf)
 
 				if err != nil {
-					log.Error().Err(err).Str("dst", srcURL.Host).Msg("udp read error")
+					log.Error().Err(err).Str("dst", dstURL.Host).Msg("udp read error")
 					return
 				}
 
@@ -381,7 +300,7 @@ func (p *ProxyManager) StartProxy(srcURL *url.URL, dstURL *url.URL, proxyName st
 				targetConn, ok := sessions[key]
 				if !ok {
 					if err != nil {
-						log.Error().Err(err).Str("src", dstURL.Host).Msg("udp resolve local error")
+						log.Error().Err(err).Str("src", srcURL.Host).Msg("udp resolve local error")
 						continue
 					}
 					targetConn, err = WGAwareUDPDial(srcAddr, device)
@@ -415,57 +334,71 @@ func (p *ProxyManager) StartProxy(srcURL *url.URL, dstURL *url.URL, proxyName st
 
 			}
 		}()
-		p.proxies[proxyName] = l
-		p.hostToProxyName[srcURL.Host] = proxyName
-		p.proxyNameToHost[proxyName] = srcURL.Host
+		newProxy.Conn = l
+		p.proxies[proxyName] = newProxy
+		return newProxy, nil
 	case "tcp>http", "http>http":
 		split := strings.Split(dstURL.Host, ":")
 		port := 80
 		if len(split) > 1 {
 			port, err = strconv.Atoi(split[1])
 			if err != nil {
-				return fmt.Errorf("invalid port %s: %w", split[1], err)
+				return nil, fmt.Errorf("invalid port %s: %w", split[1], err)
 			}
 		}
-		proxy := p.VHostProxyManager.Proxy(bindIp, port)
-		// forward the provided wireguard device so upstream dialing can use its NetStack for WG IPs.
-		closer, err := proxy.AddHost(split[0], srcURL, device)
-		if err != nil {
-			return err
+		newProxy := &VHostRouteProxy{Host: split[0], Port: port, BindIp: bindIp}
+		for name, existingProxy := range p.proxies {
+			if newProxy.Conflicts(existingProxy) {
+				return nil, fmt.Errorf("proxy conflicts with %s", name)
+			}
 		}
-		p.proxies[proxyName] = closer
-		p.hostToProxyName[dstURL.Host] = proxyName
-		p.proxyNameToHost[proxyName] = dstURL.Host
+
+		vhostProxy := p.VHostProxyManager.Proxy(bindIp, port)
+		// forward the provided wireguard device so upstream dialing can use its NetStack for WG IPs.
+		closer, err := vhostProxy.AddHost(split[0], srcURL, device)
+		if err != nil {
+			return nil, err
+		}
+		newProxy.Closer = closer
+		p.proxies[proxyName] = newProxy
+		return newProxy, nil
 	case "tcp>https", "http>https":
 		split := strings.Split(dstURL.Host, ":")
 		port := 443
 		if len(split) > 1 {
 			port, err = strconv.Atoi(split[1])
 			if err != nil {
-				return fmt.Errorf("invalid port %s: %w", split[1], err)
+				return nil, fmt.Errorf("invalid port %s: %w", split[1], err)
 			}
 		}
-		proxy := p.VHostProxyManager.Proxy(bindIp, port)
+		newProxy := &VHostRouteProxy{Host: split[0], Port: port, BindIp: bindIp}
+		for name, existingProxy := range p.proxies {
+			if newProxy.Conflicts(existingProxy) {
+				return nil, fmt.Errorf("proxy conflicts with %s", name)
+			}
+		}
+
+		vhostProxy := p.VHostProxyManager.Proxy(bindIp, port)
 		// If certPEM/keyPEM not provided, configure automatic issuance via ACME HTTP-01.
 		if len(certPEM) == 0 || len(keyPEM) == 0 {
-			closer, err := proxy.AddHostWithACME(split[0], srcURL, device, bindIp)
+			closer, err := vhostProxy.AddHostWithACME(split[0], srcURL, device, bindIp)
 			if err != nil {
-				return err
+				return nil, err
 			}
-			p.proxies[proxyName] = closer
-			p.hostToProxyName[dstURL.Host] = proxyName
-			p.proxyNameToHost[proxyName] = dstURL.Host
+			newProxy.Closer = closer
+			p.proxies[proxyName] = newProxy
+			return newProxy, nil
 		} else {
-			closer, err := proxy.AddHostWithTLS(split[0], srcURL, device, string(certPEM), string(keyPEM))
+			closer, err := vhostProxy.AddHostWithTLS(split[0], srcURL, device, string(certPEM), string(keyPEM))
 			if err != nil {
-				return err
+				return nil, err
 			}
-			p.proxies[proxyName] = closer
-			p.hostToProxyName[dstURL.Host] = proxyName
-			p.proxyNameToHost[proxyName] = dstURL.Host
+			newProxy.Closer = closer
+			p.proxies[proxyName] = newProxy
+			return newProxy, nil
 		}
 	default:
 		err = fmt.Errorf("unsupported proxy type: %s", proxyType)
 	}
-	return err
+	return nil, err
 }

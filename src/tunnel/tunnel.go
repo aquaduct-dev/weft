@@ -92,7 +92,7 @@ func Tunnel(serverIP string, localUrl *url.URL, resp *types.ConnectResponse, pri
 	// so the proxy manager can present the provided certificate on the remote
 	// HTTPS endpoint. The proxy.StartProxy signature accepts optional cert/key
 	// arguments via the last two parameters (pass nil when not used).
-	if err := p.StartProxy(localUrl, remoteUrl, tunnelName, device, tlsCertPEM, tlsKeyPEM, "0.0.0.0"); err != nil {
+	if _, err := p.StartProxy(localUrl, remoteUrl, tunnelName, device, tlsCertPEM, tlsKeyPEM, "0.0.0.0"); err != nil {
 		log.Fatal().Err(err).Msg("Failed to start proxy")
 	}
 

@@ -465,7 +465,7 @@ func (s *Server) Serve(req *types.ConnectRequest) (*types.ConnectResponse, error
 			keyBytes = []byte(req.PrivateKeyPEM)
 		}
 	}
-	err = s.ProxyManager.StartProxy(&tunnelSource, &tunnelEnd, req.TunnelName, s.device, certBytes, keyBytes, s.bindIP)
+	_, err = s.ProxyManager.StartProxy(&tunnelSource, &tunnelEnd, req.TunnelName, s.device, certBytes, keyBytes, s.bindIP)
 	if err != nil {
 		return nil, err
 	}

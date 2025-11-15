@@ -37,7 +37,7 @@ var proxyCmd = &cobra.Command{
 		}
 		pm := proxy.NewProxyManager()
 		log.Debug().Str("src", srcURL.String()).Str("dst", dstURL.String()).Str("proxy_name", proxyNameFlag).Msg("Starting proxy")
-		if err := pm.StartProxy(srcURL, dstURL, proxyNameFlag, nil, nil, nil, "0.0.0.0"); err != nil {
+		if _, err := pm.StartProxy(srcURL, dstURL, proxyNameFlag, nil, nil, nil, "0.0.0.0"); err != nil {
 			log.Fatal().Err(err).Msg("Failed to start proxy")
 			os.Exit(1)
 		}
