@@ -113,7 +113,7 @@ PROXY_LOG="$LOGDIR/proxy.log"
 TARGET_URL="udp://127.0.0.1:$PY_PORT"
 
 echo "Starting weft proxy on port $PROXY_LISTEN_PORT, targeting $TARGET_URL..."
-"$WEFT_BIN" proxy --verbose "${PROTO}://127.0.0.1:$PROXY_LISTEN_PORT" "${PROTO}://127.0.0.1:$PY_PORT" >"$PROXY_LOG" 2>&1 &
+"$WEFT_BIN" proxy --verbose "${PROTO}://127.0.0.1:$PY_PORT" "${PROTO}://127.0.0.1:$PROXY_LISTEN_PORT" >"$PROXY_LOG" 2>&1 &
 pids+=($!)
 
 wait_for_port "$PROXY_LISTEN_PORT"
