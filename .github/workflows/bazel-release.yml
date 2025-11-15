@@ -75,7 +75,7 @@ jobs:
       - name: Build arm64 binary
         run: |
           bazelisk build "$BAZEL_BUILD_TARGET_ARM64"
-          cp "bazel-bin/weft_/weft_arm64" release-artifacts/weft-linux-arm64
+          cp "bazel-bin/weft_arm64" release-artifacts/weft-linux-arm64
           if [ ! -f release-artifacts/weft-linux-arm64 ]; then
             find "$(bazelisk info bazel-bin)" -type f -name weft -exec cp {} release-artifacts/weft-linux-arm64 \;
           fi
