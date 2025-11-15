@@ -21,6 +21,13 @@ jobs:
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
+          
+      - name: Login to GitHub Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Set up Java (required by Bazel)
         uses: actions/setup-java@v4
@@ -82,7 +89,6 @@ jobs:
           ls -lh release-artifacts 
       - name: Deploy multiarch container
         run: |
-          echo ${{ secrets.GITHUB_TOKEN }} | docker login ghcr.io -u ${{github.actor}}  --password-stdin
           bazelisk run //container:weft_image_push -- --tag v${{ github.run_number }}
       - name: Make artifacts executable
         run: |
