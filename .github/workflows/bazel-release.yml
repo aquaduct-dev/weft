@@ -31,6 +31,10 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
+      - name: "Verify login to `ghcr.io"
+        run: |
+          docker push docker.io/library/alpine ghcr.io/aquaduct-dev/alpine
+
       - name: Set up Java (required by Bazel)
         uses: actions/setup-java@v4
         with:
