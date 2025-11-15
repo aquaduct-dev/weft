@@ -58,12 +58,8 @@ func encodeRequest(req types.ConnectRequest, token string) *http.Request {
 }
 
 func decodeResponse(data *bytes.Buffer) types.ConnectResponse {
-	fmt.Printf("%s", data.Bytes())
 	resp := types.ConnectResponse{}
 	err := json.Unmarshal(data.Bytes(), &resp)
-	if err != nil {
-		fmt.Printf(string(data.Bytes()))
-	}
 	Expect(err).ToNot(HaveOccurred())
 	return resp
 }
@@ -103,7 +99,7 @@ var _ = Describe("ServerTunnel integration (Ginkgo) - separate file", func() {
 		var tunnelLn net.Listener
 		tunnelLn, controlPort = openPort()
 		tunnelLn.Close() // we only needed the free port number
-		tunnelSrv = server.NewServer(controlPort, "")
+		tunnelSrv = server.NewServer(controlPort, "", "")
 		go tunnelSrv.ListenAndServe()
 
 		// Generate a new private key.

@@ -127,15 +127,18 @@ func CreateDevice(port int) (*wireguard.UserspaceDevice, wgtypes.Key, int, error
 	return device, privateKey, actualPort, nil
 }
 
-func NewServer(port int, bindIP string) *Server {
+func NewServer(port int, bindIP string, connectionSecret string) *Server {
 	mux := http.NewServeMux()
 
 	apiTLSCfg := &tls.Config{}
 
-	// Generate a random connection secret on startup.
-	connectionSecret, err := generateRandomSecret(10) // 10 bytes for a secure secret
-	if err != nil {
-		log.Fatal().Err(err).Msg("failed to generate connection secret")
+	if connectionSecret == "" {
+		// Generate a random connection secret on startup.
+		s, err := generateRandomSecret(10) // 10 bytes for a secure secret
+		if err != nil {
+			log.Fatal().Err(err).Msg("failed to generate connection secret")
+		}
+		connectionSecret = s
 	}
 
 	// Configure HTTP server address. If bindIP is specified, bind only to that IP.
@@ -163,6 +166,7 @@ func NewServer(port int, bindIP string) *Server {
 	if bindIP != "" {
 		s.ProxyManager.SetBindIP(bindIP)
 	}
+	var err error
 	s.device, s.privateKey, s.WgListenPort, err = CreateDevice(0) // Always use a random port for the wireguard device
 	if err != nil {
 		panic(err)
