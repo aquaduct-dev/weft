@@ -3,6 +3,13 @@ module(
     version = "2025.11.14",
 )
 
+# Add rules_oci as a bzlmod dependency so container rules can be used without a WORKSPACE file.
+# Version may be adjusted if you prefer a different release.
+bazel_dep(
+    name = "rules_oci",
+    version = "2.2.6",
+)
+bazel_dep(name = "tar.bzl", version = "0.6.0")
 bazel_dep(
     name = "rules_go",
     version = "0.59.0",
@@ -41,4 +48,23 @@ use_repo(
     "com_zx2c4_golang_wireguard_wgctrl",
     "dev_gvisor_gvisor",
     "org_golang_x_crypto",
+)
+
+oci = use_extension("@rules_oci//oci:extensions.bzl", "oci")
+
+# A multi-arch base image with variants, note that it won't work with just "linux/arm64"
+oci.pull(
+    name = "alpine",
+    digest = "sha256:4b7ce07002c69e8f3d704a9c5d6fd3053be500b7f1c69fc0d80990c2ad8dd412",
+    image = "docker.io/library/alpine",
+    platforms = [
+        "linux/amd64",
+        "linux/arm64/v8",
+    ],
+)
+use_repo(
+    oci,
+    "alpine",
+    "alpine_linux_amd64",
+    "alpine_linux_arm64_v8",
 )

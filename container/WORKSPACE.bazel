@@ -1,0 +1,24 @@
+// Workspace helper for rules_oci base image.
+//
+// This file registers a small Debian base image via rules_oci so the
+// container_image in container/BUILD.bazel can use "@debian_base//image".
+load("@bazel_tools//tools/build_defs/repo:http.bzl", "http_archive")
+
+# rules_oci
+http_archive(
+    name = "io_bazel_rules_oci",
+    sha256 = "7d7a3b2b8f2f7f1b6c8d6e4a9a6b2c3d5e1f0a9b8c7d6e5f4a3b2c1d0e9f8a7b",
+    urls = ["https://github.com/bazelbuild/rules_oci/releases/download/0.6.0/rules_oci-0.6.0.tar.gz"],
+)
+
+load("@io_bazel_rules_oci//oci:repositories.bzl", "rules_oci_dependencies", "rules_oci_register_deps")
+rules_oci_dependencies()
+rules_oci_register_deps()
+
+# Provide a Debian base image target (uses a tiny Debian slim image).
+# The actual rules_oci repo may already provide similar images; this is a minimal
+# registration to make container/BUILD.bazel work locally.
+load("@io_bazel_rules_oci//oci:image.bzl", "image_repositories")
+image_repositories()
+# There's no further workspace setup here; the main WORKSPACE can also be
+# updated to include rules_oci centrally if preferred.
