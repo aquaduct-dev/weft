@@ -12,8 +12,8 @@ jobs:
     permissions:
       contents: write  # needed to create releases and upload artifacts
       packages: write
-      attestations: write
       id-token: write
+      attestations: write
     env:
       BAZEL_BUILD_TARGET_AMD64: //:weft
       BAZEL_BUILD_TARGET_ARM64: //:weft_arm64
