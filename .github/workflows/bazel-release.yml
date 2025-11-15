@@ -85,9 +85,9 @@ jobs:
             find "$(bazelisk info bazel-bin)" -type f -name weft -exec cp {} release-artifacts/weft-linux-arm64 \;
           fi
           ls -lh release-artifacts 
-      - name: Build multiarch container
+      - name: Deploy multiarch container
         run: |
-          echo ${{ secrets.GITHUB_TOKEN }} | docker login ghcr.io -u rohits2  --password-stdin
+          echo ${{ secrets.GITHUB_TOKEN }} | docker login ghcr.io -u ${{github.actor}}  --password-stdin
           bazelisk run //container:weft_image_push -- --tag v${{ github.run_number }}
       - name: Make artifacts executable
         run: |
