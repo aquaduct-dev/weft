@@ -87,6 +87,7 @@ jobs:
           ls -lh release-artifacts 
       - name: Build multiarch container
         run: |
+          echo ${{ secrets.GITHUB_TOKEN }} | docker login ghcr.io -u rohits2  --password-stdin
           bazelisk run //container:weft_image_push -- --tag v${{ github.run_number }}
       - name: Make artifacts executable
         run: |
