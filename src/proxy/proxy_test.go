@@ -160,8 +160,8 @@ var _ = Describe("TunnelTCPProxy", func() {
 		remoteURL, err := url.Parse("tcp://127.0.0.1:12033")
 		Expect(err).ToNot(HaveOccurred())
 		proxyManager := NewProxyManager()
-		        _, err = proxyManager.StartProxy(localURL, remoteURL, "duplicate-tunnel", nil, nil, nil, "")
-		        Expect(err).ToNot(HaveOccurred())
+		_, err = proxyManager.StartProxy(localURL, remoteURL, "duplicate-tunnel", nil, nil, nil, "")
+		Expect(err).ToNot(HaveOccurred())
 		// Attempt to create another tunnel with the same name
 		_, err = proxyManager.StartProxy(localURL, remoteURL, "duplicate-tunnel", nil, nil, nil, "")
 		Expect(err).To(HaveOccurred())
@@ -186,7 +186,7 @@ var _ = Describe("TunnelTCPProxy", func() {
 		_, err = proxyManager.StartProxy(localURL2, remoteURL2, "tunnel-host-2", nil, nil, nil, "")
 		Expect(err).To(HaveOccurred())
 		Expect(err.Error()).To(SatisfyAny(
-			ContainSubstring("proxy conflicts with tunnel-host-1"),
+			ContainSubstring("conflicts with tunnel-host-1"),
 		))
 	})
 
@@ -376,4 +376,3 @@ var _ = Describe("Proxy Conflicts", func() {
 		Expect(p1.Conflicts(p2)).To(BeTrue())
 	})
 })
-

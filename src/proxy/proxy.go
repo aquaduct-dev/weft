@@ -97,23 +97,11 @@ func (p *TCPProxy) StartProxy(srcURL *url.URL, dstURL *url.URL, device *wireguar
 	if p.Listener != nil {
 		return errors.New("proxy already started")
 	}
-	// Create a copy of dstURL to avoid modifying the original URL object
-	// that might be used elsewhere or passed to other functions.
-	localDstURL := *dstURL
 
-	addr, err := net.ResolveTCPAddr("tcp", localDstURL.Host)
+	ln, err := WGAwareTCPListen(p.Addr, device)
 	if err != nil {
-		return err
-	}
-	p.Addr = addr // Update the Addr field of the TCPProxy
-
-	// Enforce that the TCP listener host must be the same as bindIP.
-	rewriteHost(&localDstURL, bindIp)
-
-	ln, err := WGAwareTCPListen(addr, device)
-	if err != nil {
-		log.Warn().Str("src", srcURL.String()).Str("dst", localDstURL.String()).Err(err).Msg("TCPProxy: listen tcp failed")
-		return fmt.Errorf("listen tcp %s: %w", localDstURL.Host, err)
+		log.Warn().Str("src", srcURL.String()).Str("dst", dstURL.String()).Err(err).Msg("TCPProxy: listen tcp failed")
+		return fmt.Errorf("listen tcp %s: %w", dstURL.Host, err)
 	}
 	p.Listener = ln // Set the listener for the TCPProxy
 
@@ -121,7 +109,7 @@ func (p *TCPProxy) StartProxy(srcURL *url.URL, dstURL *url.URL, device *wireguar
 		for {
 			conn, err := ln.Accept()
 			if err != nil {
-				log.Error().Err(err).Str("dst", localDstURL.Host).Msg("TCPProxy: accept error")
+				log.Error().Err(err).Str("dst", dstURL.Host).Msg("TCPProxy: accept error")
 				time.Sleep(250 * time.Millisecond)
 				continue
 			}
@@ -133,29 +121,18 @@ func (p *TCPProxy) StartProxy(srcURL *url.URL, dstURL *url.URL, device *wireguar
 
 // StartProxy starts the UDP proxy listener and begins forwarding connections.
 func (p *UDPProxy) StartProxy(srcURL *url.URL, dstURL *url.URL, device *wireguard.UserspaceDevice, bindIp string) error {
-	localDstURL := *dstURL
-
-	addr, err := net.ResolveUDPAddr("udp", localDstURL.Host)
-	if err != nil {
-		return err
-	}
-	p.Addr = addr // Update the Addr field of the UDPProxy
-
-	// Enforce that the UDP listener host must be the same as bindIP.
-	rewriteHost(&localDstURL, bindIp)
-
 	srcAddr, err := net.ResolveUDPAddr("udp", srcURL.Host)
 	if err != nil {
 		return fmt.Errorf("resolve udp %s: %w", srcURL.Host, err)
 	}
 
-	l, err := WGAwareUDPListen(addr, device)
+	l, err := WGAwareUDPListen(p.Addr, device)
 	if err != nil {
-		return fmt.Errorf("listen udp %s: %w", localDstURL.Host, err)
+		return fmt.Errorf("listen udp %s: %w", dstURL.Host, err)
 	}
 	p.Conn = l // Set the connection for the UDPProxy
 
-	log.Info().Str("src", srcURL.Host).Str("dst", localDstURL.Host).Msg("UDPProxy: listening udp")
+	log.Info().Str("src", srcURL.Host).Str("dst", dstURL.Host).Msg("UDPProxy: listening udp")
 	go func() {
 		sessions := make(map[string]WGAwareUDPConn)
 		buf := make([]byte, 65535)
@@ -163,7 +140,7 @@ func (p *UDPProxy) StartProxy(srcURL *url.URL, dstURL *url.URL, device *wireguar
 			n, publicAddr, err := l.ReadFromUDP(buf)
 
 			if err != nil {
-				log.Error().Err(err).Str("dst", localDstURL.Host).Msg("UDPProxy: udp read error")
+				log.Error().Err(err).Str("dst", dstURL.Host).Msg("UDPProxy: udp read error")
 				return
 			}
 
@@ -335,6 +312,8 @@ func (p *ProxyManager) StartProxy(srcURL *url.URL, dstURL *url.URL, proxyName st
 		return nil, err
 	}
 
+	rewriteHost(dstURL, bindIp)
+
 	// Check that no other proxies exist with this name
 	if _, ok := p.proxies[proxyName]; ok {
 		return nil, fmt.Errorf("proxy %s already exists", proxyName)
@@ -351,7 +330,7 @@ func (p *ProxyManager) StartProxy(srcURL *url.URL, dstURL *url.URL, proxyName st
 		newProxy := &TCPProxy{Addr: addr}
 		for name, existingProxy := range p.proxies {
 			if newProxy.Conflicts(existingProxy) {
-				return nil, fmt.Errorf("proxy conflicts with %s", name)
+				return nil, fmt.Errorf("proxy %s conflicts with %s", proxyName, name)
 			}
 		}
 
@@ -368,7 +347,7 @@ func (p *ProxyManager) StartProxy(srcURL *url.URL, dstURL *url.URL, proxyName st
 		newProxy := &UDPProxy{Addr: addr}
 		for name, existingProxy := range p.proxies {
 			if newProxy.Conflicts(existingProxy) {
-				return nil, fmt.Errorf("proxy conflicts with %s", name)
+				return nil, fmt.Errorf("proxy %s conflicts with %s", proxyName, name)
 			}
 		}
 
