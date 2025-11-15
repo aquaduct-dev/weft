@@ -20,20 +20,10 @@ go_binary(
 )
 
 go_cross_binary(
-    name = "weft_cross",
+    name = "weft_arm64",
+    platform = "@rules_go//go/toolchain:linux_arm64",
     target = ":weft",
-    goos = "linux",
-    goarch = "amd64",
-)
-
-gazelle(
-    name = "gazelle-update-repos",
-    args = [
-        "-from_file=go.mod",
-        "-to_macro=deps.bzl%go_dependencies",
-        "-prune",
-    ],
-    command = "update-repos",
+    visibility = ["//visibility:public"],
 )
 
 gazelle_test(
