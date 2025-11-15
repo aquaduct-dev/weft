@@ -20,8 +20,9 @@ bazel_dep(
 )
 bazel_dep(
     name = "rules_pkg",
-    version = "1.0.1",
+    version = "1.1.0",
 )
+bazel_dep(name = "rules_shell", version = "0.6.1")
 
 go_sdk = use_extension("@rules_go//go:extensions.bzl", "go_sdk")
 go_sdk.from_file(go_mod = "//:go.mod")
