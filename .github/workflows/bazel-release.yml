@@ -3,7 +3,7 @@ name: Bazel Build & Release
 on:
   push:
     branches:
-      - '**'
+      - 'main'
 
 jobs:
   build-and-release:
@@ -30,13 +30,7 @@ jobs:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: "Verify login to `ghcr.io"
-        run: |
-          docker pull docker.io/library/alpine
-          docker tag docker.io/library/alpine ghcr.io/aquaduct-dev/alpine:latest
-          docker push ghcr.io/aquaduct-dev/alpine
-
+          
       - name: Set up Java (required by Bazel)
         uses: actions/setup-java@v4
         with:
