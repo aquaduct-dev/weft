@@ -4,7 +4,6 @@ import (
 	"errors"
 	"fmt"
 	"net"
-	"net/netip"
 	"net/url"
 	"strconv"
 	"strings"
@@ -36,7 +35,7 @@ func (p *ProxyManager) SetBindIP(bindIP string) {
 }
 
 // ProxyTCP is a generic TCP proxy that forwards connections.
-func ProxyTCP(publicConn net.Conn, target string, device *wireguard.UserspaceDevice) {
+func (p *TCPProxy) ProxyTCP(publicConn net.Conn, target string, device *wireguard.UserspaceDevice) {
 	log.Debug().Str("target", target).Msg("ProxyTCP: accepted public connection")
 	dialAddr, err := net.ResolveTCPAddr("tcp", target)
 	if err != nil {
@@ -67,6 +66,9 @@ func ProxyTCP(publicConn net.Conn, target string, device *wireguard.UserspaceDev
 				publicConn.Close()
 				return
 			}
+			p.bytesMu.Lock()
+			p.bytesRx += uint64(n)
+			p.bytesMu.Unlock()
 		}
 	}()
 
@@ -87,6 +89,9 @@ func ProxyTCP(publicConn net.Conn, target string, device *wireguard.UserspaceDev
 				publicConn.Close()
 				return
 			}
+			p.bytesMu.Lock()
+			p.bytesTx += uint64(n)
+			p.bytesMu.Unlock()
 		}
 	}()
 	log.Debug().Str("target_addr", targetConn.RemoteAddr().String()).Str("public_addr", publicConn.RemoteAddr().String()).Msg("ProxyTCP: started bidirectional proxy")
@@ -113,7 +118,7 @@ func (p *TCPProxy) StartProxy(srcURL *url.URL, dstURL *url.URL, device *wireguar
 				time.Sleep(250 * time.Millisecond)
 				continue
 			}
-			go ProxyTCP(conn, srcURL.Host, device)
+			go p.ProxyTCP(conn, srcURL.Host, device)
 		}
 	}()
 	return nil
@@ -154,8 +159,11 @@ func (p *UDPProxy) StartProxy(srcURL *url.URL, dstURL *url.URL, device *wireguar
 				targetConn, err = WGAwareUDPDial(srcAddr, device)
 				sessions[key] = targetConn
 			}
-			targetConn.Write(buf[:n])
 
+			targetConn.Write(buf[:n])
+			p.bytesMu.Lock()
+			p.bytesRx += uint64(n)
+			p.bytesMu.Unlock()
 			// goroutine to copy from target to public
 			go func(pubAddr net.Addr, tconn WGAwareUDPConn) {
 				defer func() {
@@ -177,101 +185,15 @@ func (p *UDPProxy) StartProxy(srcURL *url.URL, dstURL *url.URL, device *wireguar
 						log.Error().Err(err).Str("target", srcAddr.String()).Msg("UDPProxy: failed to write")
 						return
 					}
+					p.bytesMu.Lock()
+					p.bytesTx += uint64(n)
+					p.bytesMu.Unlock()
 				}
 			}(publicAddr, targetConn)
 
 		}
 	}()
 	return nil
-}
-
-func UDPListen(publicConn *net.UDPConn, clientAddr netip.Addr) {
-	// Maintain per-public-source mapping to a target UDP connection.
-	// This lets concurrent public clients each get their own UDP "session".
-	type session struct {
-		target *net.UDPConn
-		// lastSeen is the public address we've last seen for this session.
-		publicAddr *net.UDPAddr
-	}
-
-	sessions := make(map[string]*session)
-
-	// Buffer to read incoming packets
-	buf := make([]byte, 64*1024)
-
-	for {
-		n, publicAddr, err := publicConn.ReadFromUDP(buf)
-		if err != nil {
-			// socket closed or error; exit goroutine
-			log.Error().Err(err).Msg("UDPListen: ReadFromUDP error")
-			return
-		}
-
-		// copy packet payload
-		payload := make([]byte, n)
-		copy(payload, buf[:n])
-
-		key := publicAddr.String()
-
-		sess, ok := sessions[key]
-		if !ok {
-			// create a new UDP connection to the clientAddr for this public source
-			clientAddrPort := netip.AddrPortFrom(clientAddr, uint16(publicConn.LocalAddr().(*net.UDPAddr).Port))
-			log.Debug().Str("public_addr", publicAddr.String()).Str("target_addr", clientAddrPort.String()).Msg("UDPListen: new session")
-			raddr, err := net.ResolveUDPAddr("udp", clientAddrPort.String())
-			if err != nil {
-				log.Error().Err(err).Str("target_addr", clientAddr.String()).Msg("UDPListen: ResolveUDPAddr failed")
-				continue
-			}
-			targetConn, err := net.DialUDP("udp", nil, raddr)
-			if err != nil {
-				log.Error().Err(err).Str("target_addr", clientAddr.String()).Msg("UDPListen: DialUDP to target failed")
-				continue
-			}
-
-			sess = &session{
-				target:     targetConn,
-				publicAddr: publicAddr,
-			}
-			sessions[key] = sess
-
-			// start goroutine to read responses from target and forward back to the publicAddr
-			go func(pubAddr *net.UDPAddr, tconn *net.UDPConn) {
-				rbuf := make([]byte, 64*1024)
-				for {
-					nr, err := tconn.Read(rbuf)
-					if err != nil {
-						// Target closed or error - remove session and exit goroutine.
-						log.Error().Err(err).Str("public_addr", pubAddr.String()).Msg("UDPListen: target Read error for session")
-						// best-effort: close target and remove mapping
-						tconn.Close()
-						return
-					}
-					if nr > 0 {
-						// send back to public source
-						_, err := publicConn.WriteToUDP(rbuf[:nr], pubAddr)
-						if err != nil {
-							log.Error().Err(err).Str("public_addr", pubAddr.String()).Msg("UDPListen: WriteToUDP to public failed")
-							// continue; connection may still be usable
-						} else {
-							log.Debug().Int("bytes", nr).Str("target_addr", tconn.RemoteAddr().String()).Str("public_addr", pubAddr.String()).Msg("UDPListen: forwarded from target to public")
-						}
-					}
-				}
-			}(publicAddr, targetConn)
-		}
-
-		// forward the received public packet to the corresponding target
-		_, err = sess.target.Write(payload)
-		if err != nil {
-			log.Error().Err(err).Str("target_addr", clientAddr.String()).Str("public_addr", publicAddr.String()).Msg("UDPListen: write to target failed for public")
-			// on write error, close target and delete session
-			sess.target.Close()
-			delete(sessions, key)
-			continue
-		}
-		log.Debug().Int("bytes", len(payload)).Str("public_addr", publicAddr.String()).Str("target_addr", clientAddr.String()).Msg("UDPListen: forwarded from public to target")
-	}
 }
 
 func (p *ProxyManager) Close(proxyName string) {
@@ -327,7 +249,7 @@ func (p *ProxyManager) StartProxy(srcURL *url.URL, dstURL *url.URL, proxyName st
 		if err != nil {
 			return nil, err
 		}
-		newProxy := &TCPProxy{Addr: addr}
+		newProxy := &TCPProxy{Addr: addr, name: proxyName}
 		for name, existingProxy := range p.proxies {
 			if newProxy.Conflicts(existingProxy) {
 				return nil, fmt.Errorf("proxy %s conflicts with %s", proxyName, name)
@@ -344,7 +266,7 @@ func (p *ProxyManager) StartProxy(srcURL *url.URL, dstURL *url.URL, proxyName st
 		if err != nil {
 			return nil, err
 		}
-		newProxy := &UDPProxy{Addr: addr}
+		newProxy := &UDPProxy{Addr: addr, name: proxyName}
 		for name, existingProxy := range p.proxies {
 			if newProxy.Conflicts(existingProxy) {
 				return nil, fmt.Errorf("proxy %s conflicts with %s", proxyName, name)
@@ -365,7 +287,7 @@ func (p *ProxyManager) StartProxy(srcURL *url.URL, dstURL *url.URL, proxyName st
 				return nil, fmt.Errorf("invalid port %s: %w", split[1], err)
 			}
 		}
-		newProxy := &VHostRouteProxy{Host: split[0], Port: port, BindIp: bindIp, IsHTTPS: false}
+		newProxy := &VHostRouteProxy{Host: split[0], Port: port, BindIp: bindIp, IsHTTPS: false, name: proxyName}
 		for name, existingProxy := range p.proxies {
 			if newProxy.Conflicts(existingProxy) {
 				return nil, fmt.Errorf("proxy conflicts with %s", name)
@@ -374,11 +296,12 @@ func (p *ProxyManager) StartProxy(srcURL *url.URL, dstURL *url.URL, proxyName st
 
 		vhostProxy := p.VHostProxyManager.Proxy(bindIp, port)
 		// forward the provided wireguard device so upstream dialing can use its NetStack for WG IPs.
-		closer, err := vhostProxy.AddHost(split[0], srcURL, device)
+		closer, handler, err := vhostProxy.AddHost(split[0], srcURL, device)
 		if err != nil {
 			return nil, err
 		}
 		newProxy.Closer = closer
+		newProxy.handler = handler
 		p.proxies[proxyName] = newProxy
 		return newProxy, nil
 	case "tcp>https", "http>https":
@@ -390,7 +313,7 @@ func (p *ProxyManager) StartProxy(srcURL *url.URL, dstURL *url.URL, proxyName st
 				return nil, fmt.Errorf("invalid port %s: %w", split[1], err)
 			}
 		}
-		newProxy := &VHostRouteProxy{Host: split[0], Port: port, BindIp: bindIp, IsHTTPS: true}
+		newProxy := &VHostRouteProxy{Host: split[0], Port: port, BindIp: bindIp, IsHTTPS: true, name: proxyName}
 		for name, existingProxy := range p.proxies {
 			if newProxy.Conflicts(existingProxy) {
 				return nil, fmt.Errorf("proxy conflicts with %s", name)
@@ -401,20 +324,22 @@ func (p *ProxyManager) StartProxy(srcURL *url.URL, dstURL *url.URL, proxyName st
 		// If certPEM/keyPEM not provided, configure automatic issuance via ACME HTTP-01.
 		if len(certPEM) == 0 || len(keyPEM) == 0 {
 			log.Debug().Str("proxy", proxyName).Msg("Proxy: calling AddHostWithACME")
-			closer, err := vhostProxy.AddHostWithACME(split[0], srcURL, device, bindIp)
+			closer, handler, err := vhostProxy.AddHostWithACME(split[0], srcURL, device, bindIp)
 			if err != nil {
 				return nil, err
 			}
 			newProxy.Closer = closer
+			newProxy.handler = handler
 			p.proxies[proxyName] = newProxy
 			return newProxy, nil
 		} else {
 			log.Debug().Str("proxy", proxyName).Msg("Proxy: calling AddHostWithTLS")
-			closer, err := vhostProxy.AddHostWithTLS(split[0], srcURL, device, string(certPEM), string(keyPEM))
+			closer, handler, err := vhostProxy.AddHostWithTLS(split[0], srcURL, device, string(certPEM), string(keyPEM))
 			if err != nil {
 				return nil, err
 			}
 			newProxy.Closer = closer
+			newProxy.handler = handler
 			p.proxies[proxyName] = newProxy
 			return newProxy, nil
 		}

@@ -1,0 +1,16 @@
+load("@rules_go//go:def.bzl", "go_library", "go_test")
+
+go_library(
+    name = "meter",
+    srcs = ["meter.go"],
+    importpath = "aquaduct.dev/weft/src/vhost/meter",
+    visibility = ["//visibility:public"],
+)
+
+go_test(
+    name = "meter_test",
+    srcs = ["meter_test.go"],
+    deps = [
+        ":meter",
+    ],
+)

@@ -10,6 +10,7 @@ go_library(
     visibility = ["//visibility:public"],
     deps = [
         "//src/vhost",
+        "//src/vhost/meter",
         "//wireguard",
         "@com_github_rs_zerolog//log",
         "@dev_gvisor_gvisor//pkg/tcpip/adapters/gonet",

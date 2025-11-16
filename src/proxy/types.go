@@ -5,7 +5,9 @@ import (
 	"io"
 	"net"
 	"strings"
+	"sync"
 
+	"aquaduct.dev/weft/src/vhost/meter"
 	"aquaduct.dev/weft/wireguard"
 	"gvisor.dev/gvisor/pkg/tcpip/adapters/gonet"
 )
@@ -14,14 +16,22 @@ import (
 type Proxy interface {
 	io.Closer
 	Conflicts(other Proxy) bool
+	Name() string
 	Endpoint() string
 	ListenAddr() net.Addr
+	BytesTx() uint64
+	BytesRx() uint64
+	BytesTotal() uint64
 }
 
 // TCPProxy is a proxy for TCP connections.
 type TCPProxy struct {
 	Listener net.Listener
 	Addr     *net.TCPAddr
+	name     string
+	bytesMu  sync.Mutex
+	bytesRx  uint64
+	bytesTx  uint64
 }
 
 // Close closes the TCPProxy listener.
@@ -40,6 +50,21 @@ func (p *TCPProxy) Endpoint() string {
 		return p.Addr.String()
 	}
 	return ""
+}
+func (p *TCPProxy) Name() string {
+	return p.name
+}
+
+func (p *TCPProxy) BytesRx() uint64 {
+	return p.bytesRx
+}
+
+func (p *TCPProxy) BytesTx() uint64 {
+	return p.bytesTx
+}
+
+func (p *TCPProxy) BytesTotal() uint64 {
+	return p.bytesRx + p.bytesTx
 }
 
 func (p *TCPProxy) ListenAddr() net.Addr {
@@ -79,8 +104,12 @@ func (p *TCPProxy) Conflicts(other Proxy) bool {
 
 // UDPProxy is a proxy for UDP connections.
 type UDPProxy struct {
-	Conn WGAwareUDPConn
-	Addr *net.UDPAddr
+	name    string
+	Conn    WGAwareUDPConn
+	Addr    *net.UDPAddr
+	bytesRx uint64
+	bytesTx uint64
+	bytesMu sync.Mutex
 }
 
 // Close closes the UDPProxy connection.
@@ -112,8 +141,26 @@ func (p *UDPProxy) Conflicts(other Proxy) bool {
 	return false
 }
 
+func (p *UDPProxy) Name() string {
+	return p.name
+}
+
+func (p *UDPProxy) BytesRx() uint64 {
+	return p.bytesRx
+}
+
+func (p *UDPProxy) BytesTx() uint64 {
+	return p.bytesTx
+}
+
+func (p *UDPProxy) BytesTotal() uint64 {
+	return p.bytesRx + p.bytesTx
+}
+
 // VHostRouteProxy is a proxy for vhost routes.
 type VHostRouteProxy struct {
+	name    string
+	handler meter.MeteredHTTPHandler
 	Closer  io.Closer
 	Host    string
 	Port    int
@@ -152,6 +199,22 @@ func (p *VHostRouteProxy) Conflicts(other Proxy) bool {
 	default:
 		return false
 	}
+}
+
+func (p *VHostRouteProxy) BytesRx() uint64 {
+	return p.handler.BytesRx()
+}
+
+func (p *VHostRouteProxy) BytesTx() uint64 {
+	return p.handler.BytesTx()
+}
+
+func (p *VHostRouteProxy) BytesTotal() uint64 {
+	return p.handler.BytesTotal()
+}
+
+func (p *VHostRouteProxy) Name() string {
+	return p.name
 }
 
 type WGAwareUDPConn struct {

@@ -7,6 +7,7 @@ go_library(
     visibility = ["//visibility:public"],
     deps = [
         "//src/acme",
+        "//src/vhost/meter",
         "//wireguard",
         "@com_github_rs_zerolog//log",
         "@org_golang_x_crypto//acme/autocert",
@@ -17,5 +18,8 @@ go_test(
     name = "vhost_test",
     srcs = ["vhost_test.go"],
     embed = [":vhost"],
-    deps = ["//src/crypto"],
+    deps = [
+        "//src/crypto",
+        "//src/vhost/meter",
+    ],
 )

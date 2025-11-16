@@ -16,7 +16,7 @@ import (
 var _ = Describe("Proxy Tests", func() {
 	It("should proxy tcp>tcp traffic", func() {
 		// Create a mock TCP server
-		mockServer, err := net.Listen("tcp", "127.0.0.1:12030")
+		mockServer, err := net.Listen("tcp", "127.0.0.1:13030")
 		Expect(err).ToNot(HaveOccurred())
 		defer mockServer.Close()
 		go func() {
@@ -32,12 +32,14 @@ var _ = Describe("Proxy Tests", func() {
 			}
 		}()
 		// Create a tunnel proxy
-		localURL, err := url.Parse("tcp://127.0.0.1:12030")
+		localURL, err := url.Parse("tcp://127.0.0.1:13030")
 		Expect(err).ToNot(HaveOccurred())
-		remoteURL, err := url.Parse("tcp://127.0.0.1:12031")
+		remoteURL, err := url.Parse("tcp://127.0.0.1:13031")
 		Expect(err).ToNot(HaveOccurred())
-		_, err = NewProxyManager().StartProxy(localURL, remoteURL, "test-tunnel", nil, nil, nil, "")
+		proxyManager := NewProxyManager()
+		_, err = proxyManager.StartProxy(localURL, remoteURL, "test-tunnel", nil, nil, nil, "")
 		Expect(err).ToNot(HaveOccurred())
+		defer proxyManager.Close("test-tunnel")
 		// Connect to the tunnel proxy
 		conn, err := net.Dial("tcp", remoteURL.Host)
 		Expect(err).ToNot(HaveOccurred())
@@ -55,7 +57,7 @@ var _ = Describe("Proxy Tests", func() {
 
 	It("should proxy udp>udp traffic", func() {
 		// Create a mock UDP server
-		mockAddr, err := net.ResolveUDPAddr("udp", "127.0.0.1:12040")
+		mockAddr, err := net.ResolveUDPAddr("udp", "127.0.0.1:13040")
 		Expect(err).ToNot(HaveOccurred())
 		mockServer, err := net.ListenUDP("udp", mockAddr)
 		Expect(err).ToNot(HaveOccurred())
@@ -73,12 +75,14 @@ var _ = Describe("Proxy Tests", func() {
 		}()
 
 		// Create a tunnel proxy
-		localURL, err := url.Parse("udp://127.0.0.1:12040")
+		localURL, err := url.Parse("udp://127.0.0.1:13040")
 		Expect(err).ToNot(HaveOccurred())
-		remoteURL, err := url.Parse("udp://127.0.0.1:12041")
+		remoteURL, err := url.Parse("udp://127.0.0.1:13041")
 		Expect(err).ToNot(HaveOccurred())
-		_, err = NewProxyManager().StartProxy(localURL, remoteURL, "test-tunnel-udp", nil, nil, nil, "")
+		proxyManager := NewProxyManager()
+		_, err = proxyManager.StartProxy(localURL, remoteURL, "test-tunnel-udp", nil, nil, nil, "")
 		Expect(err).ToNot(HaveOccurred())
+		defer proxyManager.Close("test-tunnel-udp")
 
 		// Connect to the tunnel proxy
 		conn, err := net.Dial("udp", remoteURL.Host)
