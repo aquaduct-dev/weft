@@ -13,7 +13,7 @@ import (
 	. "github.com/onsi/gomega"
 )
 
-var _ = Describe("TunnelTCPProxy", func() {
+var _ = Describe("Proxy Tests", func() {
 	It("should proxy tcp>tcp traffic", func() {
 		// Create a mock TCP server
 		mockServer, err := net.Listen("tcp", "127.0.0.1:12030")
@@ -298,81 +298,115 @@ var _ = Describe("TunnelTCPProxy", func() {
 })
 
 var _ = Describe("Proxy Conflicts", func() {
-	It("should return true for conflicting TCP proxies", func() {
-		l, err := net.Listen("tcp", "127.0.0.1:12080")
+	It("should not allow two TCP proxies on the same address and port", func() {
+		// Case 1: Conflicting proxies (same address and port)
+		addr1, err := net.ResolveTCPAddr("tcp", "127.0.0.1:12072")
 		Expect(err).ToNot(HaveOccurred())
-		defer l.Close()
-		p1 := &TCPProxy{Listener: l}
-		p2 := &TCPProxy{Listener: l}
-		Expect(p1.Conflicts(p2)).To(BeTrue())
+		proxy1 := &TCPProxy{Addr: addr1}
+
+		addr2, err := net.ResolveTCPAddr("tcp", "127.0.0.1:12072")
+		Expect(err).ToNot(HaveOccurred())
+		proxy2 := &TCPProxy{Addr: addr2}
+
+		Expect(proxy1.Conflicts(proxy2)).To(BeTrue())
 	})
 
-	It("should return false for non-conflicting TCP proxies", func() {
-		l1, err := net.Listen("tcp", "127.0.0.1:12081")
+	It("should allow two TCP proxies on different ports", func() {
+		// Case 2: Non-conflicting proxies (different ports)
+		addr1, err := net.ResolveTCPAddr("tcp", "127.0.0.1:12073")
 		Expect(err).ToNot(HaveOccurred())
-		defer l1.Close()
-		l2, err := net.Listen("tcp", "127.0.0.1:12082")
+		proxy1 := &TCPProxy{Addr: addr1}
+
+		addr2, err := net.ResolveTCPAddr("tcp", "127.0.0.1:12074")
 		Expect(err).ToNot(HaveOccurred())
-		defer l2.Close()
-		p1 := &TCPProxy{Listener: l1}
-		p2 := &TCPProxy{Listener: l2}
+		proxy2 := &TCPProxy{Addr: addr2}
+
+		Expect(proxy1.Conflicts(proxy2)).To(BeFalse())
+	})
+
+	It("should not allow two UDP proxies on the same address and port", func() {
+		addr1, err := net.ResolveUDPAddr("udp", "127.0.0.1:12075")
+		Expect(err).ToNot(HaveOccurred())
+		proxy1 := &UDPProxy{Addr: addr1}
+
+		addr2, err := net.ResolveUDPAddr("udp", "127.0.0.1:12075")
+		Expect(err).ToNot(HaveOccurred())
+		proxy2 := &UDPProxy{Addr: addr2}
+
+		Expect(proxy1.Conflicts(proxy2)).To(BeTrue())
+	})
+
+	It("should allow two UDP proxies on different ports", func() {
+		addr1, err := net.ResolveUDPAddr("udp", "127.0.0.1:12076")
+		Expect(err).ToNot(HaveOccurred())
+		proxy1 := &UDPProxy{Addr: addr1}
+
+		addr2, err := net.ResolveUDPAddr("udp", "127.0.0.1:12077")
+		Expect(err).ToNot(HaveOccurred())
+		proxy2 := &UDPProxy{Addr: addr2}
+
+		Expect(proxy1.Conflicts(proxy2)).To(BeFalse())
+	})
+
+	It("should not allow an HTTP and TCP proxy on the same local address and port", func() {
+		addr1, err := net.ResolveTCPAddr("tcp", "127.0.0.1:12078")
+		Expect(err).ToNot(HaveOccurred())
+		tcpProxy := &TCPProxy{Addr: addr1}
+
+		httpProxy := &VHostRouteProxy{Host: "", Port: 12078, BindIp: "127.0.0.1", IsHTTPS: false}
+		Expect(tcpProxy.Conflicts(httpProxy)).To(BeTrue())
+		Expect(httpProxy.Conflicts(tcpProxy)).To(BeTrue())
+	})
+
+	It("should allow an HTTP and UDP proxy on the same local address and port", func() {
+		addr1, err := net.ResolveUDPAddr("udp", "127.0.0.1:12078")
+		Expect(err).ToNot(HaveOccurred())
+		udpProxy := &UDPProxy{Addr: addr1}
+
+		httpProxy := &VHostRouteProxy{Host: "", Port: 12078, BindIp: "127.0.0.1", IsHTTPS: false}
+
+		Expect(udpProxy.Conflicts(httpProxy)).To(BeFalse())
+		Expect(httpProxy.Conflicts(udpProxy)).To(BeFalse())
+	})
+
+	It("should allow two HTTP VHost proxies to bind to the same host and port if they have different hostnames", func() {
+		p1 := &VHostRouteProxy{Host: "example.com", Port: 80, BindIp: "0.0.0.0", IsHTTPS: false}
+		p2 := &VHostRouteProxy{Host: "example.org", Port: 80, BindIp: "0.0.0.0", IsHTTPS: false}
 		Expect(p1.Conflicts(p2)).To(BeFalse())
 	})
 
-	It("should return true for conflicting UDP proxies", func() {
-		addr, err := net.ResolveUDPAddr("udp", "127.0.0.1:12090")
-		Expect(err).ToNot(HaveOccurred())
-		conn, err := net.ListenUDP("udp", addr)
-		Expect(err).ToNot(HaveOccurred())
-		defer conn.Close()
-		p1 := &UDPProxy{Conn: WGAwareUDPConn{netConn: conn}}
-		p2 := &UDPProxy{Conn: WGAwareUDPConn{netConn: conn}}
+	It("should not allow two HTTP VHost proxies to bind to the same host and port if they have the same hostnames", func() {
+		p1 := &VHostRouteProxy{Host: "example.com", Port: 80, BindIp: "0.0.0.0", IsHTTPS: false}
+		p2 := &VHostRouteProxy{Host: "example.com", Port: 80, BindIp: "0.0.0.0", IsHTTPS: false}
 		Expect(p1.Conflicts(p2)).To(BeTrue())
 	})
 
-	It("should return false for non-conflicting UDP proxies", func() {
-		addr1, err := net.ResolveUDPAddr("udp", "127.0.0.1:12091")
-		Expect(err).ToNot(HaveOccurred())
-		conn1, err := net.ListenUDP("udp", addr1)
-		Expect(err).ToNot(HaveOccurred())
-		defer conn1.Close()
-		addr2, err := net.ResolveUDPAddr("udp", "127.0.0.1:12092")
-		Expect(err).ToNot(HaveOccurred())
-		conn2, err := net.ListenUDP("udp", addr2)
-		Expect(err).ToNot(HaveOccurred())
-		defer conn2.Close()
-		p1 := &UDPProxy{Conn: WGAwareUDPConn{netConn: conn1}}
-		p2 := &UDPProxy{Conn: WGAwareUDPConn{netConn: conn2}}
+	It("should allow two HTTPS VHost proxies to bind to the same host and port if they have different hostnames", func() {
+		p1 := &VHostRouteProxy{Host: "secure.example.com", Port: 443, BindIp: "0.0.0.0", IsHTTPS: true}
+		p2 := &VHostRouteProxy{Host: "secure.example.org", Port: 443, BindIp: "0.0.0.0", IsHTTPS: true}
 		Expect(p1.Conflicts(p2)).To(BeFalse())
 	})
 
-	It("should return true for conflicting VHost proxies", func() {
-		p1 := &VHostRouteProxy{Host: "example.com", Port: 80, BindIp: "0.0.0.0"}
-		p2 := &VHostRouteProxy{Host: "example.com", Port: 80, BindIp: "0.0.0.0"}
+	It("should not allow two HTTPS VHost proxies to bind to the same host and port if they have the same hostnames", func() {
+		p1 := &VHostRouteProxy{Host: "secure.example.com", Port: 443, BindIp: "0.0.0.0", IsHTTPS: true}
+		p2 := &VHostRouteProxy{Host: "secure.example.com", Port: 443, BindIp: "0.0.0.0", IsHTTPS: true}
 		Expect(p1.Conflicts(p2)).To(BeTrue())
 	})
 
-	It("should return false for non-conflicting VHost proxies", func() {
-		p1 := &VHostRouteProxy{Host: "example.com", Port: 80, BindIp: "0.0.0.0"}
-		p2 := &VHostRouteProxy{Host: "example.org", Port: 80, BindIp: "0.0.0.0"}
-		Expect(p1.Conflicts(p2)).To(BeFalse())
-	})
-
-	It("should return false for proxies of different types", func() {
-		l, err := net.Listen("tcp", "127.0.0.1:12093")
-		Expect(err).ToNot(HaveOccurred())
-		defer l.Close()
-		p1 := &TCPProxy{Listener: l}
-		p2 := &VHostRouteProxy{Host: "example.com", Port: 80, BindIp: "0.0.0.0"}
-		Expect(p1.Conflicts(p2)).To(BeFalse())
-	})
-
-	It("should return true for conflicting TCP and VHost proxies", func() {
-		l, err := net.Listen("tcp", "127.0.0.1:12094")
-		Expect(err).ToNot(HaveOccurred())
-		defer l.Close()
-		p1 := &TCPProxy{Listener: l}
-		p2 := &VHostRouteProxy{Host: "example.com", Port: 12094, BindIp: "127.0.0.1"}
+	It("should not allow an HTTP VHost proxy and an HTTPS VHost proxy to bind to the same IP and port, regardless of hostname", func() {
+		// HTTP proxy on port 80
+		p1 := &VHostRouteProxy{Host: "example.com", Port: 80, BindIp: "0.0.0.0", IsHTTPS: false}
+		// HTTPS proxy on port 80
+		p2 := &VHostRouteProxy{Host: "secure.example.com", Port: 80, BindIp: "0.0.0.0", IsHTTPS: true}
 		Expect(p1.Conflicts(p2)).To(BeTrue())
+		Expect(p2.Conflicts(p1)).To(BeTrue())
+
+		// HTTP proxy on port 443
+		p3 := &VHostRouteProxy{Host: "example.com", Port: 443, BindIp: "0.0.0.0", IsHTTPS: false}
+		// HTTPS proxy on port 443
+		p4 := &VHostRouteProxy{Host: "secure.example.com", Port: 443, BindIp: "0.0.0.0", IsHTTPS: true}
+		Expect(p3.Conflicts(p4)).To(BeTrue())
+		Expect(p4.Conflicts(p3)).To(BeTrue())
 	})
+
 })

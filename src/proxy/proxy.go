@@ -365,7 +365,7 @@ func (p *ProxyManager) StartProxy(srcURL *url.URL, dstURL *url.URL, proxyName st
 				return nil, fmt.Errorf("invalid port %s: %w", split[1], err)
 			}
 		}
-		newProxy := &VHostRouteProxy{Host: split[0], Port: port, BindIp: bindIp}
+		newProxy := &VHostRouteProxy{Host: split[0], Port: port, BindIp: bindIp, IsHTTPS: false}
 		for name, existingProxy := range p.proxies {
 			if newProxy.Conflicts(existingProxy) {
 				return nil, fmt.Errorf("proxy conflicts with %s", name)
@@ -390,7 +390,7 @@ func (p *ProxyManager) StartProxy(srcURL *url.URL, dstURL *url.URL, proxyName st
 				return nil, fmt.Errorf("invalid port %s: %w", split[1], err)
 			}
 		}
-		newProxy := &VHostRouteProxy{Host: split[0], Port: port, BindIp: bindIp}
+		newProxy := &VHostRouteProxy{Host: split[0], Port: port, BindIp: bindIp, IsHTTPS: true}
 		for name, existingProxy := range p.proxies {
 			if newProxy.Conflicts(existingProxy) {
 				return nil, fmt.Errorf("proxy conflicts with %s", name)
@@ -400,6 +400,7 @@ func (p *ProxyManager) StartProxy(srcURL *url.URL, dstURL *url.URL, proxyName st
 		vhostProxy := p.VHostProxyManager.Proxy(bindIp, port)
 		// If certPEM/keyPEM not provided, configure automatic issuance via ACME HTTP-01.
 		if len(certPEM) == 0 || len(keyPEM) == 0 {
+			log.Debug().Str("proxy", proxyName).Msg("Proxy: calling AddHostWithACME")
 			closer, err := vhostProxy.AddHostWithACME(split[0], srcURL, device, bindIp)
 			if err != nil {
 				return nil, err
@@ -408,6 +409,7 @@ func (p *ProxyManager) StartProxy(srcURL *url.URL, dstURL *url.URL, proxyName st
 			p.proxies[proxyName] = newProxy
 			return newProxy, nil
 		} else {
+			log.Debug().Str("proxy", proxyName).Msg("Proxy: calling AddHostWithTLS")
 			closer, err := vhostProxy.AddHostWithTLS(split[0], srcURL, device, string(certPEM), string(keyPEM))
 			if err != nil {
 				return nil, err

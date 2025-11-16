@@ -114,10 +114,11 @@ func (p *UDPProxy) Conflicts(other Proxy) bool {
 
 // VHostRouteProxy is a proxy for vhost routes.
 type VHostRouteProxy struct {
-	Closer io.Closer
-	Host   string
-	Port   int
-	BindIp string
+	Closer  io.Closer
+	Host    string
+	Port    int
+	BindIp  string
+	IsHTTPS bool
 }
 
 // Close closes the VHostRouteProxy.
@@ -142,7 +143,12 @@ func (p *VHostRouteProxy) Conflicts(other Proxy) bool {
 	case *TCPProxy:
 		return o.Conflicts(p)
 	case *VHostRouteProxy:
-		return p.BindIp == o.BindIp && p.Port == o.Port && p.Host == o.Host
+		// If BindIp and Port are the same, but IsHTTPS is different, it's a conflict.
+		if p.BindIp == o.BindIp && p.Port == o.Port && p.IsHTTPS != o.IsHTTPS {
+			return true
+		}
+		// If BindIp, Port, Host, and IsHTTPS are all the same, it's a duplicate conflict.
+		return p.BindIp == o.BindIp && p.Port == o.Port && p.Host == o.Host && p.IsHTTPS == o.IsHTTPS
 	default:
 		return false
 	}
