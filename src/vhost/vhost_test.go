@@ -13,6 +13,7 @@ import (
 	"path/filepath"
 	"testing"
 
+	"aquaduct.dev/weft/src/crypto"
 	"aquaduct.dev/weft/src/vhost/meter"
 	"github.com/rs/zerolog/log"
 )
@@ -70,29 +71,25 @@ func TestVHost_AddHostWithTLSAndRetrieval(t *testing.T) {
 
 	manager := NewVHostProxyManager()
 	vp := manager.Proxy("", 21341)
-	/*
-		certPEM, keyPEM, err := crypto.GenerateCert("secure.test")
-		if err != nil {
-			t.Fatalf("GenerateCert failed: %v", err)
-		}*/
+	certPEM, keyPEM, err := crypto.GenerateCert("secure.test")
+	if err != nil {
+		t.Fatalf("GenerateCert failed: %v", err)
+	}
 
-	//closer, _, err := vp.AddHostWithTLS("secure.test", u, nil, string(certPEM), string(keyPEM))
-	closer, _, err := vp.AddHost("secure.test", u, nil)
+	closer, _, err := vp.AddHostWithTLS("secure.test", u, nil, string(certPEM), string(keyPEM))
 	if err != nil {
 		t.Fatalf("AddHostWithTLS failed: %v", err)
 	}
-	defer closer.Close()
 
 	// GetTLSHandler and GetTLSConfig should return non-nil values
-	/*
-		h := vp.GetTLSHandler("secure.test")
-		if h == nil {
-			t.Fatalf("GetTLSHandler returned nil")
-		}
-		cfg := vp.GetTLSConfig("secure.test")
-		if cfg == nil {
-			t.Fatalf("GetTLSConfig returned nil")
-		}*/
+	h := vp.GetTLSHandler("secure.test")
+	if h == nil {
+		t.Fatalf("GetTLSHandler returned nil")
+	}
+	cfg := vp.GetTLSConfig("secure.test")
+	if cfg == nil {
+		t.Fatalf("GetTLSConfig returned nil")
+	}
 
 	transport := http.DefaultTransport.(*http.Transport).Clone()
 	transport.TLSClientConfig = &tls.Config{InsecureSkipVerify: true}
@@ -106,7 +103,7 @@ func TestVHost_AddHostWithTLSAndRetrieval(t *testing.T) {
 	}
 	http.DefaultTransport.(*http.Transport).TLSClientConfig = &tls.Config{InsecureSkipVerify: true}
 	client := &http.Client{Transport: transport}
-	url := "http://secure.test:21341"
+	url := "https://secure.test:21341"
 	req, _ := http.NewRequest("GET", url, nil)
 	log.Debug().Str("url", url).Msg("making request")
 	resp, err := client.Do(req)
@@ -122,11 +119,13 @@ func TestVHost_AddHostWithTLSAndRetrieval(t *testing.T) {
 	if string(b) != "secure-upstream" {
 		t.Fatalf("unexpected body: %q", string(b))
 	}
+	closer.Close()
 }
 
 func TestVHost_UnknownHostReturns404(t *testing.T) {
 	manager := NewVHostProxyManager()
 	vp := NewVHostProxy(VHostKey{Port: 0}, manager)
+
 
 	req := httptest.NewRequest("GET", "http://unknown/", nil)
 	req.Host = "unknown"
