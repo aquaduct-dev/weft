@@ -78,3 +78,58 @@ Notes:
 - All AES operations use the shared connection secret as the key; the nonce is single-use.
 - The protocol proves knowledge of the secret both ways without exposing the secret or requiring signed certs.
 - JWT is used for subsequent requests; when it expires the challenge repeats.
+
+## API Endpoints
+
+The Weft server exposes a small HTTP control API used by clients and operators. All endpoints are mounted on the main server address. Summary:
+
+- GET /login
+  - Purpose: Retrieve a short AES-GCM encrypted challenge from the server.
+  - Request: no body.
+  - Response: binary encrypted bytes. Client must decrypt with the shared connection secret and respond as described above.
+
+- POST /login
+  - Purpose: Verify the client's response to the challenge and obtain a short-lived JWT (approx 30 minutes).
+  - Request: JSON body { "challenge": "<base64>", "proxy_name": "<name>" } with Content-Type: application/json. "challenge" is the base64 encoded encrypted bytes produced by the client (see client Login flow).
+  - Response: raw JWT string (text) on success.
+
+- POST /connect
+  - Purpose: Create or update a tunnel and start the associated server-side proxy.
+  - Authentication: Bearer JWT in Authorization header ("Authorization: Bearer <token>") obtained from /login.
+  - Request: JSON body matching types.ConnectRequest (includes ClientPublicKey, TunnelName, Protocol, Hostname/RemotePort etc.).
+  - Response: JSON types.ConnectResponse containing:
+    - ServerPublicKey: server WireGuard public key (hex)
+    - ClientAddress: assigned internal WG IP (e.g., 10.1.x.x)
+    - ServerWGPort: UDP port the server's WireGuard device is listening on
+    - TunnelProxyPort: port on the server used by the tunnel's proxy
+
+- POST /healthcheck
+  - Purpose: Clients call this periodically to prove liveness and refresh last-seen timestamps.
+  - Authentication: Bearer JWT in Authorization header.
+  - Request: JSON types.HealthcheckRequest (optional message).
+  - Response: JSON types.HealthcheckResponse with Status and Message.
+
+- POST /shutdown
+  - Purpose: Remove the tunnel associated with the JWT's "sub" claim and stop its proxy.
+  - Authentication: Bearer JWT in Authorization header.
+  - Request: none.
+  - Response: 200 OK on success.
+
+- GET /list
+  - Purpose: (new) List all currently active tunnels and their traffic counters.
+  - Authentication: Bearer JWT in Authorization header (must be a valid token).
+  - Request: none.
+  - Response: JSON object mapping tunnel names to counters. Each entry contains:
+    - tx: bytes transmitted from client -> remote (uint64)
+    - rx: bytes received from remote -> client (uint64)
+    - total: tx + rx (uint64)
+  - Example response:
+    {
+      "my-tunnel": { "tx": 12345, "rx": 9876, "total": 22221, "src": "tcp://localhost:25565", "dst":  "tcp://mydomain.com:25565"},
+      "web-api":   { "tx": 0, "rx": 1024, "total": 1024, "src": "http://localhost:1023", "dst":  "https://mydomain.com:443"}
+    }
+
+Notes:
+- All endpoints that require authentication expect the JWT as a Bearer token in the Authorization header.
+- Counters reported by /list are collected from the proxy layer (per-proxy bytesTx / bytesRx) and are returned as unsigned integers. They represent values observed since the proxy was started (or since counters were last reset).
+- The /list endpoint is read-only and does not modify server state.

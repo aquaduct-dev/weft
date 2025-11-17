@@ -5,7 +5,11 @@ import (
 	"context"
 	"net"
 	"net/http"
-	"sync"
+	"sync/atomic"
+)
+
+var (
+	bytesReadKey = "countingconn"
 )
 
 // MeteredHandler is a http.Handler that can handle MeteredRequest.
@@ -16,15 +20,12 @@ type MeteredHandler interface {
 // MeteredRequest is a http.Request that has been metered.
 type MeteredRequest struct {
 	*http.Request
-	bytesRead *uint64
+	*countingConn
 }
 
 // TotalSize returns the size of the request in bytes.
 func (r *MeteredRequest) TotalSize() uint64 {
-	if r.bytesRead == nil {
-		return 0
-	}
-	return *r.bytesRead
+	return r.countingConn.bytesRx.Load()
 }
 
 // MeteredResponseWriter is a wrapper around http.ResponseWriter that counts bytes written.
@@ -56,32 +57,31 @@ func MeteredHTTPHandlerFunc(f func(http.ResponseWriter, *http.Request)) MeteredH
 }
 
 type MeteredHTTPHandler struct {
-	handler    http.Handler
-	bytesTx    uint64
-	bytesRx    uint64
-	bytesTotal uint64
-	mu         sync.Mutex
+	handler http.Handler
+	bytesTx atomic.Uint64
+	bytesRx atomic.Uint64
 }
 
 func (h *MeteredHTTPHandler) BytesTx() uint64 {
-	return h.bytesTx
+	return h.bytesTx.Load()
 }
 
 func (h *MeteredHTTPHandler) BytesRx() uint64 {
-	return h.bytesRx
+	return h.bytesRx.Load()
 }
 
 func (h *MeteredHTTPHandler) BytesTotal() uint64 {
-	return h.bytesTotal
+	return h.BytesRx() + h.BytesTx()
 }
 
 func (h *MeteredHTTPHandler) ServeHTTP(w *MeteredResponseWriter, r *MeteredRequest) {
 	h.handler.ServeHTTP(w, r.Request)
-	h.mu.Lock()
-	defer h.mu.Unlock()
-	h.bytesTx += w.BytesWritten()
-	h.bytesRx += r.TotalSize()
-	h.bytesTotal += w.BytesWritten() + r.TotalSize()
+	bytesRx := r.countingConn.bytesRx.Load()
+	//bytesTx := r.countingConn.bytesTx.Load()
+	r.countingConn.bytesRx.Store(0)
+	r.countingConn.bytesTx.Store(0)
+	h.bytesTx.Add(w.BytesWritten())
+	h.bytesRx.Add(bytesRx)
 }
 
 func MakeMeteredHTTPHandler(handler http.Handler) *MeteredHTTPHandler {
@@ -89,11 +89,14 @@ func MakeMeteredHTTPHandler(handler http.Handler) *MeteredHTTPHandler {
 }
 
 // NewMeteredRequestForTest creates a new MeteredRequest for testing purposes.
-func NewMeteredRequestForTest(r *http.Request, size uint64) *MeteredRequest {
-	s := size
+func NewMeteredRequestForTest(r *http.Request) *MeteredRequest {
 	return &MeteredRequest{
-		Request:   r,
-		bytesRead: &s,
+		Request: r,
+		countingConn: &countingConn{
+			Conn:    nil,
+			bytesRx: &atomic.Uint64{},
+			bytesTx: &atomic.Uint64{},
+		},
 	}
 }
 
@@ -103,25 +106,18 @@ type MeteredServer struct {
 	MeteredHandler MeteredHandler
 }
 
-type contextKey string
-
-const bytesReadKey = contextKey("bytesRead")
-
 // NewMeteredServer creates a new MeteredServer.
 func NewMeteredServer(addr string, handler MeteredHandler) *MeteredServer {
 	srv := &MeteredServer{
 		Server: &http.Server{
 			Addr: addr,
+			ConnContext: func(ctx context.Context, c net.Conn) context.Context {
+				return context.WithValue(ctx, bytesReadKey, c.(*countingConn))
+			},
 		},
 		MeteredHandler: handler,
 	}
 	srv.Server.Handler = srv.wrapHandler()
-	srv.Server.ConnContext = func(ctx context.Context, c net.Conn) context.Context {
-		if mc, ok := c.(*countingConn); ok {
-			return context.WithValue(ctx, bytesReadKey, mc.bytesRead)
-		}
-		return ctx
-	}
 	return srv
 }
 
@@ -131,11 +127,9 @@ func (srv *MeteredServer) wrapHandler() http.Handler {
 			panic("meter: MeteredServer.MeteredHandler is nil")
 		}
 
-		bytesReadPtr, _ := r.Context().Value(bytesReadKey).(*uint64)
-
 		meteredRequest := &MeteredRequest{
-			Request:   r,
-			bytesRead: bytesReadPtr,
+			Request:      r,
+			countingConn: r.Context().Value(bytesReadKey).(*countingConn),
 		}
 
 		// Wrap the response writer to count bytes
@@ -164,22 +158,33 @@ func (l *countingListener) Accept() (net.Conn, error) {
 	if err != nil {
 		return nil, err
 	}
-	var bytesRead uint64
 	return &countingConn{
-		Conn:      conn,
-		bytesRead: &bytesRead,
+		Conn:    conn,
+		bytesRx: &atomic.Uint64{},
+		bytesTx: &atomic.Uint64{},
 	}, nil
 }
 
 // countingConn is a net.Conn that counts bytes read.
 type countingConn struct {
 	net.Conn
-	bytesRead *uint64
+	bytesRx *atomic.Uint64
+	bytesTx *atomic.Uint64
 }
 
 // Read reads data from the connection.
-func (c *countingConn) Read(b []byte) (int, error) {
+func (c countingConn) Read(b []byte) (int, error) {
 	n, err := c.Conn.Read(b)
-	*c.bytesRead += uint64(n)
+	if err == nil {
+		c.bytesRx.Add(uint64(n))
+	}
+	return n, err
+}
+
+func (c countingConn) Write(b []byte) (int, error) {
+	n, err := c.Conn.Write(b)
+	if err == nil {
+		c.bytesTx.Add(uint64(n))
+	}
 	return n, err
 }

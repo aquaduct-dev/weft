@@ -12,6 +12,7 @@ import (
 	"crypto/rand"
 	"crypto/tls"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -99,8 +100,8 @@ var _ = Describe("ServerTunnel integration (Ginkgo) - separate file", func() {
 		var tunnelLn net.Listener
 		tunnelLn, controlPort = openPort()
 		tunnelLn.Close() // we only needed the free port number
-		tunnelSrv = server.NewServer(controlPort, "", "")
-		go tunnelSrv.ListenAndServe()
+		tunnelSrv = server.NewServer(controlPort, "127.0.0.1", "")
+		go tunnelSrv.ListenAndServeTLS("", "")
 
 		// Generate a new private key.
 		By("generating a WireGuard keypair for the client")
@@ -114,7 +115,7 @@ var _ = Describe("ServerTunnel integration (Ginkgo) - separate file", func() {
 		// the test attempts to contact /login before the server is listening.
 		Eventually(func() error {
 			var e error
-			token, e = auth.Login(fmt.Sprintf("127.0.0.1:%d", controlPort), tunnelSrv.ConnectionSecret, "test-tunnel")
+			token, e = auth.GetToken(fmt.Sprintf("127.0.0.1:%d", controlPort), tunnelSrv.ConnectionSecret, "test-tunnel")
 			return e
 		}).Should(Succeed(), "auth.Login should eventually succeed once server is accepting connections")
 	})
@@ -135,7 +136,7 @@ var _ = Describe("ServerTunnel integration (Ginkgo) - separate file", func() {
 			ClientPublicKey: privateKey.PublicKey().String(),
 			RemotePort:      remotePort,
 			Protocol:        "http",
-			Hostname:        "127.0.0.1",
+			Hostname:        "test.com",
 			TunnelName:      "test-tunnel",
 		}, token)
 
@@ -148,10 +149,33 @@ var _ = Describe("ServerTunnel integration (Ginkgo) - separate file", func() {
 		defer device.Device.Close()
 
 		var resp *http.Response
+		By("reading HTTP data from the server")
 		Eventually(func() error {
 			var err error
-			resp, err = http.Get(fmt.Sprintf("http://127.0.0.1:%d", remotePort))
-			return err
+			// Use https scheme when connecting to the remote forwarded port so the client performs TLS.
+			req, err := http.NewRequest("GET", fmt.Sprintf("http://test.com:%d", remotePort), nil)
+			if err != nil {
+				return err
+			}
+			//req.Header.Set("Host", "test.com")
+			transport := http.DefaultTransport.(*http.Transport).Clone()
+			transport.DialContext = func(ctx context.Context, network, addr string) (net.Conn, error) {
+				if addr == fmt.Sprintf("test.com:%d", remotePort) {
+					addr = fmt.Sprintf("127.0.0.1:%d", remotePort)
+				}
+				return net.Dial(network, addr)
+			}
+			client := http.Client{
+				Transport: transport,
+			}
+			resp, err = (&client).Do(req)
+			if err != nil {
+				return err
+			}
+			if resp.StatusCode != 200 {
+				return errors.New("invalid response code")
+			}
+			return nil
 		}).Should(Succeed())
 
 		defer resp.Body.Close()
@@ -165,7 +189,7 @@ var _ = Describe("ServerTunnel integration (Ginkgo) - separate file", func() {
 		// Prepare connect request for http->https tunnel. Upstream uses https.
 		By("requesting a new tunnel from the server")
 		w := httptest.NewRecorder()
-		certPem, keyPem, err := aqcrypto.GenerateCert("test.com")
+		certPem, keyPem, err := aqcrypto.GenerateCert("test.com", []string{})
 		Expect(err).ToNot(HaveOccurred())
 		r := encodeRequest(types.ConnectRequest{
 			ClientPublicKey: privateKey.PublicKey().String(),
@@ -192,17 +216,16 @@ var _ = Describe("ServerTunnel integration (Ginkgo) - separate file", func() {
 		Eventually(func() error {
 			var err error
 			// Use https scheme when connecting to the remote forwarded port so the client performs TLS.
-			req, err := http.NewRequest("GET", "https://test.com:443", nil)
+			req, err := http.NewRequest("GET", fmt.Sprintf("https://test.com:%d", remotePort), nil)
 			if err != nil {
 				return err
 			}
-			req.Header.Set("Host", "test.com")
-
+			//req.Header.Set("Host", "test.com")
 			transport := http.DefaultTransport.(*http.Transport).Clone()
 			transport.TLSClientConfig = &tls.Config{InsecureSkipVerify: true}
 			transport.DialContext = func(ctx context.Context, network, addr string) (net.Conn, error) {
-				if addr == "test.com:443" {
-					return net.Dial(network, fmt.Sprintf("127.0.0.1:%d", remotePort))
+				if addr == fmt.Sprintf("test.com:%d", remotePort) {
+					addr = fmt.Sprintf("127.0.0.1:%d", remotePort)
 				}
 				return net.Dial(network, addr)
 			}
@@ -210,7 +233,13 @@ var _ = Describe("ServerTunnel integration (Ginkgo) - separate file", func() {
 				Transport: transport,
 			}
 			resp, err = (&client).Do(req)
-			return err
+			if err != nil {
+				return err
+			}
+			if resp.StatusCode != 200 {
+				return errors.New("invalid response code")
+			}
+			return nil
 		}).Should(Succeed())
 
 		defer resp.Body.Close()
@@ -280,4 +309,5 @@ var _ = Describe("ServerTunnel integration (Ginkgo) - separate file", func() {
 		data := string(buf[:n]) + string(rest[:m])
 		Expect(strings.HasPrefix(data, "ECHO:")).To(BeTrue())
 	})
+
 })

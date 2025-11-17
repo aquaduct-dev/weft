@@ -47,8 +47,6 @@ type Server struct {
 	// Used by the janitor to prune stale entries.
 	peerLastSeen map[string]time.Time
 
-	proxies map[string]io.Closer
-
 	// usedIPs tracks allocated addresses in the subnet.
 	usedIPs map[netip.Addr]bool
 
@@ -130,7 +128,21 @@ func CreateDevice(port int) (*wireguard.UserspaceDevice, wgtypes.Key, int, error
 func NewServer(port int, bindIP string, connectionSecret string) *Server {
 	mux := http.NewServeMux()
 
-	apiTLSCfg := &tls.Config{}
+	// Generate self-signed certificate for HTTPS
+	certPEM, keyPEM, certGenErr := crypto.GenerateCert("weft-server", []string{bindIP})
+	if certGenErr != nil {
+		log.Fatal().Err(certGenErr).Msg("failed to generate self-signed certificate")
+	}
+
+	cert, certPairErr := tls.X509KeyPair(certPEM, keyPEM)
+	if certPairErr != nil {
+		log.Fatal().Err(certPairErr).Msg("failed to load generated certificate")
+	}
+
+	apiTLSCfg := &tls.Config{
+		Certificates: []tls.Certificate{cert},
+		MinVersion:   tls.VersionTLS12, // Enforce TLS 1.2 or higher
+	}
 
 	if connectionSecret == "" {
 		// Generate a random connection secret on startup.
@@ -148,12 +160,12 @@ func NewServer(port int, bindIP string, connectionSecret string) *Server {
 	}
 	s := &Server{
 		Server: &http.Server{
-			Addr:    addr,
-			Handler: mux,
+			Addr:      addr,
+			Handler:   mux,
+			TLSConfig: apiTLSCfg, // Assign the TLS config here
 		},
 		tunnels:          make(map[string]peer),
 		peerLastSeen:     make(map[string]time.Time),
-		proxies:          make(map[string]io.Closer),
 		subnet:           netip.MustParsePrefix("10.1.0.0/16"),
 		usedIPs:          make(map[netip.Addr]bool),
 		ConnectionSecret: connectionSecret,
@@ -176,7 +188,9 @@ func NewServer(port int, bindIP string, connectionSecret string) *Server {
 	mux.HandleFunc("/healthcheck", s.HealthcheckHandler)
 	mux.HandleFunc("/shutdown", s.ShutdownHandler)
 	mux.HandleFunc("/login", s.LoginHandler)
-	go s.startJanitor(30 * time.Second)
+	// List current tunnels with tx/rx/total. Requires Bearer JWT auth.
+	mux.HandleFunc("/list", s.ListHandler)
+	go s.startJanitor(11 * time.Second)
 
 	return s
 }
@@ -723,6 +737,7 @@ func (s *Server) getChallenge(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	w.Write(encrypted)
+	log.Info().Str("client", r.RemoteAddr).Msg("getChallenge: Generated login challenge")
 }
 
 func (s *Server) verifyChallenge(w http.ResponseWriter, r *http.Request) {
@@ -811,6 +826,7 @@ func (s *Server) verifyChallenge(w http.ResponseWriter, r *http.Request) {
 	}
 
 	w.Write([]byte(tokenString))
+	log.Info().Str("client", r.RemoteAddr).Msg("verifyChallenge: Client logged in successfully")
 }
 
 // ValidateJWT parses and validates a JWT token string using the server's ConnectionSecret.
@@ -832,4 +848,32 @@ func (s *Server) ValidateJWT(tokenString string) (*jwt.Token, error) {
 	}
 
 	return token, nil
+}
+
+func (s *Server) ListHandler(w http.ResponseWriter, r *http.Request) {
+	authHeader := r.Header.Get("Authorization")
+	if authHeader == "" {
+		http.Error(w, "Authorization header required", http.StatusUnauthorized)
+		return
+	}
+
+	parts := strings.Split(authHeader, " ")
+	if len(parts) != 2 || parts[0] != "Bearer" {
+		http.Error(w, "Invalid Authorization header", http.StatusUnauthorized)
+		return
+	}
+
+	tokenString := parts[1]
+
+	_, err := s.ValidateJWT(tokenString)
+	if err != nil {
+		http.Error(w, "Invalid token", http.StatusUnauthorized)
+		return
+	}
+	proxies := s.ProxyManager.GetProxyCounters()
+	w.Header().Set("Content-Type", "application/json")
+	if err := json.NewEncoder(w).Encode(proxies); err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
 }

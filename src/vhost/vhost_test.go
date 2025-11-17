@@ -42,7 +42,7 @@ var _ = ginkgo.Describe("VHostProxy", func() {
 		req := httptest.NewRequest("GET", "http://example.test/", nil)
 		rawRec := httptest.NewRecorder()
 		rec := meter.MeteredResponseWriter{ResponseWriter: rawRec}
-		vp.ServeHTTP(&rec, meter.NewMeteredRequestForTest(req, 0))
+		vp.ServeHTTP(&rec, meter.NewMeteredRequestForTest(req))
 
 		res := rawRec.Result()
 		defer res.Body.Close()
@@ -62,7 +62,7 @@ var _ = ginkgo.Describe("VHostProxy", func() {
 
 		manager := NewVHostProxyManager()
 		vp := manager.Proxy("", 21341)
-		certPEM, keyPEM, err := crypto.GenerateCert("secure.test")
+		certPEM, keyPEM, err := crypto.GenerateCert("secure.test", []string{})
 		gomega.Expect(err).ToNot(gomega.HaveOccurred())
 
 		closer, _, err := vp.AddHostWithTLS("secure.test", u, nil, string(certPEM), string(keyPEM))
@@ -106,7 +106,7 @@ var _ = ginkgo.Describe("VHostProxy", func() {
 		req.Host = "unknown"
 		rawRec := httptest.NewRecorder()
 		rec := meter.MeteredResponseWriter{ResponseWriter: rawRec}
-		vp.ServeHTTP(&rec, meter.NewMeteredRequestForTest(req, 0))
+		vp.ServeHTTP(&rec, meter.NewMeteredRequestForTest(req))
 
 		res := rawRec.Result()
 		defer res.Body.Close()
@@ -151,7 +151,7 @@ var _ = ginkgo.Describe("VHostProxy", func() {
 		req.Host = "example.test"
 		rawRec := httptest.NewRecorder()
 		rec := meter.MeteredResponseWriter{ResponseWriter: rawRec}
-		proxy.ServeHTTP(&rec, meter.NewMeteredRequestForTest(req, 0))
+		proxy.ServeHTTP(&rec, meter.NewMeteredRequestForTest(req))
 		res := rawRec.Result()
 		gomega.Expect(res.StatusCode).To(gomega.Equal(http.StatusOK))
 		b, _ := io.ReadAll(res.Body)
@@ -163,7 +163,7 @@ var _ = ginkgo.Describe("VHostProxy", func() {
 		acmeReq.Host = "acme.test"
 		acmeRawRec := httptest.NewRecorder()
 		acmeRec := meter.MeteredResponseWriter{ResponseWriter: acmeRawRec}
-		proxy.ServeHTTP(&acmeRec, meter.NewMeteredRequestForTest(acmeReq, 0))
+		proxy.ServeHTTP(&acmeRec, meter.NewMeteredRequestForTest(acmeReq))
 		acmeRes := acmeRawRec.Result()
 		body, _ := io.ReadAll(acmeRes.Body)
 		gomega.Expect(string(body)).ToNot(gomega.Equal("custom not found\n"))

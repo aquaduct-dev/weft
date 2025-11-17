@@ -5,7 +5,7 @@ import (
 	"io"
 	"net"
 	"strings"
-	"sync"
+	"sync/atomic"
 
 	"aquaduct.dev/weft/src/vhost/meter"
 	"aquaduct.dev/weft/wireguard"
@@ -29,9 +29,8 @@ type TCPProxy struct {
 	Listener net.Listener
 	Addr     *net.TCPAddr
 	name     string
-	bytesMu  sync.Mutex
-	bytesRx  uint64
-	bytesTx  uint64
+	bytesRx  atomic.Uint64
+	bytesTx  atomic.Uint64
 }
 
 // Close closes the TCPProxy listener.
@@ -56,15 +55,15 @@ func (p *TCPProxy) Name() string {
 }
 
 func (p *TCPProxy) BytesRx() uint64 {
-	return p.bytesRx
+	return p.bytesRx.Load()
 }
 
 func (p *TCPProxy) BytesTx() uint64 {
-	return p.bytesTx
+	return p.bytesTx.Load()
 }
 
 func (p *TCPProxy) BytesTotal() uint64 {
-	return p.bytesRx + p.bytesTx
+	return p.bytesRx.Load() + p.bytesTx.Load()
 }
 
 func (p *TCPProxy) ListenAddr() net.Addr {
@@ -107,9 +106,8 @@ type UDPProxy struct {
 	name    string
 	Conn    WGAwareUDPConn
 	Addr    *net.UDPAddr
-	bytesRx uint64
-	bytesTx uint64
-	bytesMu sync.Mutex
+	bytesRx atomic.Uint64
+	bytesTx atomic.Uint64
 }
 
 // Close closes the UDPProxy connection.
@@ -146,15 +144,15 @@ func (p *UDPProxy) Name() string {
 }
 
 func (p *UDPProxy) BytesRx() uint64 {
-	return p.bytesRx
+	return p.bytesRx.Load()
 }
 
 func (p *UDPProxy) BytesTx() uint64 {
-	return p.bytesTx
+	return p.bytesTx.Load()
 }
 
 func (p *UDPProxy) BytesTotal() uint64 {
-	return p.bytesRx + p.bytesTx
+	return p.BytesRx() + p.BytesTx()
 }
 
 // VHostRouteProxy is a proxy for vhost routes.

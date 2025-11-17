@@ -34,6 +34,77 @@ func (p *ProxyManager) SetBindIP(bindIP string) {
 	p.bindIP = bindIP
 }
 
+/*
+GetProxyCounters returns a snapshot of tx/rx counters for all active proxies.
+
+Important: use exported methods only. Do not access internal mutexes or fields
+directly. Each Proxy implementation exposes exported accessors for counters
+(e.g., BytesTx(), BytesRx()) which provide a safe snapshot.
+*/
+func (p *ProxyManager) GetProxyCounters() map[string]struct {
+	Tx uint64
+	Rx uint64
+} {
+	result := make(map[string]struct {
+		Tx uint64
+		Rx uint64
+	})
+
+	for name, pr := range p.proxies {
+		// Prefer exported accessor methods on the proxy.
+		// Try a few common method names that implementations provide.
+		var tx, rx uint64
+		switched := false
+
+		// If the Proxy interface already exposes BytesTx/BytesRx, use it.
+		if v, ok := pr.(interface {
+			BytesTx() uint64
+			BytesRx() uint64
+		}); ok {
+			tx = v.BytesTx()
+			rx = v.BytesRx()
+			switched = true
+		}
+
+		// Some concrete types may expose TxBytes/RxBytes or Tx/Rx accessors.
+		if !switched {
+			if v, ok := pr.(interface {
+				TxBytes() uint64
+				RxBytes() uint64
+			}); ok {
+				tx = v.TxBytes()
+				rx = v.RxBytes()
+				switched = true
+			}
+		}
+
+		if !switched {
+			if v, ok := pr.(interface {
+				Tx() uint64
+				Rx() uint64
+			}); ok {
+				tx = v.Tx()
+				rx = v.Rx()
+				switched = true
+			}
+		}
+
+		if !switched {
+			// Last resort: if concrete types expose BytesTx/BytesRx methods under different names.
+			// Add more type assertions here as necessary.
+			log.Debug().Msgf("GetProxyCounters: proxy %s does not expose known counter accessors; skipping", name)
+			continue
+		}
+
+		result[name] = struct {
+			Tx uint64
+			Rx uint64
+		}{Tx: tx, Rx: rx}
+	}
+
+	return result
+}
+
 // ProxyTCP is a generic TCP proxy that forwards connections.
 func (p *TCPProxy) ProxyTCP(publicConn net.Conn, target string, device *wireguard.UserspaceDevice) {
 	log.Debug().Str("target", target).Msg("ProxyTCP: accepted public connection")
@@ -66,9 +137,7 @@ func (p *TCPProxy) ProxyTCP(publicConn net.Conn, target string, device *wireguar
 				publicConn.Close()
 				return
 			}
-			p.bytesMu.Lock()
-			p.bytesRx += uint64(n)
-			p.bytesMu.Unlock()
+			p.bytesRx.Add(uint64(n))
 		}
 	}()
 
@@ -89,9 +158,7 @@ func (p *TCPProxy) ProxyTCP(publicConn net.Conn, target string, device *wireguar
 				publicConn.Close()
 				return
 			}
-			p.bytesMu.Lock()
-			p.bytesTx += uint64(n)
-			p.bytesMu.Unlock()
+			p.bytesTx.Add(uint64(n))
 		}
 	}()
 	log.Debug().Str("target_addr", targetConn.RemoteAddr().String()).Str("public_addr", publicConn.RemoteAddr().String()).Msg("ProxyTCP: started bidirectional proxy")
@@ -161,9 +228,7 @@ func (p *UDPProxy) StartProxy(srcURL *url.URL, dstURL *url.URL, device *wireguar
 			}
 
 			targetConn.Write(buf[:n])
-			p.bytesMu.Lock()
-			p.bytesRx += uint64(n)
-			p.bytesMu.Unlock()
+			p.bytesRx.Add(uint64(n))
 			// goroutine to copy from target to public
 			go func(pubAddr net.Addr, tconn WGAwareUDPConn) {
 				defer func() {
@@ -185,9 +250,7 @@ func (p *UDPProxy) StartProxy(srcURL *url.URL, dstURL *url.URL, device *wireguar
 						log.Error().Err(err).Str("target", srcAddr.String()).Msg("UDPProxy: failed to write")
 						return
 					}
-					p.bytesMu.Lock()
-					p.bytesTx += uint64(n)
-					p.bytesMu.Unlock()
+					p.bytesTx.Add(uint64(n))
 				}
 			}(publicAddr, targetConn)
 
@@ -234,8 +297,6 @@ func (p *ProxyManager) StartProxy(srcURL *url.URL, dstURL *url.URL, proxyName st
 		return nil, err
 	}
 
-	rewriteHost(dstURL, bindIp)
-
 	// Check that no other proxies exist with this name
 	if _, ok := p.proxies[proxyName]; ok {
 		return nil, fmt.Errorf("proxy %s already exists", proxyName)
@@ -245,6 +306,7 @@ func (p *ProxyManager) StartProxy(srcURL *url.URL, dstURL *url.URL, proxyName st
 
 	switch proxyType {
 	case "tcp>tcp", "https>https", "http>tcp":
+		rewriteHost(dstURL, bindIp)
 		addr, err := net.ResolveTCPAddr("tcp", dstURL.Host)
 		if err != nil {
 			return nil, err
@@ -262,6 +324,7 @@ func (p *ProxyManager) StartProxy(srcURL *url.URL, dstURL *url.URL, proxyName st
 		p.proxies[proxyName] = newProxy
 		return newProxy, nil
 	case "udp>udp":
+		rewriteHost(dstURL, bindIp)
 		addr, err := net.ResolveUDPAddr("udp", dstURL.Host)
 		if err != nil {
 			return nil, err

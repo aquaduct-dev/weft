@@ -386,7 +386,7 @@ func (p *VHostProxy) AddHostWithACME(host string, target *url.URL, device *wireg
 
 func (p *VHostProxy) ServeHTTP(w *meter.MeteredResponseWriter, r *meter.MeteredRequest) {
 	host := strings.Split(r.Host, ":")[0]
-	log.Debug().Str("host", r.Host).Str("uri", r.RequestURI).Msg("VHost: got request")
+	log.Debug().Str("host", r.Host).Str("uri", r.RequestURI).Uint64("bytes", r.TotalSize()).Msg("VHost: got request")
 	if p.port == p.manager.acmePort && p.manager.acmeManager != nil && strings.HasPrefix(r.URL.Path, "/.well-known/acme-challenge/") {
 		// Log that the ACME HTTP-01 challenge handler is being invoked for visibility.
 		log.Debug().Str("host", r.Host).Str("path", r.URL.Path).Msg("ACME: challenge handler start")
@@ -422,6 +422,7 @@ func (p *VHostProxy) ServeHTTP(w *meter.MeteredResponseWriter, r *meter.MeteredR
 		proxy.ServeHTTP(w, r)
 		return
 	}
+	log.Debug().Str("host", r.Host).Str("uri", r.RequestURI).Msg("VHost: handling request with missing (default) handler")
 	p.defaultHandler.ServeHTTP(w, r)
 }
 

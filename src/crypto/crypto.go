@@ -16,6 +16,7 @@ import (
 	"fmt"
 	"io"
 	"math/big"
+	"net"
 	"time"
 )
 
@@ -75,7 +76,7 @@ func Decrypt(key string, ciphertext []byte) ([]byte, error) {
 	return plaintext, nil
 }
 
-func GenerateCert(commonName string) ([]byte, []byte, error) {
+func GenerateCert(commonName string, additionalIps []string) ([]byte, []byte, error) {
 	priv, err := rsa.GenerateKey(rand.Reader, 2048)
 	if err != nil {
 		return nil, nil, err
@@ -84,6 +85,11 @@ func GenerateCert(commonName string) ([]byte, []byte, error) {
 	if err != nil {
 		return nil, nil, err
 	}
+	netIps := []net.IP{}
+	for _, ip := range additionalIps {
+		netIps = append(netIps, net.ParseIP(ip))
+	}
+	netIps = append(netIps, net.IPv4zero, net.ParseIP("127.0.0.1"))
 	template := &x509.Certificate{
 		SerialNumber: serial,
 		Subject: pkix.Name{
@@ -94,7 +100,8 @@ func GenerateCert(commonName string) ([]byte, []byte, error) {
 		KeyUsage:              x509.KeyUsageKeyEncipherment | x509.KeyUsageDigitalSignature,
 		ExtKeyUsage:           []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth},
 		BasicConstraintsValid: true,
-		DNSNames:              []string{commonName},
+		DNSNames:              []string{commonName, "localhost"},
+		IPAddresses:           netIps,
 	}
 	derBytes, err := x509.CreateCertificate(rand.Reader, template, template, &priv.PublicKey, priv)
 	if err != nil {

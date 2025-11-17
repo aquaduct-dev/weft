@@ -62,7 +62,7 @@ var _ = Describe("Decrypt failures", func() {
 
 var _ = Describe("GenerateCert", func() {
 	It("returns valid PEM blocks", func() {
-		certPEM, keyPEM, err := crypto.GenerateCert("example.test")
+		certPEM, keyPEM, err := crypto.GenerateCert("example.test", []string{})
 		Expect(err).ToNot(HaveOccurred())
 		Expect(len(certPEM)).To(BeNumerically(">", 0))
 		Expect(len(keyPEM)).To(BeNumerically(">", 0))

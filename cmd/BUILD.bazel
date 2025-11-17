@@ -3,7 +3,7 @@ load("@rules_go//go:def.bzl", "go_library")
 go_library(
     name = "cmd",
     srcs = [
-        "auth.go",
+        "list.go",
         "proxy.go",
         "root.go",
         "server.go",
@@ -19,7 +19,6 @@ go_library(
         "//src/tunnel",
         "//types",
         "//wireguard",
-        "@com_github_golang_jwt_jwt_v4//:jwt",
         "@com_github_rs_zerolog//:zerolog",
         "@com_github_rs_zerolog//log",
         "@com_github_spf13_cobra//:cobra",

@@ -211,8 +211,8 @@ var serverCmd = &cobra.Command{
 		}
 
 		go func() {
-			if err := srv.ListenAndServe(); err != nil {
-				log.Fatal().Err(err).Msg("failed to serve")
+			if err := srv.ListenAndServeTLS("", ""); err != nil && err != http.ErrServerClosed {
+				log.Fatal().Err(err).Msg("failed to serve HTTPS")
 			}
 		}()
 

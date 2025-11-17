@@ -11,22 +11,42 @@ import (
 	"crypto/cipher"
 	"crypto/rand"
 	"crypto/sha256"
+	"crypto/tls"
+	"crypto/x509"
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
 	"strings"
+	"time"
 
+	"github.com/golang-jwt/jwt/v4"
 	"github.com/rs/zerolog/log"
 )
 
-// Login performs the zero-trust authentication flow with the server and returns a JWT.
-func Login(serverAddr, connectionSecret, proxyName string) (string, error) {
-	// 1. GET /login to get the challenge
-	loginURL := fmt.Sprintf("http://%s/login", serverAddr)
+func getCertificates(serverAddr string) ([]*x509.Certificate, error) {
+	conn, err := tls.Dial("tcp", serverAddr, &tls.Config{
+		InsecureSkipVerify: true,
+	})
+	if err != nil {
+		log.Err(err).Msg("Login: Error in dial")
+		return nil, err
+	}
+	defer conn.Close()
+	return conn.ConnectionState().PeerCertificates, nil
+}
+
+func GetToken(serverAddr, connectionSecret, proxyName string) (string, error) {
+	client := http.Client{
+		Transport: &http.Transport{
+			TLSClientConfig: &tls.Config{InsecureSkipVerify: true},
+		},
+	}
+	// GET /login to get the challenge
+	loginURL := fmt.Sprintf("https://%s/login", serverAddr)
 	log.Debug().Str("url", loginURL).Msg("Login: requesting challenge")
-	resp, err := http.Get(loginURL)
+	resp, err := client.Get(loginURL)
 	if err != nil {
 		log.Error().Err(err).Msg("Login: GET /login failed")
 		return "", fmt.Errorf("failed to get login challenge: %w", err)
@@ -81,7 +101,7 @@ func Login(serverAddr, connectionSecret, proxyName string) (string, error) {
 		log.Error().Err(jerr).Msg("Login: failed to marshal login JSON")
 		return "", fmt.Errorf("failed to marshal login request: %w", jerr)
 	}
-	resp, err = http.Post(loginURL, "application/json", bytes.NewBuffer(jsonBody))
+	resp, err = client.Post(loginURL, "application/json", bytes.NewBuffer(jsonBody))
 	if err != nil {
 		log.Error().Err(err).Msg("Login: POST /login failed")
 		return "", fmt.Errorf("failed to post login challenge: %w", err)
@@ -100,8 +120,82 @@ func Login(serverAddr, connectionSecret, proxyName string) (string, error) {
 		return "", fmt.Errorf("failed to read JWT: %w", err)
 	}
 	log.Debug().Int("len", len(jwt)).Str("server", serverAddr).Msg("Login: obtained JWT")
+	log.Info().Msg("Login: authenticated successfully!")
 
 	return string(jwt), nil
+}
+
+// Login performs the zero-trust authentication flow with the server and returns a JWT.
+func Login(serverAddr, connectionSecret, proxyName string) (*http.Client, error) {
+	token, err := GetToken(serverAddr, connectionSecret, proxyName)
+	if err != nil {
+		return nil, err
+	}
+
+	certs, err := getCertificates(serverAddr)
+	if err != nil {
+		return nil, err
+	}
+
+	certPool := x509.NewCertPool()
+	certPool.AddCert(certs[0])
+	tlsTransport := http.Transport{
+		TLSClientConfig: &tls.Config{
+			RootCAs: certPool,
+		},
+	}
+	transport := WithJWT(&tlsTransport, token, func() (string, error) {
+		return GetToken(serverAddr, connectionSecret, proxyName)
+	})
+	client := &http.Client{Timeout: 5 * time.Second, Transport: &transport}
+	return client, nil
+}
+
+type withJwt struct {
+	jwt        string
+	jwtRefresh func() (string, error)
+	http.Header
+	rt http.RoundTripper
+}
+
+func WithJWT(rt http.RoundTripper, jwt string, jwtRenewalFunction func() (string, error)) withJwt {
+	if rt == nil {
+		panic("Need an http.RoundTripper!")
+	}
+
+	return withJwt{jwt: jwt, rt: rt}
+}
+
+func (h withJwt) IsJWTValid() bool {
+	if h.jwt == "" {
+		return false
+	}
+	token, _, err := jwt.NewParser().ParseUnverified(h.jwt, jwt.MapClaims{})
+	if err != nil {
+		log.Fatal().Err(err).Msg("Failed to parse JWT")
+	}
+	claims, ok := token.Claims.(jwt.MapClaims)
+	if !ok {
+		log.Fatal().Msg("Failed to get JWT claims")
+	}
+	exp := int64(claims["exp"].(float64))
+	jwtExpiry := time.Unix(exp, 0)
+	return time.Until(jwtExpiry) > 1*time.Minute
+
+}
+
+func (h withJwt) RoundTrip(req *http.Request) (*http.Response, error) {
+	req = req.Clone(req.Context())
+	if !h.IsJWTValid() {
+		log.Info().Msg("Login: refreshing JWT...")
+		newJwt, err := h.jwtRefresh()
+		if err != nil {
+			return nil, err
+		}
+		h.jwt = newJwt
+	}
+	req.Header["Authorization"] = []string{"Bearer " + h.jwt}
+	return h.rt.RoundTrip(req)
 }
 
 func encodeBase64(b []byte) string {
