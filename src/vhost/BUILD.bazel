@@ -16,10 +16,16 @@ go_library(
 
 go_test(
     name = "vhost_test",
-    srcs = ["vhost_test.go"],
+    srcs = [
+        "vhost_suite_test.go",
+        "vhost_test.go",
+    ],
     embed = [":vhost"],
     deps = [
         "//src/crypto",
         "//src/vhost/meter",
+        "@com_github_onsi_ginkgo_v2//:ginkgo",
+        "@com_github_onsi_gomega//:gomega",
+        "@com_github_rs_zerolog//log",
     ],
 )

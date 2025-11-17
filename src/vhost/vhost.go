@@ -29,15 +29,15 @@ type VHostProxy struct {
 	mu sync.RWMutex
 	s  *meter.MeteredServer
 
-	handlers map[string]meter.MeteredHTTPHandler
+	handlers map[string]*meter.MeteredHTTPHandler
 	bindIp   string
 	port     int
 
 	manager *VHostProxyManager
 
-	defaultHandler meter.MeteredHTTPHandler
+	defaultHandler meter.MeteredHandler
 	// tlsHandlers holds HTTPS handlers per hostname when TLS termination is configured.
-	tlsHandlers map[string]meter.MeteredHTTPHandler
+	tlsHandlers map[string]*meter.MeteredHTTPHandler
 	// tlsConfigs holds tls.Config per hostname for mounting listeners.
 	tlsConfigs map[string]*tls.Config
 }
@@ -167,14 +167,14 @@ func (v VHostCloser) Close() error {
 // NewVHostProxy creates a new VHostProxy backed by the provided userspace device.
 func NewVHostProxy(key VHostKey, manager *VHostProxyManager) *VHostProxy {
 	return &VHostProxy{
-		handlers: make(map[string]meter.MeteredHTTPHandler),
+		handlers: make(map[string]*meter.MeteredHTTPHandler),
 		manager:  manager,
 		port:     key.Port,
 		bindIp:   key.BindIp,
-		defaultHandler: meter.MeteredHTTPHandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			fmt.Fprintf(w, "404 %s not found", r.URL.String())
+		defaultHandler: meter.MeteredHandlerFunc(func(w *meter.MeteredResponseWriter, r *meter.MeteredRequest) {
+			http.NotFound(w, r.Request)
 		}),
-		tlsHandlers: make(map[string]meter.MeteredHTTPHandler),
+		tlsHandlers: make(map[string]*meter.MeteredHTTPHandler),
 		tlsConfigs:  make(map[string]*tls.Config),
 	}
 }
@@ -210,7 +210,7 @@ func (w *WGAwareRoundTripper) RoundTrip(req *http.Request) (*http.Response, erro
 }
 
 // AddHost registers an HTTP reverse proxy for the given host.
-func (p *VHostProxy) AddHost(host string, target *url.URL, device *wireguard.UserspaceDevice) (VHostCloser, meter.MeteredHTTPHandler, error) {
+func (p *VHostProxy) AddHost(host string, target *url.URL, device *wireguard.UserspaceDevice) (VHostCloser, *meter.MeteredHTTPHandler, error) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 
@@ -228,7 +228,7 @@ func (p *VHostProxy) AddHost(host string, target *url.URL, device *wireguard.Use
 
 // AddHostWithTLS registers a host reverse proxy and an HTTPS handler that
 // terminates TLS using the provided certificate and key PEM strings.
-func (p *VHostProxy) AddHostWithTLS(host string, target *url.URL, device *wireguard.UserspaceDevice, certPEM, keyPEM string) (VHostCloser, meter.MeteredHTTPHandler, error) {
+func (p *VHostProxy) AddHostWithTLS(host string, target *url.URL, device *wireguard.UserspaceDevice, certPEM, keyPEM string) (VHostCloser, *meter.MeteredHTTPHandler, error) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 
@@ -306,7 +306,7 @@ func (p *VHostProxy) AddHostWithTLS(host string, target *url.URL, device *wiregu
 }
 
 // AddHostWithACME registers an HTTP reverse proxy and enables ACME for the given host.
-func (p *VHostProxy) AddHostWithACME(host string, target *url.URL, device *wireguard.UserspaceDevice, bindIp string) (VHostCloser, meter.MeteredHTTPHandler, error) {
+func (p *VHostProxy) AddHostWithACME(host string, target *url.URL, device *wireguard.UserspaceDevice, bindIp string) (VHostCloser, *meter.MeteredHTTPHandler, error) {
 
 	// Before enabling ACME for the host, verify the server appears reachable from the public internet
 	// for HTTP-01 challenges. This reduces time wasted attempting issuance for hosts that won't complete.
@@ -316,12 +316,12 @@ func (p *VHostProxy) AddHostWithACME(host string, target *url.URL, device *wireg
 		// If the host cannot be web-hosted, remove the proxy entry we just added to keep state consistent.
 		delete(p.handlers, host)
 		log.Warn().Str("host", host).Msg("VHost: host not reachable for ACME HTTP-01 challenge; aborting ACME setup")
-		return VHostCloser{}, meter.MeteredHTTPHandler{}, fmt.Errorf("host %s not reachable for ACME HTTP-01 challenge", host)
+		return VHostCloser{}, &meter.MeteredHTTPHandler{}, fmt.Errorf("host %s not reachable for ACME HTTP-01 challenge", host)
 	}
 
 	closer, err := p.manager.AddACMEHost(host, bindIp)
 	if err != nil {
-		return VHostCloser{}, meter.MeteredHTTPHandler{}, err
+		return VHostCloser{}, &meter.MeteredHTTPHandler{}, err
 	}
 	defer closer.Close()
 
@@ -384,9 +384,8 @@ func (p *VHostProxy) AddHostWithACME(host string, target *url.URL, device *wireg
 	return VHostCloser{VHostProxy: p, Host: host, Tls: true}, meteredProxy, nil
 }
 
-func (p *VHostProxy) ServeHTTP(w meter.MeteredResponseWriter, r *meter.MeteredRequest) {
+func (p *VHostProxy) ServeHTTP(w *meter.MeteredResponseWriter, r *meter.MeteredRequest) {
 	host := strings.Split(r.Host, ":")[0]
-	fmt.Printf("GOT REQE")
 	log.Debug().Str("host", r.Host).Str("uri", r.RequestURI).Msg("VHost: got request")
 	if p.port == p.manager.acmePort && p.manager.acmeManager != nil && strings.HasPrefix(r.URL.Path, "/.well-known/acme-challenge/") {
 		// Log that the ACME HTTP-01 challenge handler is being invoked for visibility.
@@ -394,9 +393,9 @@ func (p *VHostProxy) ServeHTTP(w meter.MeteredResponseWriter, r *meter.MeteredRe
 		// Wrap the autocert handler to add logging when it serves a challenge.
 		handler := p.manager.acmeManager.HTTPHandler(nil)
 		// Use a small wrapper to log responses handled by the autocert handler.
-		h := meter.MeteredHandlerFunc(func(w2 meter.MeteredResponseWriter, r2 *meter.MeteredRequest) {
+		h := meter.MeteredHandlerFunc(func(w2 *meter.MeteredResponseWriter, r2 *meter.MeteredRequest) {
 			start := time.Now()
-			handler.ServeHTTP(&w2, r2.Request)
+			handler.ServeHTTP(w2, r2.Request)
 			// After serving, log that the handler completed. We cannot inspect w2 status code
 			// directly without a ResponseWriter wrapper, but logging start/finish helps trace challenge flow.
 			log.Info().
@@ -447,12 +446,7 @@ func (p *VHostProxy) Start() error {
 		// Already serving; nothing to do.
 		return nil
 	}
-	p.s = &meter.MeteredServer{
-		Server: &http.Server{
-			Addr: fmt.Sprintf(":%d", p.port),
-		},
-		MeteredHandler: p,
-	}
+	p.s = meter.NewMeteredServer(fmt.Sprintf(":%d", p.port), p)
 
 	if p.hasTLS() {
 		tlsConfig := &tls.Config{
@@ -494,7 +488,7 @@ func (p *VHostProxy) GetTLSHandler(host string) *meter.MeteredHTTPHandler {
 	if !ok {
 		return nil
 	}
-	return &handler
+	return handler
 }
 
 // GetTLSConfig returns the registered tls.Config for a host, or nil if none.

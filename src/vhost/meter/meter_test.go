@@ -1,15 +1,21 @@
 package meter_test
 
+// This file contains a Ginkgo-based rewrite of the original TestMeteredServer.
+// It uses Ginkgo v2 and Gomega for assertions and keeps detailed logs
+// to aid debugging as required by repository guidelines.
+
 import (
 	"fmt"
 	"io"
 	"net"
 	"net/http"
-	"net/http/httputil" // Added for DumpRequestOut
-	"testing"
+	"net/http/httputil"
 	"time"
 
 	"aquaduct.dev/weft/src/vhost/meter"
+
+	. "github.com/onsi/ginkgo/v2"
+	. "github.com/onsi/gomega"
 )
 
 type testHandler struct {
@@ -20,95 +26,74 @@ type testHandler struct {
 }
 
 func (h *testHandler) ServeHTTP(w meter.MeteredResponseWriter, r *meter.MeteredRequest) {
-	// To ensure the MeteredRequest is fully populated, we need to read the body.
+	// Ensure MeteredRequest is fully populated.
 	_, _ = io.ReadAll(r.Body)
 	responseBody := "Response from server"
-	w.Write([]byte(responseBody))
+	_, _ = w.Write([]byte(responseBody))
 
 	written := w.BytesWritten()
 
-	h.reqChan <- struct {
+	// Non-blocking send with timeout to avoid test hanging forever.
+	select {
+	case h.reqChan <- struct {
 		req          *meter.MeteredRequest
 		bytesWritten uint64
-	}{
-		req:          r,
-		bytesWritten: written,
-	}
-}
-
-func TestMeteredServer(t *testing.T) {
-	// 1. Setup a MeteredServer with a test handler
-	handler := &testHandler{
-		reqChan: make(chan struct {
-			req          *meter.MeteredRequest
-			bytesWritten uint64
-		}, 1),
-	}
-	server := meter.NewMeteredServer("", handler)
-
-	// 2. Start the server on a random available port
-	listener, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
-		t.Fatalf("Failed to listen on a port: %v", err)
-	}
-	serverAddr := listener.Addr().String()
-
-	go func() {
-		if err := server.Serve(listener); err != nil && err != http.ErrServerClosed {
-			t.Errorf("Server failed: %v", err)
-		}
-	}()
-	defer server.Close()
-
-	// 3. Make a client request
-	client := &http.Client{}
-
-	// Create a request for the actual client.Do call
-	req, err := http.NewRequest("GET", fmt.Sprintf("http://%s/test", serverAddr), nil)
-	if err != nil {
-		t.Fatalf("Failed to create request for client.Do: %v", err)
-	}
-	req.Header.Set("User-Agent", "meter-test")
-
-	// Use httputil.DumpRequestOut to get the raw bytes as sent over the wire
-	dump, err := httputil.DumpRequestOut(req, true) // true to include body, though GET has no body
-	if err != nil {
-		t.Fatalf("Failed to dump request: %v", err)
-	}
-	expectedRequestSize := uint64(len(dump))
-	t.Logf("Raw Request (DumpRequestOut):\n%s", string(dump))
-
-	resp, err := client.Do(req)
-	if err != nil {
-		t.Fatalf("Request failed: %v", err)
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusOK {
-		t.Errorf("Expected status OK, got %d", resp.StatusCode)
-	}
-
-	// Read the response body to ensure it's fully consumed
-	responseBodyBytes, err := io.ReadAll(resp.Body)
-	if err != nil {
-		t.Fatalf("Failed to read response body: %v", err)
-	}
-	expectedResponseBody := "Response from server"
-	if string(responseBodyBytes) != expectedResponseBody {
-		t.Errorf("Expected response body %q, got %q", expectedResponseBody, string(responseBodyBytes))
-	}
-
-	// 4. Check the metered request size and response size
-	select {
-	case result := <-handler.reqChan:
-		if result.req.TotalSize() != expectedRequestSize {
-			t.Errorf("Expected request size %d, got %d", expectedRequestSize, result.req.TotalSize())
-		}
-		expectedResponseSize := uint64(len(expectedResponseBody))
-		if result.bytesWritten != expectedResponseSize {
-			t.Errorf("Expected response size %d, got %d", expectedResponseSize, result.bytesWritten)
-		}
+	}{req: r, bytesWritten: written}:
 	case <-time.After(2 * time.Second):
-		t.Fatal("Timed out waiting for request to be handled")
+		// Log so failures are visible in test output.
+		Fail("timed out sending metered request info from handler")
 	}
 }
+
+var _ = Describe("MeteredServer", func() {
+	It("meters request and response sizes correctly", func() {
+		// 1. Setup a MeteredServer with a test handler
+		handler := meter.MakeMeteredHTTPHandler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			_, _ = w.Write([]byte("Response from server"))
+		}))
+		server := meter.NewMeteredServer("", handler)
+
+		// 2. Start the server on a random available port
+		listener, err := net.Listen("tcp", "127.0.0.1:0")
+		Expect(err).ToNot(HaveOccurred(), "failed to listen on a port")
+		serverAddr := listener.Addr().String()
+
+		go func() {
+			if err := server.Serve(listener); err != nil && err != http.ErrServerClosed {
+				// Use Ginkgo's Fail to make the error visible in the spec.
+				Fail(fmt.Sprintf("server failed: %v", err))
+			}
+		}()
+		defer server.Close()
+
+		// 3. Make a client request
+		client := &http.Client{}
+
+		req, err := http.NewRequest("GET", fmt.Sprintf("http://%s/test", serverAddr), nil)
+		Expect(err).ToNot(HaveOccurred(), "failed to create request for client.Do")
+		req.Header.Set("User-Agent", "meter-test")
+
+		dump, err := httputil.DumpRequestOut(req, true)
+		Expect(err).ToNot(HaveOccurred(), "failed to dump request")
+		expectedRequestSize := uint64(len(dump))
+		GinkgoWriter.Printf("Raw Request (DumpRequestOut):\n%s\n", string(dump))
+
+		resp, err := client.Do(req)
+		Expect(err).ToNot(HaveOccurred(), "request failed")
+		defer resp.Body.Close()
+
+		Expect(resp.StatusCode).To(Equal(http.StatusOK))
+
+		// Read the response body to ensure it's fully consumed
+		responseBodyBytes, err := io.ReadAll(resp.Body)
+		Expect(err).ToNot(HaveOccurred(), "failed to read response body")
+		expectedResponseBody := "Response from server"
+		Expect(string(responseBodyBytes)).To(Equal(expectedResponseBody))
+
+		// 4. Check the metered request size and response size
+		// The handler returned by MakeMeteredHTTPHandler exposes BytesRx/BytesTx methods.
+		Expect(handler.BytesRx()).To(Equal(expectedRequestSize))
+		expectedResponseSize := uint64(len(expectedResponseBody))
+		Expect(handler.BytesTx()).To(Equal(expectedResponseSize))
+	})
+})

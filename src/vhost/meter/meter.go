@@ -2,10 +2,7 @@
 package meter
 
 import (
-	"bufio"
-	"bytes"
 	"context"
-	"io"
 	"net"
 	"net/http"
 	"sync"
@@ -13,18 +10,21 @@ import (
 
 // MeteredHandler is a http.Handler that can handle MeteredRequest.
 type MeteredHandler interface {
-	ServeHTTP(MeteredResponseWriter, *MeteredRequest)
+	ServeHTTP(*MeteredResponseWriter, *MeteredRequest)
 }
 
 // MeteredRequest is a http.Request that has been metered.
 type MeteredRequest struct {
 	*http.Request
-	size uint64
+	bytesRead *uint64
 }
 
 // TotalSize returns the size of the request in bytes.
 func (r *MeteredRequest) TotalSize() uint64 {
-	return r.size
+	if r.bytesRead == nil {
+		return 0
+	}
+	return *r.bytesRead
 }
 
 // MeteredResponseWriter is a wrapper around http.ResponseWriter that counts bytes written.
@@ -43,28 +43,19 @@ func (w *MeteredResponseWriter) BytesWritten() uint64 {
 	return w.bytesWritten
 }
 
-func (w *MeteredResponseWriter) Header() http.Header {
-	return w.ResponseWriter.Header()
-}
-
-func (w *MeteredResponseWriter) WriteHeader(statusCode int) {
-	w.ResponseWriter.WriteHeader(statusCode)
-}
-
 // MeteredHandlerFunc is an adapter to allow the use of ordinary functions as MeteredHandlers.
-type MeteredHandlerFunc func(MeteredResponseWriter, *MeteredRequest)
+type MeteredHandlerFunc func(*MeteredResponseWriter, *MeteredRequest)
 
 // ServeHTTP calls f(w, r).
-func (f MeteredHandlerFunc) ServeHTTP(w MeteredResponseWriter, r *MeteredRequest) {
+func (f MeteredHandlerFunc) ServeHTTP(w *MeteredResponseWriter, r *MeteredRequest) {
 	f(w, r)
 }
 
-func MeteredHTTPHandlerFunc(f func(http.ResponseWriter, *http.Request)) MeteredHTTPHandler {
+func MeteredHTTPHandlerFunc(f func(http.ResponseWriter, *http.Request)) MeteredHandler {
 	return MakeMeteredHTTPHandler(http.HandlerFunc(f))
 }
 
 type MeteredHTTPHandler struct {
-	MeteredHandler
 	handler    http.Handler
 	bytesTx    uint64
 	bytesRx    uint64
@@ -84,8 +75,8 @@ func (h *MeteredHTTPHandler) BytesTotal() uint64 {
 	return h.bytesTotal
 }
 
-func (h MeteredHTTPHandler) ServeHTTP(w MeteredResponseWriter, r *MeteredRequest) {
-	h.handler.ServeHTTP(&w, r.Request)
+func (h *MeteredHTTPHandler) ServeHTTP(w *MeteredResponseWriter, r *MeteredRequest) {
+	h.handler.ServeHTTP(w, r.Request)
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	h.bytesTx += w.BytesWritten()
@@ -93,15 +84,16 @@ func (h MeteredHTTPHandler) ServeHTTP(w MeteredResponseWriter, r *MeteredRequest
 	h.bytesTotal += w.BytesWritten() + r.TotalSize()
 }
 
-func MakeMeteredHTTPHandler(handler http.Handler) MeteredHTTPHandler {
-	return MeteredHTTPHandler{handler: handler}
+func MakeMeteredHTTPHandler(handler http.Handler) *MeteredHTTPHandler {
+	return &MeteredHTTPHandler{handler: handler}
 }
 
 // NewMeteredRequestForTest creates a new MeteredRequest for testing purposes.
 func NewMeteredRequestForTest(r *http.Request, size uint64) *MeteredRequest {
+	s := size
 	return &MeteredRequest{
-		Request: r,
-		size:    size,
+		Request:   r,
+		bytesRead: &s,
 	}
 }
 
@@ -113,7 +105,7 @@ type MeteredServer struct {
 
 type contextKey string
 
-const requestSizeKey = contextKey("requestSize")
+const bytesReadKey = contextKey("bytesRead")
 
 // NewMeteredServer creates a new MeteredServer.
 func NewMeteredServer(addr string, handler MeteredHandler) *MeteredServer {
@@ -125,8 +117,8 @@ func NewMeteredServer(addr string, handler MeteredHandler) *MeteredServer {
 	}
 	srv.Server.Handler = srv.wrapHandler()
 	srv.Server.ConnContext = func(ctx context.Context, c net.Conn) context.Context {
-		if mc, ok := c.(*meteredConn); ok {
-			return context.WithValue(ctx, requestSizeKey, mc.size)
+		if mc, ok := c.(*countingConn); ok {
+			return context.WithValue(ctx, bytesReadKey, mc.bytesRead)
 		}
 		return ctx
 	}
@@ -139,15 +131,15 @@ func (srv *MeteredServer) wrapHandler() http.Handler {
 			panic("meter: MeteredServer.MeteredHandler is nil")
 		}
 
-		size, _ := r.Context().Value(requestSizeKey).(uint64)
+		bytesReadPtr, _ := r.Context().Value(bytesReadKey).(*uint64)
 
 		meteredRequest := &MeteredRequest{
-			Request: r,
-			size:    size,
+			Request:   r,
+			bytesRead: bytesReadPtr,
 		}
 
 		// Wrap the response writer to count bytes
-		countingWriter := MeteredResponseWriter{ResponseWriter: w}
+		countingWriter := &MeteredResponseWriter{ResponseWriter: w}
 
 		srv.MeteredHandler.ServeHTTP(countingWriter, meteredRequest)
 	})
@@ -155,62 +147,39 @@ func (srv *MeteredServer) wrapHandler() http.Handler {
 
 // Serve serves requests.
 func (srv *MeteredServer) Serve(l net.Listener) error {
-	ml := &meteredListener{
+	ml := &countingListener{
 		Listener: l,
 	}
 	return srv.Server.Serve(ml)
 }
 
-// meteredListener wraps a net.Listener to produce meteredConn.
-type meteredListener struct {
+// countingListener wraps a net.Listener to produce countingConn.
+type countingListener struct {
 	net.Listener
 }
 
 // Accept waits for and returns the next connection to the listener.
-func (l *meteredListener) Accept() (net.Conn, error) {
+func (l *countingListener) Accept() (net.Conn, error) {
 	conn, err := l.Listener.Accept()
 	if err != nil {
 		return nil, err
 	}
-
-	var buf bytes.Buffer
-	tee := io.TeeReader(conn, &buf)
-	reader := bufio.NewReader(tee)
-
-	// http.ReadRequest will read the request from the tee reader,
-	// which will in turn write the raw request to the buffer.
-	req, err := http.ReadRequest(reader)
-	if err != nil {
-		conn.Close()
-		return nil, err
-	}
-
-	// Read the body to ensure it's captured by the TeeReader.
-	if req.Body != nil {
-		io.Copy(io.Discard, req.Body)
-		req.Body.Close()
-	}
-
-	// The buffer now contains the entire raw request.
-	rawRequestBytes := buf.Bytes()
-	size := uint64(len(rawRequestBytes))
-
-	// Return a new connection that reads from the buffered raw request.
-	return &meteredConn{
-		Conn:   conn,
-		reader: bytes.NewReader(rawRequestBytes),
-		size:   size,
+	var bytesRead uint64
+	return &countingConn{
+		Conn:      conn,
+		bytesRead: &bytesRead,
 	}, nil
 }
 
-// meteredConn is a net.Conn that reads from a pre-buffered request.
-type meteredConn struct {
+// countingConn is a net.Conn that counts bytes read.
+type countingConn struct {
 	net.Conn
-	reader io.Reader
-	size   uint64
+	bytesRead *uint64
 }
 
 // Read reads data from the connection.
-func (c *meteredConn) Read(b []byte) (int, error) {
-	return c.reader.Read(b)
+func (c *countingConn) Read(b []byte) (int, error) {
+	n, err := c.Conn.Read(b)
+	*c.bytesRead += uint64(n)
+	return n, err
 }

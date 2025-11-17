@@ -160,7 +160,7 @@ func (p *UDPProxy) BytesTotal() uint64 {
 // VHostRouteProxy is a proxy for vhost routes.
 type VHostRouteProxy struct {
 	name    string
-	handler meter.MeteredHTTPHandler
+	handler *meter.MeteredHTTPHandler
 	Closer  io.Closer
 	Host    string
 	Port    int
