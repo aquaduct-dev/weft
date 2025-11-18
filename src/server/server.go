@@ -624,8 +624,9 @@ func (s *Server) startJanitor(interval time.Duration) {
 						s.returnIPToPool(p.ip)
 						delete(s.tunnels, k)
 					}
+					s.ProxyManager.Close(k)
 					delete(s.peerLastSeen, k)
-					log.Info().Str("peer", k).Msg("janitor: removed stale peer last-seen")
+					log.Info().Str("peer", k).Msg("Janitor: removed stale tunnel")
 				}
 			}
 			s.mu.Unlock()

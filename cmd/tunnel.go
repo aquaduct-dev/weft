@@ -41,6 +41,9 @@ var tunnelCmd = &cobra.Command{
 		if err != nil {
 			log.Fatal().Err(err).Msg("Invalid weft URL")
 		}
+		if weftURL.Port() == "" {
+			weftURL.Host = weftURL.Host + ":9092"
+		}
 		// Extract connection secret: prefer password (user:pass@host), fall back to username (user@host).
 		// Note: connection secret (if present in the URL) is no longer sent in the ConnectRequest.
 		// We still read it to perform the prior login flow to obtain a JWT.
@@ -77,15 +80,8 @@ var tunnelCmd = &cobra.Command{
 			tunnelNameFlag = hex.EncodeToString(h[:])
 		}
 
-		// Ensure the control API port is present. Server listens on :9092 by default.
-		connectHost := serverIP
-		if _, _, perr := net.SplitHostPort(serverIP); perr != nil {
-			// host only (no port) -> join with default 9092
-			connectHost = net.JoinHostPort(serverIP, "9092")
-		}
-
 		// Provide proxy_name (tunnel name) to login so server issues a JWT scoped to this tunnel.
-		client, err := auth.Login(connectHost, connectionSecret, tunnelNameFlag)
+		client, err := auth.Login(weftURL.Host, connectionSecret, tunnelNameFlag)
 		if err != nil {
 			log.Fatal().Err(err).Msg("Login failed")
 		}
@@ -146,7 +142,7 @@ var tunnelCmd = &cobra.Command{
 			log.Fatal().Err(err).Msg("Failed to marshal connect request")
 		}
 
-		connectURL := fmt.Sprintf("https://%s/connect", connectHost)
+		connectURL := fmt.Sprintf("https://%s/connect", weftURL.Host)
 		log.Info().Str("url", connectURL).Msg("Posting connect request")
 
 		httpReq, err := http.NewRequest(http.MethodPost, connectURL, bytes.NewBuffer(reqBody))
@@ -191,12 +187,7 @@ var tunnelCmd = &cobra.Command{
 
 		// Start background healthchecks to the control API to keep the server-side proxy alive.
 		// Send POST /healthcheck every 10s. Also register a shutdown handler to notify server on exit.
-		healthURL := func() string {
-			if _, _, perr := net.SplitHostPort(serverIP); perr == nil {
-				return fmt.Sprintf("https://%s/healthcheck", serverIP)
-			}
-			return fmt.Sprintf("https://%s/healthcheck", net.JoinHostPort(serverIP, "9092"))
-		}()
+		healthURL := fmt.Sprintf("https://%s/healthcheck", weftURL.Host)
 		done := make(chan struct{})
 		go func() {
 			ticker := time.NewTicker(5 * time.Second)
@@ -248,9 +239,9 @@ var tunnelCmd = &cobra.Command{
 			// Notify server to shutdown this tunnel
 			shutdownURL := func() string {
 				if _, _, perr := net.SplitHostPort(serverIP); perr == nil {
-					return fmt.Sprintf("http://%s/shutdown", serverIP)
+					return fmt.Sprintf("https://%s/shutdown", serverIP)
 				}
-				return fmt.Sprintf("http://%s/shutdown", net.JoinHostPort(serverIP, "9092"))
+				return fmt.Sprintf("https://%s/shutdown", net.JoinHostPort(serverIP, "9092"))
 			}()
 			req, _ := http.NewRequest(http.MethodPost, shutdownURL, nil)
 			if resp, err := client.Do(req); err == nil && resp != nil {

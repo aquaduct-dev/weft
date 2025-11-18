@@ -9,6 +9,7 @@ import (
 
 	"aquaduct.dev/weft/src/vhost/meter"
 	"aquaduct.dev/weft/wireguard"
+	"github.com/rs/zerolog/log"
 	"gvisor.dev/gvisor/pkg/tcpip/adapters/gonet"
 )
 
@@ -38,6 +39,7 @@ func (p *TCPProxy) Close() error {
 	if p.Listener == nil {
 		return nil
 	}
+	log.Info().Str("proxy", p.name).Msg("TCPProxy: closing")
 	return p.Listener.Close()
 }
 
@@ -112,6 +114,7 @@ type UDPProxy struct {
 
 // Close closes the UDPProxy connection.
 func (p *UDPProxy) Close() error {
+	log.Info().Str("proxy", p.name).Msg("UDPProxy: closing")
 	return p.Conn.Close()
 }
 
@@ -171,6 +174,7 @@ func (p *VHostRouteProxy) Close() error {
 	if p.Closer == nil {
 		return nil
 	}
+	log.Info().Str("proxy", p.name).Msg("VHostRouteProxy: closing")
 	return p.Closer.Close()
 }
 

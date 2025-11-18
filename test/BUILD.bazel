@@ -77,3 +77,11 @@ sh_test(
         "PROTO": "udp",
     },
 )
+
+sh_test(
+    name = "test_tunnel_graceful_shutdown",
+    srcs = ["test-tunnel-graceful-shutdown.sh"],
+    data = [
+        "//:weft",
+    ],
+)
