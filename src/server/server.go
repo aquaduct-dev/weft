@@ -121,7 +121,7 @@ func CreateDevice(port int) (*wireguard.UserspaceDevice, wgtypes.Key, int, error
 		}
 	}
 
-	log.Info().Int("port", actualPort).Msg("CreateDevice: created server WireGuard device")
+	log.Debug().Int("port", actualPort).Msg("CreateDevice: created server WireGuard device")
 	return device, privateKey, actualPort, nil
 }
 
@@ -407,7 +407,7 @@ func (s *Server) Serve(req *types.ConnectRequest) (*types.ConnectResponse, error
 		if sanitizedCurrent == sanitizedNew && sanitizedCurrent != "" {
 			log.Debug().Msg("IpcSet: skipping apply; device config unchanged")
 		} else {
-			log.Info().Msg("IpcSet: applying peer config")
+			log.Debug().Msg("IpcSet: applying peer config")
 			// Log sanitized newConfig so we can validate what is being applied (private_key redacted).
 			log.Debug().Str("newConfig", sanitizedNew).Msg("IpcSet: newConfig to apply (redacted)")
 			// Also log server wgListenPort and whether device.Device appears non-nil.
@@ -738,7 +738,7 @@ func (s *Server) getChallenge(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	w.Write(encrypted)
-	log.Info().Str("client", r.RemoteAddr).Msg("getChallenge: Generated login challenge")
+	log.Debug().Str("client", r.RemoteAddr).Msg("getChallenge: Generated login challenge")
 }
 
 func (s *Server) verifyChallenge(w http.ResponseWriter, r *http.Request) {
@@ -827,7 +827,8 @@ func (s *Server) verifyChallenge(w http.ResponseWriter, r *http.Request) {
 	}
 
 	w.Write([]byte(tokenString))
-	log.Info().Str("client", r.RemoteAddr).Msg("verifyChallenge: Client logged in successfully")
+	log.Debug().Str("client", r.RemoteAddr).Msg("verifyChallenge: Client passed challenge")
+	log.Info().Str("client", r.RemoteAddr).Msg("New login")
 }
 
 // ValidateJWT parses and validates a JWT token string using the server's ConnectionSecret.

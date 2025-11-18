@@ -143,7 +143,7 @@ var tunnelCmd = &cobra.Command{
 		}
 
 		connectURL := fmt.Sprintf("https://%s/connect", weftURL.Host)
-		log.Info().Str("url", connectURL).Msg("Posting connect request")
+		log.Debug().Str("url", connectURL).Msg("Posting connect request")
 
 		httpReq, err := http.NewRequest(http.MethodPost, connectURL, bytes.NewBuffer(reqBody))
 		if err != nil {

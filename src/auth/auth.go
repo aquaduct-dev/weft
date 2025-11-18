@@ -15,6 +15,7 @@ import (
 	"crypto/x509"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -120,9 +121,27 @@ func GetToken(serverAddr, connectionSecret, proxyName string) (string, error) {
 		return "", fmt.Errorf("failed to read JWT: %w", err)
 	}
 	log.Debug().Int("len", len(jwt)).Str("server", serverAddr).Msg("Login: obtained JWT")
-	log.Info().Msg("Login: authenticated successfully!")
+	exp, err := jwtExpiry(string(jwt))
+	if err != nil {
+		return "", fmt.Errorf("failed to parse JWT expiry: %w", err)
+	}
+	log.Info().Str("token_expiry", exp.Sub(time.Now()).String()).Msg("Logged in")
 
 	return string(jwt), nil
+}
+
+func jwtExpiry(jwtString string) (time.Time, error) {
+	token, _, err := jwt.NewParser().ParseUnverified(jwtString, jwt.MapClaims{})
+	if err != nil {
+		return time.Now(), err
+	}
+	claims, ok := token.Claims.(jwt.MapClaims)
+	if !ok {
+		return time.Now(), errors.New("failed to get JWT claims")
+	}
+	exp := int64(claims["exp"].(float64))
+	jwtExpiry := time.Unix(exp, 0)
+	return jwtExpiry, nil
 }
 
 // Login performs the zero-trust authentication flow with the server and returns a JWT.

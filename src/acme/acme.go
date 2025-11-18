@@ -55,12 +55,12 @@ func (a *ACMEHelper) WaitForCertificate(ctx context.Context, host string) (*tls.
 
 	// Ask Manager to provide certificate via GetCertificate to trigger issuance if needed.
 	hello := &tls.ClientHelloInfo{ServerName: host}
-	log.Info().Str("host", host).Msg("ACME: acquiring certificate...")
+	log.Debug().Str("host", host).Msg("ACME: acquiring certificate...")
 	cert, err := a.Manager.GetCertificate(hello)
 	if err != nil {
 		log.Warn().Err(err).Str("host", host).Msg("ACME: GetCertificate error")
 		return nil, err
 	}
-	log.Info().Str("host", host).Msg("ACME: manager returned certificate")
+	log.Info().Str("host", host).Msg("Acquired TLS certificate")
 	return cert, nil
 }

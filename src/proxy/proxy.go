@@ -287,7 +287,7 @@ func rewriteHost(u *url.URL, host string) {
 }
 
 func (p *ProxyManager) StartProxy(srcURL *url.URL, dstURL *url.URL, proxyName string, device *wireguard.UserspaceDevice, certPEM, keyPEM []byte, bindIp string) (Proxy, error) {
-	log.Info().Str("src", srcURL.String()).Str("dst", dstURL.String()).Str("proxy", proxyName).Msg("Proxy: starting proxy")
+	log.Debug().Str("src", srcURL.String()).Str("dst", dstURL.String()).Str("proxy", proxyName).Msg("Proxy: starting proxy")
 	var err error
 	// Ensure ports are set in the URLs.
 	if err = ensurePort(srcURL); err != nil {

@@ -45,7 +45,7 @@ func Tunnel(serverIP string, localUrl *url.URL, resp *types.ConnectResponse, pri
 	}
 
 	// Log the assigned client address so tests and debugging can confirm we used the server-assigned IP.
-	log.Info().Str("client_ip", clientAddress.String()).Msg("Tunnel: using assigned client IP from server response")
+	log.Debug().Str("client_ip", clientAddress.String()).Msg("Tunnel: using assigned client IP from server response")
 
 	host, _, err := net.SplitHostPort(serverIP)
 	if err != nil {

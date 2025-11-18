@@ -154,7 +154,7 @@ func (v VHostCloser) Close() error {
 		delete(v.VHostProxy.tlsConfigs, v.Host)
 	}
 	if v.VHostProxy.s != nil && len(v.VHostProxy.handlers) == 0 && len(v.VHostProxy.tlsHandlers) == 0 {
-		log.Info().Bool("has_tls", v.VHostProxy.hasTLS()).Int("port", v.VHostProxy.port).Msg("VHost: shutting down VHost proxy (no proxies)")
+		log.Info().Bool("has_tls", v.VHostProxy.hasTLS()).Int("port", v.VHostProxy.port).Msg("Closing VHost (no proxies)")
 		v.VHostProxy.s.Close()
 		v.VHostProxy.manager.mu.Lock()
 		delete(v.VHostProxy.manager.proxies, v.VHostProxy.port)
@@ -222,7 +222,7 @@ func (p *VHostProxy) AddHost(host string, target *url.URL, device *wireguard.Use
 	if err := p.Start(); err != nil {
 		return VHostCloser{}, meteredProxy, err
 	}
-	log.Info().Str("host", host).Int("port", p.port).Str("target", target.String()).Msg("VHost: HTTP proxy configured")
+	log.Info().Str("host", host).Int("port", p.port).Str("target", target.String()).Msg("HTTP proxy configured")
 	return VHostCloser{VHostProxy: p, Host: host, Tls: false}, meteredProxy, nil
 }
 
@@ -301,7 +301,7 @@ func (p *VHostProxy) AddHostWithTLS(host string, target *url.URL, device *wiregu
 	if err = p.Start(); err != nil {
 		return VHostCloser{}, meteredProxy, err
 	}
-	log.Info().Str("host", host).Int("port", p.port).Str("target", target.String()).Msg("VHost: HTTPS proxy configured")
+	log.Info().Str("host", host).Int("port", p.port).Str("target", target.String()).Msg("HTTPS proxy configured")
 	return VHostCloser{VHostProxy: p, Host: host, Tls: true}, meteredProxy, nil
 }
 
@@ -330,7 +330,7 @@ func (p *VHostProxy) AddHostWithACME(host string, target *url.URL, device *wireg
 	meteredProxy := meter.MakeMeteredHTTPHandler(proxy)
 
 	// Log that ACME registration has been requested for this host.
-	log.Info().Str("host", host).Msg("ACME: host registered with manager for issuance")
+	log.Debug().Str("host", host).Msg("ACME: host registered with manager for issuance")
 
 	// Wait for certificate to be available before advertising/serving HTTPS on this port.
 	// We do the wait asynchronously to avoid blocking callers, but only start the TLS
@@ -368,7 +368,7 @@ func (p *VHostProxy) AddHostWithACME(host string, target *url.URL, device *wireg
 		p.tlsConfigs[host] = tcfg
 		p.tlsHandlers[host] = meteredProxy
 		p.mu.Unlock()
-		log.Info().Str("host", host).Msg("VHost: ACME certificate ready; starting TLS listener")
+		log.Debug().Str("host", host).Msg("VHost: ACME certificate ready; starting TLS listener")
 		if err := p.Start(); err != nil {
 			log.Warn().Str("host", host).Msg("Could not start TLS proxy!")
 			VHostCloser{VHostProxy: p, Host: host, Tls: true}.Close()
@@ -380,7 +380,7 @@ func (p *VHostProxy) AddHostWithACME(host string, target *url.URL, device *wireg
 		VHostCloser{VHostProxy: p, Host: host, Tls: true}.Close()
 	}
 
-	log.Info().Str("host", host).Int("port", p.port).Str("target", target.String()).Msg("VHost: ACME-based HTTPS proxy configured")
+	log.Info().Str("host", host).Int("port", p.port).Str("target", target.String()).Msg("ACME-based HTTPS proxy configured")
 	return VHostCloser{VHostProxy: p, Host: host, Tls: true}, meteredProxy, nil
 }
 
@@ -398,7 +398,7 @@ func (p *VHostProxy) ServeHTTP(w *meter.MeteredResponseWriter, r *meter.MeteredR
 			handler.ServeHTTP(w2, r2.Request)
 			// After serving, log that the handler completed. We cannot inspect w2 status code
 			// directly without a ResponseWriter wrapper, but logging start/finish helps trace challenge flow.
-			log.Info().
+			log.Debug().
 				Str("host", r2.Host).
 				Str("path", r2.URL.Path).
 				Dur("duration", time.Since(start)).
@@ -471,7 +471,7 @@ func (p *VHostProxy) Start() error {
 		return nil
 	}
 
-	log.Info().Int("port", p.port).Bool("has_tls", p.hasTLS()).Msg("VHost: serving")
+	log.Info().Int("port", p.port).Bool("has_tls", p.hasTLS()).Msg("Serving VHost")
 	l, err := net.Listen("tcp", fmt.Sprintf(":%d", p.port))
 	if err != nil {
 		log.Error().Err(err).Int("port", p.port).Msg("VHost: net.Listen failed")
@@ -610,7 +610,7 @@ func (p *VHostProxy) CanPassACMEChallenge(ctx context.Context, host string) bool
 		if err == nil {
 			resp.Body.Close()
 			if resp.StatusCode == 403 || resp.StatusCode == 404 {
-				log.Info().Str("host", host).Str("host_ip", targetIPv4.String()).Int("status", resp.StatusCode).Msg("CanWebHost: HTTP probe succeeded (HEAD) for ACME challenge path")
+				log.Debug().Str("host", host).Str("host_ip", targetIPv4.String()).Int("status", resp.StatusCode).Msg("CanWebHost: HTTP probe succeeded (HEAD) for ACME challenge path")
 				return true
 			}
 			log.Debug().Str("host", host).Int("status", resp.StatusCode).Msg("CanWebHost: HEAD probe returned non-2xx/3xx status")
