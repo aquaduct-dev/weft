@@ -163,7 +163,7 @@ func WithJWT(rt http.RoundTripper, jwt string, jwtRenewalFunction func() (string
 		panic("Need an http.RoundTripper!")
 	}
 
-	return withJwt{jwt: jwt, rt: rt}
+	return withJwt{jwt: jwt, rt: rt, jwtRefresh: jwtRenewalFunction}
 }
 
 func (h withJwt) IsJWTValid() bool {
