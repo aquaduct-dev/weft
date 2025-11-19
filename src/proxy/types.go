@@ -23,15 +23,17 @@ type Proxy interface {
 	BytesTx() uint64
 	BytesRx() uint64
 	BytesTotal() uint64
+	InstanceId() string
 }
 
 // TCPProxy is a proxy for TCP connections.
 type TCPProxy struct {
-	Listener net.Listener
-	Addr     *net.TCPAddr
-	name     string
-	bytesRx  atomic.Uint64
-	bytesTx  atomic.Uint64
+	Listener   net.Listener
+	Addr       *net.TCPAddr
+	name       string
+	bytesRx    atomic.Uint64
+	bytesTx    atomic.Uint64
+	instanceId string
 }
 
 // Close closes the TCPProxy listener.
@@ -54,6 +56,10 @@ func (p *TCPProxy) Endpoint() string {
 }
 func (p *TCPProxy) Name() string {
 	return p.name
+}
+
+func (p *TCPProxy) InstanceId() string {
+	return p.instanceId
 }
 
 func (p *TCPProxy) BytesRx() uint64 {
@@ -105,11 +111,12 @@ func (p *TCPProxy) Conflicts(other Proxy) bool {
 
 // UDPProxy is a proxy for UDP connections.
 type UDPProxy struct {
-	name    string
-	Conn    WGAwareUDPConn
-	Addr    *net.UDPAddr
-	bytesRx atomic.Uint64
-	bytesTx atomic.Uint64
+	name       string
+	Conn       WGAwareUDPConn
+	Addr       *net.UDPAddr
+	bytesRx    atomic.Uint64
+	bytesTx    atomic.Uint64
+	instanceId string
 }
 
 // Close closes the UDPProxy connection.
@@ -146,6 +153,10 @@ func (p *UDPProxy) Name() string {
 	return p.name
 }
 
+func (p *UDPProxy) InstanceId() string {
+	return p.instanceId
+}
+
 func (p *UDPProxy) BytesRx() uint64 {
 	return p.bytesRx.Load()
 }
@@ -160,13 +171,14 @@ func (p *UDPProxy) BytesTotal() uint64 {
 
 // VHostRouteProxy is a proxy for vhost routes.
 type VHostRouteProxy struct {
-	name    string
-	handler *meter.MeteredHTTPHandler
-	Closer  io.Closer
-	Host    string
-	Port    int
-	BindIp  string
-	IsHTTPS bool
+	name       string
+	handler    *meter.MeteredHTTPHandler
+	Closer     io.Closer
+	Host       string
+	Port       int
+	BindIp     string
+	IsHTTPS    bool
+	instanceId string
 }
 
 // Close closes the VHostRouteProxy.
@@ -217,6 +229,10 @@ func (p *VHostRouteProxy) BytesTotal() uint64 {
 
 func (p *VHostRouteProxy) Name() string {
 	return p.name
+}
+
+func (p *VHostRouteProxy) InstanceId() string {
+	return p.instanceId
 }
 
 type WGAwareUDPConn struct {

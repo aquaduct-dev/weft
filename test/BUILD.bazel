@@ -85,3 +85,11 @@ sh_test(
         "//:weft",
     ],
 )
+
+sh_test(
+    name = "test_billing_reporting",
+    srcs = ["test-billing-reporting.sh"],
+    data = [
+        "//:weft",
+    ],
+)

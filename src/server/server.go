@@ -4,6 +4,8 @@ This package implements the REST server for the Weft control plane.
 package server
 
 import (
+	"bytes"
+	"context"
 	"crypto/rand"
 	"crypto/tls"
 	"encoding/base64"
@@ -67,6 +69,9 @@ type Server struct {
 	// bindIP constrains all server listeners (HTTP and proxy listeners) when set.
 	bindIP string
 
+	// UsageReportingURL is the URL where usage stats are posted.
+	UsageReportingURL string
+
 	// apiTLSConfig is an optional TLS config for API-related listeners (kept for future use).
 	apiTLSConfig *tls.Config
 
@@ -127,7 +132,7 @@ func CreateDevice(port int) (*wireguard.UserspaceDevice, wgtypes.Key, int, error
 	return device, privateKey, actualPort, nil
 }
 
-func NewServer(port int, bindIP string, connectionSecret string) *Server {
+func NewServer(port int, bindIP string, connectionSecret string, usageReportingURL string) *Server {
 	mux := http.NewServeMux()
 
 	// Generate self-signed certificate for HTTPS
@@ -166,15 +171,16 @@ func NewServer(port int, bindIP string, connectionSecret string) *Server {
 			Handler:   mux,
 			TLSConfig: apiTLSCfg, // Assign the TLS config here
 		},
-		tunnels:          make(map[string]peer),
-		peerLastSeen:     make(map[string]time.Time),
-		subnet:           netip.MustParsePrefix("10.1.0.0/16"),
-		usedIPs:          make(map[netip.Addr]bool),
-		ConnectionSecret: connectionSecret,
-		ProxyManager:     proxy.NewProxyManager(),
-		apiTLSConfig:     apiTLSCfg,
-		challenges:       make(map[string]string),
-		bindIP:           bindIP,
+		tunnels:           make(map[string]peer),
+		peerLastSeen:      make(map[string]time.Time),
+		subnet:            netip.MustParsePrefix("10.1.0.0/16"),
+		usedIPs:           make(map[netip.Addr]bool),
+		ConnectionSecret:  connectionSecret,
+		ProxyManager:      proxy.NewProxyManager(),
+		apiTLSConfig:      apiTLSCfg,
+		challenges:        make(map[string]string),
+		bindIP:            bindIP,
+		UsageReportingURL: usageReportingURL,
 	}
 	// Propagate bindIP to the ProxyManager so proxies bind to the same IP.
 	if bindIP != "" {
@@ -194,6 +200,7 @@ func NewServer(port int, bindIP string, connectionSecret string) *Server {
 	mux.HandleFunc("/list", s.ListHandler)
 	mux.HandleFunc("/metrics", s.MetricsHandler)
 	go s.startJanitor(11 * time.Second)
+	go s.startUsageReporter(1 * time.Minute)
 
 	return s
 }
@@ -646,8 +653,22 @@ func (s *Server) startJanitor(interval time.Duration) {
 				return
 			}
 			cutoff := time.Now().Add(-2 * interval)
+			var staleTunnels []string
 			for k, last := range s.peerLastSeen {
 				if last.Before(cutoff) {
+					staleTunnels = append(staleTunnels, k)
+				}
+			}
+			s.mu.Unlock() // Unlock to allow reportUsage to lock
+
+			if len(staleTunnels) > 0 {
+				s.reportUsage(context.Background(), staleTunnels)
+			}
+
+			s.mu.Lock() // Re-lock to delete
+			for _, k := range staleTunnels {
+				// Double check if still stale and exists (state might have changed)
+				if last, ok := s.peerLastSeen[k]; ok && last.Before(cutoff) {
 					if p, ok := s.tunnels[k]; ok {
 						s.returnIPToPool(p.ip)
 						delete(s.tunnels, k)
@@ -660,6 +681,100 @@ func (s *Server) startJanitor(interval time.Duration) {
 			s.mu.Unlock()
 		}
 	}()
+}
+
+func (s *Server) startUsageReporter(interval time.Duration) {
+	if s.UsageReportingURL == "" {
+		return
+	}
+	go func() {
+		ticker := time.NewTicker(interval)
+		defer ticker.Stop()
+		for range ticker.C {
+			s.reportUsage(context.Background(), nil)
+		}
+	}()
+}
+
+type TunnelUsage struct {
+	TunnelName string `json:"tunnel_name"`
+	InstanceId string `json:"instance_id"`
+	BytesTx    uint64 `json:"bytes_tx"`
+	BytesRx    uint64 `json:"bytes_rx"`
+}
+
+type UsageReport struct {
+	Tunnels []TunnelUsage `json:"tunnels"`
+}
+
+// reportUsage sends usage stats for specific tunnels, or all if tunnels is nil.
+func (s *Server) reportUsage(ctx context.Context, tunnels []string) {
+	if s.UsageReportingURL == "" {
+		return
+	}
+	s.mu.Lock()
+	if s.closing {
+		s.mu.Unlock()
+		return
+	}
+
+	proxies := s.ProxyManager.GetProxyCounters()
+	var report UsageReport
+
+	if tunnels == nil {
+		// Report all
+		for name := range s.tunnels {
+			if counters, ok := proxies[name]; ok {
+				report.Tunnels = append(report.Tunnels, TunnelUsage{
+					TunnelName: name,
+					InstanceId: counters.InstanceId,
+					BytesTx:    counters.Tx,
+					BytesRx:    counters.Rx,
+				})
+			}
+		}
+	} else {
+		for _, name := range tunnels {
+			if counters, ok := proxies[name]; ok {
+				report.Tunnels = append(report.Tunnels, TunnelUsage{
+					TunnelName: name,
+					InstanceId: counters.InstanceId,
+					BytesTx:    counters.Tx,
+					BytesRx:    counters.Rx,
+				})
+			}
+		}
+	}
+	s.mu.Unlock() // Unlock before network call
+
+	if len(report.Tunnels) == 0 {
+		return
+	}
+
+	body, err := json.Marshal(report)
+	if err != nil {
+		log.Error().Err(err).Msg("failed to marshal usage report")
+		return
+	}
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, s.UsageReportingURL, bytes.NewReader(body))
+	if err != nil {
+		log.Error().Err(err).Msg("failed to create usage report request")
+		return
+	}
+	req.Header.Set("Content-Type", "application/json")
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		log.Error().Err(err).Msg("failed to send usage report")
+		return
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode >= 400 {
+		log.Warn().Int("status", resp.StatusCode).Msg("usage report failed")
+	} else {
+		log.Debug().Int("count", len(report.Tunnels)).Msg("usage report sent")
+	}
 }
 
 func (s *Server) isShuttingDown() bool {
@@ -689,6 +804,10 @@ func (s *Server) ShutdownHandler(w http.ResponseWriter, r *http.Request) {
 
 	tunnelName := token.Claims.(jwt.MapClaims)["sub"].(string)
 
+	s.reportUsage(r.Context(), []string{tunnelName})
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	for name, p := range s.tunnels {
 		if name == tunnelName {
 			s.ProxyManager.Close(name)

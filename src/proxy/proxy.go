@@ -1,6 +1,8 @@
 package proxy
 
 import (
+	"crypto/rand"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"net"
@@ -42,64 +44,22 @@ directly. Each Proxy implementation exposes exported accessors for counters
 (e.g., BytesTx(), BytesRx()) which provide a safe snapshot.
 */
 func (p *ProxyManager) GetProxyCounters() map[string]struct {
-	Tx uint64
-	Rx uint64
+	Tx         uint64
+	Rx         uint64
+	InstanceId string
 } {
 	result := make(map[string]struct {
-		Tx uint64
-		Rx uint64
+		Tx         uint64
+		Rx         uint64
+		InstanceId string
 	})
 
 	for name, pr := range p.proxies {
-		// Prefer exported accessor methods on the proxy.
-		// Try a few common method names that implementations provide.
-		var tx, rx uint64
-		switched := false
-
-		// If the Proxy interface already exposes BytesTx/BytesRx, use it.
-		if v, ok := pr.(interface {
-			BytesTx() uint64
-			BytesRx() uint64
-		}); ok {
-			tx = v.BytesTx()
-			rx = v.BytesRx()
-			switched = true
-		}
-
-		// Some concrete types may expose TxBytes/RxBytes or Tx/Rx accessors.
-		if !switched {
-			if v, ok := pr.(interface {
-				TxBytes() uint64
-				RxBytes() uint64
-			}); ok {
-				tx = v.TxBytes()
-				rx = v.RxBytes()
-				switched = true
-			}
-		}
-
-		if !switched {
-			if v, ok := pr.(interface {
-				Tx() uint64
-				Rx() uint64
-			}); ok {
-				tx = v.Tx()
-				rx = v.Rx()
-				switched = true
-			}
-		}
-
-		if !switched {
-			// Last resort: if concrete types expose BytesTx/BytesRx methods under different names.
-			// Add more type assertions here as necessary.
-			log.Debug().Msgf("GetProxyCounters: proxy %s does not expose known counter accessors; skipping", name)
-			continue
-		}
-
 		result[name] = struct {
-			Tx uint64
-			Rx uint64
-		}{Tx: tx, Rx: rx}
+			Tx         uint64
+			Rx         uint64
+			InstanceId string
+		}{Tx: pr.BytesTx(), Rx: pr.BytesRx(), InstanceId: pr.InstanceId()}
 	}
 
 	return result
@@ -286,6 +246,16 @@ func rewriteHost(u *url.URL, host string) {
 	u.Host = host + ":" + u.Port()
 }
 
+func generateInstanceId() string {
+	b := make([]byte, 16)
+	_, err := rand.Read(b)
+	if err != nil {
+		// Should not happen, but if it does, fallback to something
+		return fmt.Sprintf("%d", time.Now().UnixNano())
+	}
+	return hex.EncodeToString(b)
+}
+
 func (p *ProxyManager) StartProxy(srcURL *url.URL, dstURL *url.URL, proxyName string, device *wireguard.UserspaceDevice, certPEM, keyPEM []byte, bindIp string) (Proxy, error) {
 	log.Debug().Str("src", srcURL.String()).Str("dst", dstURL.String()).Str("proxy", proxyName).Msg("Proxy: starting proxy")
 	var err error
@@ -311,7 +281,7 @@ func (p *ProxyManager) StartProxy(srcURL *url.URL, dstURL *url.URL, proxyName st
 		if err != nil {
 			return nil, err
 		}
-		newProxy := &TCPProxy{Addr: addr, name: proxyName}
+		newProxy := &TCPProxy{Addr: addr, name: proxyName, instanceId: generateInstanceId()}
 		for name, existingProxy := range p.proxies {
 			if newProxy.Conflicts(existingProxy) {
 				return nil, fmt.Errorf("proxy %s conflicts with %s", proxyName, name)
@@ -329,7 +299,7 @@ func (p *ProxyManager) StartProxy(srcURL *url.URL, dstURL *url.URL, proxyName st
 		if err != nil {
 			return nil, err
 		}
-		newProxy := &UDPProxy{Addr: addr, name: proxyName}
+		newProxy := &UDPProxy{Addr: addr, name: proxyName, instanceId: generateInstanceId()}
 		for name, existingProxy := range p.proxies {
 			if newProxy.Conflicts(existingProxy) {
 				return nil, fmt.Errorf("proxy %s conflicts with %s", proxyName, name)
@@ -350,7 +320,7 @@ func (p *ProxyManager) StartProxy(srcURL *url.URL, dstURL *url.URL, proxyName st
 				return nil, fmt.Errorf("invalid port %s: %w", split[1], err)
 			}
 		}
-		newProxy := &VHostRouteProxy{Host: split[0], Port: port, BindIp: bindIp, IsHTTPS: false, name: proxyName}
+		newProxy := &VHostRouteProxy{Host: split[0], Port: port, BindIp: bindIp, IsHTTPS: false, name: proxyName, instanceId: generateInstanceId()}
 		for name, existingProxy := range p.proxies {
 			if newProxy.Conflicts(existingProxy) {
 				return nil, fmt.Errorf("proxy conflicts with %s", name)
@@ -376,7 +346,7 @@ func (p *ProxyManager) StartProxy(srcURL *url.URL, dstURL *url.URL, proxyName st
 				return nil, fmt.Errorf("invalid port %s: %w", split[1], err)
 			}
 		}
-		newProxy := &VHostRouteProxy{Host: split[0], Port: port, BindIp: bindIp, IsHTTPS: true, name: proxyName}
+		newProxy := &VHostRouteProxy{Host: split[0], Port: port, BindIp: bindIp, IsHTTPS: true, name: proxyName, instanceId: generateInstanceId()}
 		for name, existingProxy := range p.proxies {
 			if newProxy.Conflicts(existingProxy) {
 				return nil, fmt.Errorf("proxy conflicts with %s", name)

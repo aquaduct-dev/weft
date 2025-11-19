@@ -186,8 +186,10 @@ var serverCmd = &cobra.Command{
 			log.Info().Str("email", email).Msg("LetsEncrypt email")
 		}
 
+		usageReportingURL, _ := cmd.Flags().GetString("usage-reporting-url")
+
 		log.Info().Int("port", port).Msg("Starting Weft server")
-		srv := server.NewServer(port, bindIP, connectionSecret)
+		srv := server.NewServer(port, bindIP, connectionSecret, usageReportingURL)
 		if email != "" {
 			srv.ProxyManager.VHostProxyManager.SetACMEEmail(email)
 		}
@@ -233,4 +235,5 @@ func init() {
 	serverCmd.Flags().String("bind-interface", "", "Bind the bind-ip to the given interface")
 	serverCmd.Flags().String("certs-cache-path", "", "Path to cache certificates")
 	serverCmd.Flags().String("connection-secret", "", "Connection secret to use")
+	serverCmd.Flags().String("usage-reporting-url", "", "URL to post usage reports to")
 }

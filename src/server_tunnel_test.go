@@ -100,7 +100,7 @@ var _ = Describe("ServerTunnel integration (Ginkgo) - separate file", func() {
 		var tunnelLn net.Listener
 		tunnelLn, controlPort = openPort()
 		tunnelLn.Close() // we only needed the free port number
-		tunnelSrv = server.NewServer(controlPort, "127.0.0.1", "")
+		tunnelSrv = server.NewServer(controlPort, "127.0.0.1", "", "")
 		go tunnelSrv.ListenAndServeTLS("", "")
 
 		// Generate a new private key.
@@ -308,6 +308,68 @@ var _ = Describe("ServerTunnel integration (Ginkgo) - separate file", func() {
 		m, _ := conn.Read(rest)
 		data := string(buf[:n]) + string(rest[:m])
 		Expect(strings.HasPrefix(data, "ECHO:")).To(BeTrue())
+	})
+
+	It("reports usage on tunnel shutdown", func() {
+		usageChan := make(chan string, 1)
+		usageServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			body, _ := io.ReadAll(r.Body)
+			usageChan <- string(body)
+			w.WriteHeader(200)
+		}))
+		defer usageServer.Close()
+
+		// Close the existing server from BeforeEach
+		tunnelSrv.Close()
+
+		// Start new server with usage reporting
+		tunnelSrv = server.NewServer(controlPort, "127.0.0.1", "", usageServer.URL)
+		go tunnelSrv.ListenAndServeTLS("", "")
+
+		// Login again
+		Eventually(func() error {
+			var e error
+			token, e = auth.GetToken(fmt.Sprintf("127.0.0.1:%d", controlPort), tunnelSrv.ConnectionSecret, "test-tunnel-usage")
+			return e
+		}).Should(Succeed())
+
+		// Connect tunnel
+		w := httptest.NewRecorder()
+		r := encodeRequest(types.ConnectRequest{
+			ClientPublicKey: privateKey.PublicKey().String(),
+			RemotePort:      remotePort,
+			Protocol:        "tcp",
+			Hostname:        "127.0.0.1",
+			TunnelName:      "test-tunnel-usage",
+		}, token)
+		tunnelSrv.ConnectHandler(w, r)
+		connectResp := decodeResponse(w.Body)
+
+		device, err := tunnel.Tunnel("127.0.0.1", &url.URL{Scheme: "tcp", Host: fmt.Sprintf("127.0.0.1:%d", backendPort)}, &connectResp, privateKey, proxy.NewProxyManager(), "test-tunnel-usage", nil, nil)
+		Expect(err).ToNot(HaveOccurred())
+		defer device.Device.Close()
+
+		// Send some traffic
+		var conn net.Conn
+		Eventually(func() error {
+			var err error
+			conn, err = net.Dial("tcp", fmt.Sprintf("127.0.0.1:%d", remotePort))
+			return err
+		}).Should(Succeed())
+		_, err = conn.Write([]byte("hello"))
+		Expect(err).ToNot(HaveOccurred())
+		conn.Close()
+
+		// Trigger shutdown via /shutdown endpoint
+		req := httptest.NewRequest("POST", "http://127.0.0.1/shutdown", nil)
+		req.Header.Set("Authorization", "Bearer "+token)
+		wShutdown := httptest.NewRecorder()
+		tunnelSrv.ShutdownHandler(wShutdown, req)
+
+		Expect(wShutdown.Result().StatusCode).To(Equal(200))
+
+		// Verify usage report
+		Eventually(usageChan).Should(Receive(ContainSubstring("test-tunnel-usage")))
 	})
 
 })
