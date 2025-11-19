@@ -79,8 +79,10 @@ type Server struct {
 }
 
 type peer struct {
-	publicKey wgtypes.Key
-	ip        netip.Addr
+	publicKey       wgtypes.Key
+	ip              netip.Addr
+	proxiedUpstream string
+	dstURL          string
 }
 
 func CreateDevice(port int) (*wireguard.UserspaceDevice, wgtypes.Key, int, error) {
@@ -129,7 +131,7 @@ func NewServer(port int, bindIP string, connectionSecret string) *Server {
 	mux := http.NewServeMux()
 
 	// Generate self-signed certificate for HTTPS
-	certPEM, keyPEM, certGenErr := crypto.GenerateCert("weft-server", []string{bindIP})
+	certPEM, keyPEM, certGenErr := crypto.GenerateCert("weft-server", []string{})
 	if certGenErr != nil {
 		log.Fatal().Err(certGenErr).Msg("failed to generate self-signed certificate")
 	}
@@ -190,9 +192,34 @@ func NewServer(port int, bindIP string, connectionSecret string) *Server {
 	mux.HandleFunc("/login", s.LoginHandler)
 	// List current tunnels with tx/rx/total. Requires Bearer JWT auth.
 	mux.HandleFunc("/list", s.ListHandler)
+	mux.HandleFunc("/metrics", s.MetricsHandler)
 	go s.startJanitor(11 * time.Second)
 
 	return s
+}
+
+func (s *Server) MetricsHandler(w http.ResponseWriter, r *http.Request) {
+	user, _, ok := r.BasicAuth()
+	if !ok || user != s.ConnectionSecret {
+		w.Header().Set("WWW-Authenticate", `Basic realm="restricted", charset="UTF-8"`)
+		http.Error(w, "Unauthorized", http.StatusUnauthorized)
+		return
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	proxies := s.ProxyManager.GetProxyCounters()
+	var b strings.Builder
+	for name, peer := range s.tunnels {
+		if counters, ok := proxies[name]; ok {
+			b.WriteString(fmt.Sprintf("weft_tunnel_bytes_transmitted_total{tunnel_id=\"%s\",src=\"%s\",dst=\"%s\"} %d\n", name, peer.proxiedUpstream, peer.dstURL, counters.Tx))
+			b.WriteString(fmt.Sprintf("weft_tunnel_bytes_received_total{tunnel_id=\"%s\",src=\"%s\",dst=\"%s\"} %d\n", name, peer.proxiedUpstream, peer.dstURL, counters.Rx))
+		}
+	}
+
+	w.Header().Set("Content-Type", "text/plain; version=0.0.4")
+	w.Write([]byte(b.String()))
 }
 
 // generateRandomSecret generates a cryptographically secure random string of the specified byte length.
@@ -297,9 +324,8 @@ func (s *Server) ConnectHandler(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, fmt.Sprintf("Invalid connection secret: %v", err), http.StatusUnauthorized)
 			return
 		}
-		if strings.HasPrefix(err.Error(), "port_conflict:") {
-			// Preserve details about which port conflicted.
-			http.Error(w, fmt.Sprintf("Requested port unavailable: %v", err), http.StatusConflict)
+		if strings.Contains(err.Error(), "already exists") || strings.Contains(err.Error(), "conflict") {
+			http.Error(w, fmt.Sprintf("Conflict: %v", err), http.StatusConflict)
 			return
 		}
 		// Default: return the full error text.
@@ -331,8 +357,10 @@ func (s *Server) Serve(req *types.ConnectRequest) (*types.ConnectResponse, error
 			return nil, err
 		}
 		s.tunnels[req.TunnelName] = peer{
-			ip:        ip,
-			publicKey: clientPublicKey,
+			ip:              ip,
+			publicKey:       clientPublicKey,
+			proxiedUpstream: req.ProxiedUpstream,
+			dstURL:          fmt.Sprintf("%s://%s:%d", req.Protocol, req.Hostname, req.RemotePort),
 		}
 	}
 	peerIP := s.tunnels[req.TunnelName].ip
@@ -872,9 +900,33 @@ func (s *Server) ListHandler(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "Invalid token", http.StatusUnauthorized)
 		return
 	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	type tunnelInfo struct {
+		Tx     uint64 `json:"tx"`
+		Rx     uint64 `json:"rx"`
+		SrcURL string `json:"src"`
+		DstURL string `json:"dst"`
+	}
+
 	proxies := s.ProxyManager.GetProxyCounters()
+	response := make(map[string]tunnelInfo)
+
+	for name, peer := range s.tunnels {
+		info := tunnelInfo{
+			SrcURL: peer.proxiedUpstream,
+			DstURL: peer.dstURL,
+		}
+		if counters, ok := proxies[name]; ok {
+			info.Tx = counters.Tx
+			info.Rx = counters.Rx
+		}
+		response[name] = info
+	}
+
 	w.Header().Set("Content-Type", "application/json")
-	if err := json.NewEncoder(w).Encode(proxies); err != nil {
+	if err := json.NewEncoder(w).Encode(response); err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}

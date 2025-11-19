@@ -16,6 +16,8 @@ type ConnectRequest struct {
 	// default it to a sha256(src|dst) so tunnels can be referenced by name on the server.
 	TunnelName string `json:"tunnel_name,omitempty"`
 
+	// ProxiedUpstream is the source URL of the tunnel.
+	ProxiedUpstream string `json:"proxied_upstream,omitempty"`
 }
 
 // ConnectResponse is the response body for the /connect endpoint.

@@ -179,15 +179,11 @@ var serverCmd = &cobra.Command{
 		}
 
 		port, _ := cmd.Flags().GetInt("port")
-		opentelemetryConnectionString, _ := cmd.Flags().GetString("opentelemetry-connection-string")
 		secretFile, _ := cmd.Flags().GetString("secret-file")
 		connectionSecret, _ := cmd.Flags().GetString("connection-secret")
 
 		if email != "" {
 			log.Info().Str("email", email).Msg("LetsEncrypt email")
-		}
-		if opentelemetryConnectionString != "" {
-			log.Info().Str("opentelemetry_connection_string", opentelemetryConnectionString).Msg("OpenTelemetry")
 		}
 
 		log.Info().Int("port", port).Msg("Starting Weft server")
@@ -233,8 +229,6 @@ func init() {
 	serverCmd.Flags().String("email", "", "Email address for LetsEncrypt")
 	serverCmd.Flags().String("bind-ip", "", "Comma separated list of IPs to bind to")
 	serverCmd.Flags().Int("port", 9092, "Server connection port")
-	serverCmd.Flags().String("opentelemetry-connection-string", "", "OpenTelemetry connection string")
-	// Write the generated connection secret to a file (optional)
 	serverCmd.Flags().String("secret-file", "", "Path to write the generated connection secret")
 	serverCmd.Flags().String("bind-interface", "", "Bind the bind-ip to the given interface")
 	serverCmd.Flags().String("certs-cache-path", "", "Path to cache certificates")

@@ -157,10 +157,14 @@ func Login(serverAddr, connectionSecret, proxyName string) (*http.Client, error)
 	}
 
 	certPool := x509.NewCertPool()
+	for _, c := range certs {
+		certPool.AddCert(c)
+	}
 	certPool.AddCert(certs[0])
 	tlsTransport := http.Transport{
 		TLSClientConfig: &tls.Config{
-			RootCAs: certPool,
+			RootCAs:    certPool,
+			ServerName: certs[0].Subject.CommonName,
 		},
 	}
 	transport := WithJWT(&tlsTransport, token, func() (string, error) {

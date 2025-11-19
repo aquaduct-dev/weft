@@ -15,6 +15,7 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"sort"
 	"text/tabwriter"
 
 	"aquaduct.dev/weft/src/auth"
@@ -81,20 +82,35 @@ var listCmd = &cobra.Command{
 		}
 
 		// Parse the JSON response
-		var data map[string]map[string]int
+		type tunnelInfo struct {
+			Tx     uint64 `json:"tx"`
+			Rx     uint64 `json:"rx"`
+			SrcURL string `json:"src"`
+			DstURL string `json:"dst"`
+		}
+		var data map[string]tunnelInfo
 		if err := json.Unmarshal(body, &data); err != nil {
 			log.Fatal().Err(err).Msg("failed to parse JSON response")
 		}
 
+		// Get keys and sort them
+		keys := make([]string, 0, len(data))
+		for k := range data {
+			keys = append(keys, k)
+		}
+		sort.Sort(sort.Reverse(sort.StringSlice(keys)))
+
 		// Print as table
 		humanReadable, _ := cmd.Flags().GetBool("human-readable")
 		w := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
-		fmt.Fprintln(w, "Tunnel ID\tBytes Written\tBytes Received")
-		for id, stats := range data {
+		fmt.Fprintln(w, "Tunnel ID\tSource URL\tDestination URL\tBytes Tx\tBytes Rx\tBytes Ttl")
+		for _, id := range keys {
+			info := data[id]
+			total := info.Tx + info.Rx
 			if humanReadable {
-				fmt.Fprintf(w, "%s\t%s\t%s\n", id, formatBytes(stats["Tx"]), formatBytes(stats["Rx"]))
+				fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\t%s\n", id, info.SrcURL, info.DstURL, formatBytes(int(info.Tx)), formatBytes(int(info.Rx)), formatBytes(int(total)))
 			} else {
-				fmt.Fprintf(w, "%s\t%d\t%d\n", id, stats["Tx"], stats["Rx"])
+				fmt.Fprintf(w, "%s\t%s\t%s\t%d\t%d\t%d\n", id, info.SrcURL, info.DstURL, info.Tx, info.Rx, total)
 			}
 		}
 		w.Flush()

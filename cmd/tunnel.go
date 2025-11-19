@@ -77,7 +77,7 @@ var tunnelCmd = &cobra.Command{
 		if tunnelNameFlag == "" {
 			// args[1] is local url, args[2] is remote url
 			h := sha256.Sum256([]byte(args[1] + "|" + args[2]))
-			tunnelNameFlag = hex.EncodeToString(h[:])
+			tunnelNameFlag = hex.EncodeToString(h[:10])
 		}
 
 		// Provide proxy_name (tunnel name) to login so server issues a JWT scoped to this tunnel.
@@ -128,6 +128,7 @@ var tunnelCmd = &cobra.Command{
 			Protocol:        proto,
 			Hostname:        hostname,
 			TunnelName:      tunnelNameFlag,
+			ProxiedUpstream: localURL.String(),
 		}
 		// If the user supplied TLS cert/key via flags (test only), include them in the
 		// connect request so the server will configure the vhost with the provided certs

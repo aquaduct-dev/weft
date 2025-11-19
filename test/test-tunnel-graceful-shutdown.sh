@@ -163,7 +163,7 @@ sleep "$SHUTDOWN_WAIT"
 # 6) Restart the tunnel process
 echo "Restarting weft tunnel..."
 TUNNEL_LOG2="$LOGDIR/tunnel2.log"
-"$WEFT_BIN" tunnel --tunnel-name xxx --verbose "$WEFT_URL" "$LOCAL_URL" "$REMOTE_URL1" >"$TUNNEL_LOG2" 2>&1 &
+"$WEFT_BIN" tunnel --tunnel-name "$tunnelNameFlag" --verbose "$WEFT_URL" "$LOCAL_URL" "$REMOTE_URL1" >"$TUNNEL_LOG2" 2>&1 &
 pids+=($!)
 
 # 7) Verify HTTP Access on the new tunnel
