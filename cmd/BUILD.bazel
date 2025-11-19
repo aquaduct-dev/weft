@@ -4,6 +4,7 @@ go_library(
     name = "cmd",
     srcs = [
         "list.go",
+        "probe.go",
         "proxy.go",
         "root.go",
         "server.go",
@@ -17,6 +18,7 @@ go_library(
         "//src/proxy",
         "//src/server",
         "//src/tunnel",
+        "//src/vhost",
         "//types",
         "//wireguard",
         "@com_github_rs_zerolog//:zerolog",

@@ -51,7 +51,7 @@ func isLikelyPublic(addr string) bool {
 	return true
 }
 
-func discoverPublicIP() string {
+func discoverPublicIP(defaultZero bool) string {
 	// get all interfaces
 	ifaces, err := net.Interfaces()
 	if err != nil {
@@ -129,6 +129,9 @@ func discoverPublicIP() string {
 	// return a random ip
 	goodIp := goodIps[rand.Intn(len(goodIps))]
 	log.Info().Str("ip", goodIp).Msg("Autodetected bindIP")
+	if !defaultZero {
+		return goodIp
+	}
 	ln, err := net.Listen("tcp", net.JoinHostPort(goodIp, "0"))
 	if err != nil {
 		log.Warn().Err(err).Str("ip", goodIp).Msg("Failed to listen on bindIP - binding to 0.0.0.0 instead")
@@ -154,7 +157,7 @@ var serverCmd = &cobra.Command{
 
 		if bindIP == "" {
 			log.Info().Msg("bind-ip not set, attempting to discover public IP")
-			bindIP = discoverPublicIP()
+			bindIP = discoverPublicIP(true)
 		}
 
 		if bindInterface != "" {
