@@ -80,7 +80,7 @@ sh_test(
 
 sh_test(
     name = "test_tunnel_graceful_shutdown",
-    srcs = ["test-tunnel-graceful-shutdown.sh"],
+    srcs = ["test_tunnel_graceful_shutdown.sh"],
     data = [
         "//:weft",
     ],
@@ -88,7 +88,15 @@ sh_test(
 
 sh_test(
     name = "test_billing_reporting",
-    srcs = ["test-billing-reporting.sh"],
+    srcs = ["test_billing_reporting.sh"],
+    data = [
+        "//:weft",
+    ],
+)
+
+sh_test(
+    name = "test_probe",
+    srcs = ["test_probe.sh"],
     data = [
         "//:weft",
     ],
