@@ -10,7 +10,7 @@ go_library(
         "server.go",
         "tunnel.go",
     ],
-    importpath = "aquaduct.dev/weft/cmd",
+    importpath = "github.com/aquaduct-dev/weft/cmd",
     visibility = ["//visibility:public"],
     deps = [
         "//src/auth",

@@ -3,7 +3,7 @@ load("@rules_go//go:def.bzl", "go_library")
 go_library(
     name = "auth",
     srcs = ["auth.go"],
-    importpath = "aquaduct.dev/weft/src/auth",
+    importpath = "github.com/aquaduct-dev/weft/src/auth",
     visibility = ["//visibility:public"],
     deps = [
         "@com_github_golang_jwt_jwt_v4//:jwt",

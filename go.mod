@@ -1,4 +1,4 @@
-module aquaduct.dev/weft
+module github.com/aquaduct-dev/weft
 
 go 1.24.1
 

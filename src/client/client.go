@@ -11,7 +11,7 @@ import (
 	"net/http"
 	"net/url"
 
-	"aquaduct.dev/weft/src/auth"
+	"github.com/aquaduct-dev/weft/src/auth"
 	"github.com/rs/zerolog/log"
 )
 

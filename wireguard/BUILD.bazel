@@ -3,7 +3,7 @@ load("@rules_go//go:def.bzl", "go_library")
 go_library(
     name = "wireguard",
     srcs = ["wireguard.go"],
-    importpath = "aquaduct.dev/weft/wireguard",
+    importpath = "github.com/aquaduct-dev/weft/wireguard",
     visibility = ["//visibility:public"],
     deps = [
         "@com_zx2c4_golang_wireguard//conn",

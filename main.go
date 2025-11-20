@@ -1,7 +1,7 @@
 package main
 
 import (
-	"aquaduct.dev/weft/cmd"
+	"github.com/aquaduct-dev/weft/cmd"
 )
 
 func main() {

@@ -2,13 +2,13 @@ load("@gazelle//:def.bzl", "gazelle", "gazelle_test")
 load("@rules_go//go:def.bzl", "go_binary", "go_cross_binary", "go_library")
 load("@rules_pkg//pkg:pkg.bzl", _pkg_deb = "pkg_deb", _pkg_tar = "pkg_tar")
 
-# gazelle:prefix aquaduct.dev/weft
+# gazelle:prefix github.com/aquaduct-dev/weft
 gazelle(name = "gazelle")
 
 go_library(
     name = "weft_lib",
     srcs = ["main.go"],
-    importpath = "aquaduct.dev/weft",
+    importpath = "github.com/aquaduct-dev/weft",
     visibility = ["//visibility:private"],
     deps = ["//cmd"],
 )

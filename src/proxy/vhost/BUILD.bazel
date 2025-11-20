@@ -3,7 +3,7 @@ load("@rules_go//go:def.bzl", "go_library", "go_test")
 go_library(
     name = "vhost",
     srcs = ["vhost.go"],
-    importpath = "aquaduct.dev/weft/src/proxy/vhost",
+    importpath = "github.com/aquaduct-dev/weft/src/proxy/vhost",
     visibility = ["//visibility:public"],
     deps = [
         "//src/acme",

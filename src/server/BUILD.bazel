@@ -3,7 +3,7 @@ load("@rules_go//go:def.bzl", "go_library")
 go_library(
     name = "server",
     srcs = ["server.go"],
-    importpath = "aquaduct.dev/weft/src/server",
+    importpath = "github.com/aquaduct-dev/weft/src/server",
     visibility = ["//visibility:public"],
     deps = [
         "//src/crypto",

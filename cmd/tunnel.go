@@ -18,12 +18,12 @@ import (
 	"syscall"
 	"time"
 
-	"aquaduct.dev/weft/src/auth"
-	"aquaduct.dev/weft/src/proxy"
-	"aquaduct.dev/weft/src/tunnel"
-	"aquaduct.dev/weft/wireguard"
+	"github.com/aquaduct-dev/weft/src/auth"
+	"github.com/aquaduct-dev/weft/src/proxy"
+	"github.com/aquaduct-dev/weft/src/tunnel"
+	"github.com/aquaduct-dev/weft/wireguard"
 
-	"aquaduct.dev/weft/types"
+	"github.com/aquaduct-dev/weft/types"
 	"github.com/rs/zerolog/log"
 	"github.com/spf13/cobra"
 )

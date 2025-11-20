@@ -8,7 +8,7 @@ import (
 	"os/signal"
 	"syscall"
 
-	"aquaduct.dev/weft/src/proxy"
+	"github.com/aquaduct-dev/weft/src/proxy"
 	"github.com/rs/zerolog/log"
 	"github.com/spf13/cobra"
 )

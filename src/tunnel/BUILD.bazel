@@ -3,7 +3,7 @@ load("@rules_go//go:def.bzl", "go_library")
 go_library(
     name = "tunnel",
     srcs = ["tunnel.go"],
-    importpath = "aquaduct.dev/weft/src/tunnel",
+    importpath = "github.com/aquaduct-dev/weft/src/tunnel",
     visibility = ["//visibility:public"],
     deps = [
         "//src/proxy",

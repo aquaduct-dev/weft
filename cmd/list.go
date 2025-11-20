@@ -18,7 +18,7 @@ import (
 	"sort"
 	"text/tabwriter"
 
-	"aquaduct.dev/weft/src/auth"
+	"github.com/aquaduct-dev/weft/src/auth"
 	"github.com/rs/zerolog/log"
 	"github.com/spf13/cobra"
 )

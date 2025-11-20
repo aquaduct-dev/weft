@@ -13,8 +13,8 @@ import (
 	"strings"
 	"sync"
 
-	"aquaduct.dev/weft/src/auth"
-	"aquaduct.dev/weft/src/client"
+	"github.com/aquaduct-dev/weft/src/auth"
+	"github.com/aquaduct-dev/weft/src/client"
 	"github.com/golang-jwt/jwt/v4"
 	"github.com/stretchr/testify/assert"
 )

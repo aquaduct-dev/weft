@@ -3,7 +3,7 @@ load("@rules_go//go:def.bzl", "go_library", "go_test")
 go_library(
     name = "acme",
     srcs = ["acme.go"],
-    importpath = "aquaduct.dev/weft/src/acme",
+    importpath = "github.com/aquaduct-dev/weft/src/acme",
     visibility = ["//visibility:public"],
     deps = [
         "@com_github_rs_zerolog//log",

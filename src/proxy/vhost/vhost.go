@@ -17,11 +17,11 @@ import (
 
 	"time"
 
-		"aquaduct.dev/weft/src/acme"
+		"github.com/aquaduct-dev/weft/src/acme"
 
-		"aquaduct.dev/weft/src/proxy/vhost/meter"
+		"github.com/aquaduct-dev/weft/src/proxy/vhost/meter"
 
-		"aquaduct.dev/weft/wireguard"
+		"github.com/aquaduct-dev/weft/wireguard"
 
 		"github.com/rs/zerolog/log"
 

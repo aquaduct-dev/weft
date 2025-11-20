@@ -3,6 +3,6 @@ load("@rules_go//go:def.bzl", "go_library")
 go_library(
     name = "types",
     srcs = ["types.go"],
-    importpath = "aquaduct.dev/weft/types",
+    importpath = "github.com/aquaduct-dev/weft/types",
     visibility = ["//visibility:public"],
 )

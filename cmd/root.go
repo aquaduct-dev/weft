@@ -3,13 +3,13 @@ package cmd
 import (
 	"os"
 
-	"aquaduct.dev/weft/src/logging"
+	"github.com/aquaduct-dev/weft/src/logging"
 	"github.com/rs/zerolog"
 	"github.com/rs/zerolog/log"
 
 	"github.com/spf13/cobra"
 
-	"aquaduct.dev/weft/wireguard"
+	"github.com/aquaduct-dev/weft/wireguard"
 )
 
 var rootCmd = &cobra.Command{

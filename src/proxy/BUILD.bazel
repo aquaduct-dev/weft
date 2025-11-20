@@ -6,7 +6,7 @@ go_library(
         "proxy.go",
         "types.go",
     ],
-    importpath = "aquaduct.dev/weft/src/proxy",
+    importpath = "github.com/aquaduct-dev/weft/src/proxy",
     visibility = ["//visibility:public"],
     deps = [
         "//src/proxy/vhost",

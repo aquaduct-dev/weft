@@ -25,13 +25,13 @@ import (
 	. "github.com/onsi/gomega"
 	"golang.zx2c4.com/wireguard/wgctrl/wgtypes"
 
-	"aquaduct.dev/weft/src/auth"
-	aqcrypto "aquaduct.dev/weft/src/crypto"
-	"aquaduct.dev/weft/src/proxy"
-	"aquaduct.dev/weft/src/server"
-	"aquaduct.dev/weft/src/tunnel"
-	"aquaduct.dev/weft/types"
-	"aquaduct.dev/weft/wireguard"
+	"github.com/aquaduct-dev/weft/src/auth"
+	aqcrypto "github.com/aquaduct-dev/weft/src/crypto"
+	"github.com/aquaduct-dev/weft/src/proxy"
+	"github.com/aquaduct-dev/weft/src/server"
+	"github.com/aquaduct-dev/weft/src/tunnel"
+	"github.com/aquaduct-dev/weft/types"
+	"github.com/aquaduct-dev/weft/wireguard"
 )
 
 func openPort() (net.Listener, int) {

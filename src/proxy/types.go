@@ -7,8 +7,8 @@ import (
 	"strings"
 	"sync/atomic"
 
-	"aquaduct.dev/weft/src/proxy/vhost/meter"
-	"aquaduct.dev/weft/wireguard"
+	"github.com/aquaduct-dev/weft/src/proxy/vhost/meter"
+	"github.com/aquaduct-dev/weft/wireguard"
 	"github.com/rs/zerolog/log"
 	"gvisor.dev/gvisor/pkg/tcpip/adapters/gonet"
 )

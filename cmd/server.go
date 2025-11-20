@@ -11,7 +11,7 @@ import (
 	"strings"
 	"syscall"
 
-	"aquaduct.dev/weft/src/server"
+	"github.com/aquaduct-dev/weft/src/server"
 	"github.com/rs/zerolog/log"
 	"github.com/spf13/cobra"
 	"github.com/vishvananda/netlink"

@@ -39,5 +39,5 @@ oci_push(
     name = "weft_image_push",
     image = ":weft_image",
     remote_tags = ["latest"],
-    repository = "ghcr.io/aquaduct-dev/weft",
+    repository = "ghcr.io/github.com/aquaduct-dev/weft",
 )

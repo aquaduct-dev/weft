@@ -18,9 +18,9 @@ import (
 	"strconv"
 	"strings"
 
-	"aquaduct.dev/weft/src/proxy"
-	"aquaduct.dev/weft/types"
-	"aquaduct.dev/weft/wireguard"
+	"github.com/aquaduct-dev/weft/src/proxy"
+	"github.com/aquaduct-dev/weft/types"
+	"github.com/aquaduct-dev/weft/wireguard"
 	"github.com/rs/zerolog/log"
 	"golang.zx2c4.com/wireguard/wgctrl/wgtypes"
 )
