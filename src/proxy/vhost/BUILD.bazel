@@ -3,11 +3,11 @@ load("@rules_go//go:def.bzl", "go_library", "go_test")
 go_library(
     name = "vhost",
     srcs = ["vhost.go"],
-    importpath = "aquaduct.dev/weft/src/vhost",
+    importpath = "aquaduct.dev/weft/src/proxy/vhost",
     visibility = ["//visibility:public"],
     deps = [
         "//src/acme",
-        "//src/vhost/meter",
+        "//src/proxy/vhost/meter",
         "//wireguard",
         "@com_github_rs_zerolog//log",
         "@org_golang_x_crypto//acme/autocert",
@@ -23,7 +23,7 @@ go_test(
     embed = [":vhost"],
     deps = [
         "//src/crypto",
-        "//src/vhost/meter",
+        "//src/proxy/vhost/meter",
         "@com_github_onsi_ginkgo_v2//:ginkgo",
         "@com_github_onsi_gomega//:gomega",
         "@com_github_rs_zerolog//log",

@@ -117,12 +117,13 @@ TUNNEL_LOG="$LOGDIR/tunnel.log"
 WEFT_URL="weft://${CONN_SECRET}@127.0.0.1:${SERVER_BIND_PORT}"
 LOCAL_URL="tcp://127.0.0.1:${PY_PORT}"
 REMOTE_URL1="tcp://127.0.0.1:${REMOTE_PORT1}"
+tunnelNameFlag="graceful-shutdown-test"
 
 
 wait_for_port "$SERVER_BIND_PORT"
 
 echo "Starting weft tunnel to expose $LOCAL_URL at remote $REMOTE_URL1..."
-"$WEFT_BIN" tunnel --verbose "$WEFT_URL" "$LOCAL_URL" "$REMOTE_URL1" >"$TUNNEL_LOG" 2>&1 &
+"$WEFT_BIN" tunnel --tunnel-name "$tunnelNameFlag" --verbose "$WEFT_URL" "$LOCAL_URL" "$REMOTE_URL1" >"$TUNNEL_LOG" 2>&1 &
 tunnel_pid=$!
 pids+=($tunnel_pid)
 

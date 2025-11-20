@@ -17,11 +17,15 @@ import (
 
 	"time"
 
-	"aquaduct.dev/weft/src/acme"
-	"aquaduct.dev/weft/src/vhost/meter"
-	"aquaduct.dev/weft/wireguard"
-	"github.com/rs/zerolog/log"
-	"golang.org/x/crypto/acme/autocert"
+		"aquaduct.dev/weft/src/acme"
+
+		"aquaduct.dev/weft/src/proxy/vhost/meter"
+
+		"aquaduct.dev/weft/wireguard"
+
+		"github.com/rs/zerolog/log"
+
+		"golang.org/x/crypto/acme/autocert"
 )
 
 // VHostProxy manages name-based vhosts and optional TLS-termination handlers.

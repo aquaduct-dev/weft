@@ -4,7 +4,7 @@ import (
 	"context"
 	"os"
 
-	"aquaduct.dev/weft/src/vhost"
+	"aquaduct.dev/weft/src/proxy/vhost"
 	"github.com/rs/zerolog/log"
 	"github.com/spf13/cobra"
 	"github.com/vishvananda/netlink"

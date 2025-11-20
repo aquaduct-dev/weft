@@ -9,8 +9,8 @@ go_library(
     importpath = "aquaduct.dev/weft/src/proxy",
     visibility = ["//visibility:public"],
     deps = [
-        "//src/vhost",
-        "//src/vhost/meter",
+        "//src/proxy/vhost",
+        "//src/proxy/vhost/meter",
         "//wireguard",
         "@com_github_rs_zerolog//log",
         "@dev_gvisor_gvisor//pkg/tcpip/adapters/gonet",

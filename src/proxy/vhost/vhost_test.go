@@ -13,7 +13,7 @@ import (
 	"path/filepath"
 
 	"aquaduct.dev/weft/src/crypto"
-	"aquaduct.dev/weft/src/vhost/meter"
+	"aquaduct.dev/weft/src/proxy/vhost/meter"
 	"github.com/onsi/ginkgo/v2"
 	"github.com/onsi/gomega"
 	"github.com/rs/zerolog/log"

@@ -11,7 +11,7 @@ import (
 	"strings"
 	"time"
 
-	"aquaduct.dev/weft/src/vhost"
+	"aquaduct.dev/weft/src/proxy/vhost"
 	"aquaduct.dev/weft/wireguard"
 	"github.com/rs/zerolog/log"
 )
