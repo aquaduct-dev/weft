@@ -67,7 +67,7 @@ func GetToken(serverAddr, connectionSecret, proxyName string) (string, error) {
 	log.Debug().Int("len", len(encryptedChallenge)).Str("server", serverAddr).Msg("Login: received encrypted challenge")
 
 	// 2. Decrypt the challenge
-	decrypted, err := decrypt(connectionSecret, encryptedChallenge)
+	decrypted, err := Decrypt(connectionSecret, encryptedChallenge)
 	if err != nil {
 		log.Error().Err(err).Msg("Login: decrypt failed (maybe wrong connection secret)")
 		return "", fmt.Errorf("failed to decrypt login challenge - is the connection secret correct? %w", err)
@@ -81,7 +81,7 @@ func GetToken(serverAddr, connectionSecret, proxyName string) (string, error) {
 	challenge := strings.TrimPrefix(string(decrypted), "server-")
 
 	// 3. POST the encrypted suffix back to /login
-	encrypted, err := encrypt(connectionSecret, challenge)
+	encrypted, err := Encrypt(connectionSecret, challenge)
 	if err != nil {
 		log.Error().Err(err).Msg("Login: encryption of response failed")
 		return "", fmt.Errorf("failed to encrypt login challenge: %w", err)
@@ -224,7 +224,7 @@ func (h withJwt) RoundTrip(req *http.Request) (*http.Response, error) {
 func encodeBase64(b []byte) string {
 	return base64.StdEncoding.EncodeToString(b)
 }
-func encrypt(key, text string) ([]byte, error) {
+func Encrypt(key, text string) ([]byte, error) {
 	hasher := sha256.New()
 	hasher.Write([]byte(key))
 	sha := hasher.Sum(nil)
@@ -248,7 +248,7 @@ func encrypt(key, text string) ([]byte, error) {
 	return ciphertext, nil
 }
 
-func decrypt(key string, ciphertext []byte) ([]byte, error) {
+func Decrypt(key string, ciphertext []byte) ([]byte, error) {
 	hasher := sha256.New()
 	hasher.Write([]byte(key))
 	sha := hasher.Sum(nil)

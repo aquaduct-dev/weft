@@ -1,0 +1,23 @@
+load("@rules_go//go:def.bzl", "go_library", "go_test")
+
+go_library(
+    name = "client",
+    srcs = ["client.go"],
+    importpath = "aquaduct.dev/weft/src/client",
+    visibility = ["//visibility:public"],
+    deps = [
+        "//src/auth",
+        "@com_github_rs_zerolog//log",
+    ],
+)
+
+go_test(
+    name = "client_test",
+    srcs = ["client_test.go"],
+    deps = [
+        ":client",
+        "//src/auth",
+        "@com_github_golang_jwt_jwt_v4//:jwt",
+        "@com_github_stretchr_testify//assert",
+    ],
+)
