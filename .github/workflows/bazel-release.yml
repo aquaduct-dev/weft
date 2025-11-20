@@ -60,8 +60,8 @@ jobs:
         run: |
             git config --local user.email "action@aquaduct.dev"
             git config --local user.name "Aquaduct System Action Daemon"
-            git tag -a "v${{ github.run_number }}" -m "Release v${{ github.run_number }}"
-            git push origin "v${{ github.run_number }}" || true
+            git tag -a "v1.0.${{ github.run_number }}" -m "Release v${{ github.run_number }}"
+            git push origin "v1.0.${{ github.run_number }}" || true
         env:
             GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
@@ -81,7 +81,7 @@ jobs:
           file release-artifacts/*
       - name: Deploy multiarch container
         run: |
-          bazelisk run //container:weft_image_push -- --tag v${{ github.run_number }}
+          bazelisk run //container:weft_image_push -- --tag v1.0.${{ github.run_number }}
       - name: Save Bazel cache
         uses: actions/cache/save@v4
         with:
@@ -98,8 +98,8 @@ jobs:
         uses: softprops/action-gh-release@v1
         with:
           # Tag the release using commit SHA so it's created for every commit
-          tag_name: v${{ github.run_number }}
-          name: Release v${{ github.run_number }}
+          tag_name: v1.0.${{ github.run_number }}
+          name: Release v1.0.${{ github.run_number }}
           body: Release for commit ${{ github.sha }}
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -107,7 +107,7 @@ jobs:
       - name: Upload binaries to release
         uses: softprops/action-gh-release@v1
         with:
-          tag_name: v${{ github.run_number }}
+          tag_name: v1.0.${{ github.run_number }}
           files: release-artifacts/*
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
