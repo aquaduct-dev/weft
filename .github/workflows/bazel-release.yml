@@ -81,7 +81,7 @@ jobs:
           file release-artifacts/*
       - name: Deploy multiarch container
         run: |
-          bazelisk run //container:weft_image_push -- --tag v1.0.${{ github.run_number }}
+          bazelisk run //container:weft_image_push -- --tag v1.0.${{ github.run_number }} --tag latest
       - name: Save Bazel cache
         uses: actions/cache/save@v4
         with:
