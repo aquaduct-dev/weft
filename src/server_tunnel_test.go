@@ -100,7 +100,7 @@ var _ = Describe("ServerTunnel integration (Ginkgo) - separate file", func() {
 		var tunnelLn net.Listener
 		tunnelLn, controlPort = openPort()
 		tunnelLn.Close() // we only needed the free port number
-		tunnelSrv = server.NewServer(controlPort, "127.0.0.1", "", "")
+		tunnelSrv = server.NewServer(controlPort, "127.0.0.1", "", "", "")
 		go tunnelSrv.ListenAndServeTLS("", "")
 
 		// Generate a new private key.
@@ -323,7 +323,7 @@ var _ = Describe("ServerTunnel integration (Ginkgo) - separate file", func() {
 		tunnelSrv.Close()
 
 		// Start new server with usage reporting
-		tunnelSrv = server.NewServer(controlPort, "127.0.0.1", "", usageServer.URL)
+		tunnelSrv = server.NewServer(controlPort, "127.0.0.1", "", usageServer.URL, "")
 		go tunnelSrv.ListenAndServeTLS("", "")
 
 		// Login again
@@ -370,6 +370,40 @@ var _ = Describe("ServerTunnel integration (Ginkgo) - separate file", func() {
 
 		// Verify usage report
 		Eventually(usageChan).Should(Receive(ContainSubstring("test-tunnel-usage")))
+	})
+
+	It("triggers DNS update when cloudflare token is set", func() {
+		// Set a dummy token
+		tunnelSrv.CloudflareToken = "dummy-token"
+		// Mock the DNS updater
+		dnsUpdated := make(chan struct{})
+		tunnelSrv.DNSUpdater = func(token, hostname, ip string) error {
+			defer GinkgoRecover()
+			Expect(token).To(Equal("dummy-token"))
+			Expect(hostname).To(Equal("dns-test.com"))
+			Expect(ip).To(Equal("127.0.0.1"))
+			close(dnsUpdated)
+			return nil
+		}
+
+		// Connect tunnel
+		w := httptest.NewRecorder()
+		r := encodeRequest(types.ConnectRequest{
+			ClientPublicKey: privateKey.PublicKey().String(),
+			RemotePort:      remotePort,
+			Protocol:        "http",
+			Hostname:        "dns-test.com",
+			TunnelName:      "dns-test-tunnel",
+		}, token)
+		tunnelSrv.ConnectHandler(w, r)
+		connectResp := decodeResponse(w.Body)
+
+		device, err := tunnel.Tunnel("127.0.0.1", &url.URL{Scheme: "http", Host: fmt.Sprintf("127.0.0.1:%d", backendPort)}, &connectResp, privateKey, proxy.NewProxyManager(), "dns-test-tunnel", nil, nil)
+		Expect(err).ToNot(HaveOccurred())
+		defer device.Device.Close()
+
+		// Wait for the DNS update to happen
+		Eventually(dnsUpdated).Should(BeClosed())
 	})
 
 })

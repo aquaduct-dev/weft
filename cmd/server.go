@@ -184,6 +184,10 @@ var serverCmd = &cobra.Command{
 		port, _ := cmd.Flags().GetInt("port")
 		secretFile, _ := cmd.Flags().GetString("secret-file")
 		connectionSecret, _ := cmd.Flags().GetString("connection-secret")
+		cloudflareToken, _ := cmd.Flags().GetString("cloudflare-token")
+		if cloudflareToken == "" {
+			cloudflareToken = os.Getenv("CLOUDFLARE_TOKEN")
+		}
 
 		if email != "" {
 			log.Info().Str("email", email).Msg("LetsEncrypt email")
@@ -192,7 +196,7 @@ var serverCmd = &cobra.Command{
 		usageReportingURL, _ := cmd.Flags().GetString("usage-reporting-url")
 
 		log.Info().Int("port", port).Msg("Starting Weft server")
-		srv := server.NewServer(port, bindIP, connectionSecret, usageReportingURL)
+		srv := server.NewServer(port, bindIP, connectionSecret, usageReportingURL, cloudflareToken)
 		if email != "" {
 			srv.ProxyManager.VHostProxyManager.SetACMEEmail(email)
 		}
@@ -239,4 +243,5 @@ func init() {
 	serverCmd.Flags().String("certs-cache-path", "", "Path to cache certificates")
 	serverCmd.Flags().String("connection-secret", "", "Connection secret to use")
 	serverCmd.Flags().String("usage-reporting-url", "", "URL to post usage reports to")
+	serverCmd.Flags().String("cloudflare-token", "", "Cloudflare API Token for DNS updates")
 }

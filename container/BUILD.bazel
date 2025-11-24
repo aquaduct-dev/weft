@@ -1,29 +1,31 @@
 load("@rules_oci//oci:defs.bzl", "oci_image", "oci_image_index", "oci_push")
-load("@tar.bzl", "tar")
+load("@rules_pkg//pkg:tar.bzl", "pkg_tar")
 
 package(default_visibility = ["//visibility:public"])
 
-tar(
+pkg_tar(
     name = "weft_tar",
     srcs = ["//:weft"],
+    package_dir = "/usr/bin",
 )
 
-tar(
+pkg_tar(
     name = "weft_tar_arm64",
     srcs = ["//:weft_arm64"],
+    package_dir = "/usr/bin",
 )
 
 oci_image(
     name = "weft_image_amd64",
     base = "@alpine_linux_amd64",
-    cmd = ["/weft"],
+    cmd = ["/usr/bin/weft"],
     tars = [":weft_tar"],
 )
 
 oci_image(
     name = "weft_image_arm64_v8",
     base = "@alpine_linux_arm64_v8",
-    cmd = ["/weft_arm64"],
+    cmd = ["/usr/bin/weft_arm64"],
     tars = [":weft_tar_arm64"],
 )
 
@@ -39,5 +41,5 @@ oci_push(
     name = "weft_image_push",
     image = ":weft_image",
     remote_tags = ["latest"],
-    repository = "ghcr.io/github.com/aquaduct-dev/weft",
+    repository = "ghcr.io/aquaduct-dev/weft",
 )

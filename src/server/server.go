@@ -24,6 +24,7 @@ import (
 	"time"
 
 	"github.com/aquaduct-dev/weft/src/crypto"
+	"github.com/aquaduct-dev/weft/src/dns"
 	proxy "github.com/aquaduct-dev/weft/src/proxy"
 	"github.com/aquaduct-dev/weft/types"
 	"github.com/aquaduct-dev/weft/wireguard"
@@ -71,6 +72,12 @@ type Server struct {
 
 	// UsageReportingURL is the URL where usage stats are posted.
 	UsageReportingURL string
+
+	// CloudflareToken is the token used to update DNS records.
+	CloudflareToken string
+
+	// DNSUpdater is the function called to update DNS records.
+	DNSUpdater func(token, hostname, ip string) error
 
 	// apiTLSConfig is an optional TLS config for API-related listeners (kept for future use).
 	apiTLSConfig *tls.Config
@@ -132,7 +139,7 @@ func CreateDevice(port int) (*wireguard.UserspaceDevice, wgtypes.Key, int, error
 	return device, privateKey, actualPort, nil
 }
 
-func NewServer(port int, bindIP string, connectionSecret string, usageReportingURL string) *Server {
+func NewServer(port int, bindIP string, connectionSecret string, usageReportingURL string, cloudflareToken string) *Server {
 	mux := http.NewServeMux()
 
 	// Generate self-signed certificate for HTTPS
@@ -181,6 +188,8 @@ func NewServer(port int, bindIP string, connectionSecret string, usageReportingU
 		challenges:        make(map[string]string),
 		bindIP:            bindIP,
 		UsageReportingURL: usageReportingURL,
+		CloudflareToken:   cloudflareToken,
+		DNSUpdater:        dns.UpdateRecord,
 	}
 	// Propagate bindIP to the ProxyManager so proxies bind to the same IP.
 	if bindIP != "" {
@@ -368,6 +377,20 @@ func (s *Server) Serve(req *types.ConnectRequest) (*types.ConnectResponse, error
 			publicKey:       clientPublicKey,
 			proxiedUpstream: req.ProxiedUpstream,
 			dstURL:          fmt.Sprintf("%s://%s:%d", req.Protocol, req.Hostname, req.RemotePort),
+		}
+
+		// Update Cloudflare DNS if token is present and this is a hostname proxy (http/https)
+		if s.CloudflareToken != "" && req.Hostname != "" && (req.Protocol == "http" || req.Protocol == "https") {
+			if s.bindIP != "" && s.bindIP != "0.0.0.0" {
+				updater := s.DNSUpdater
+				go func(hostname, ip string) {
+					if err := updater(s.CloudflareToken, hostname, ip); err != nil {
+						log.Error().Err(err).Str("hostname", hostname).Msg("Failed to update Cloudflare DNS")
+					}
+				}(req.Hostname, s.bindIP)
+			} else {
+				log.Warn().Str("hostname", req.Hostname).Msg("Cloudflare token set but bindIP is invalid/empty, skipping DNS update")
+			}
 		}
 	}
 	peerIP := s.tunnels[req.TunnelName].ip
