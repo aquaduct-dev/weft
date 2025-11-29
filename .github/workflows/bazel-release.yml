@@ -19,11 +19,17 @@ jobs:
       BAZEL_BUILD_TARGET_ARM64: //:weft_arm64
 
     steps:
+      - name: Calculate previous run number
+        id: calc_prev_run
+        run: echo "number=$((${{ github.run_number }} - 1))" >> $GITHUB_OUTPUT
+
       - name: Restore Bazel cache
         uses: actions/cache/restore@v4
         with:
           path: "/home/runner/.cache/bazel"
-          key: bazel-main
+          key: bazel-${{ steps.calc_prev_run.outputs.number }}
+          restore-keys: |
+            bazel-
       - name: Checkout repository
         uses: actions/checkout@v4
         with:
@@ -86,7 +92,7 @@ jobs:
         uses: actions/cache/save@v4
         with:
           path: "/home/runner/.cache/bazel"
-          key: bazel-main
+          key: bazel-${{ github.run_number }}
 
       - name: Make artifacts executable
         run: |
