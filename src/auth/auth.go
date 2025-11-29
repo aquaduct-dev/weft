@@ -170,7 +170,7 @@ func Login(serverAddr, connectionSecret, proxyName string) (*http.Client, error)
 	transport := WithJWT(&tlsTransport, token, func() (string, error) {
 		return GetToken(serverAddr, connectionSecret, proxyName)
 	})
-	client := &http.Client{Timeout: 5 * time.Second, Transport: &transport}
+	client := &http.Client{Timeout: 15 * time.Second, Transport: &transport}
 	return client, nil
 }
 

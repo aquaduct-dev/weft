@@ -96,7 +96,7 @@ func GenerateCert(commonName string, additionalIps []string) ([]byte, []byte, er
 			CommonName: commonName,
 		},
 		NotBefore:             time.Now().Add(-1 * time.Minute),
-		NotAfter:              time.Now().Add(24 * time.Hour),
+		NotAfter:              time.Now().Add(10 * 365 * 24 * time.Hour),
 		KeyUsage:              x509.KeyUsageKeyEncipherment | x509.KeyUsageDigitalSignature,
 		ExtKeyUsage:           []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth},
 		BasicConstraintsValid: true,
