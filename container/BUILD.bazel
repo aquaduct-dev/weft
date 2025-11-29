@@ -18,14 +18,14 @@ pkg_tar(
 oci_image(
     name = "weft_image_amd64",
     base = "@alpine_linux_amd64",
-    cmd = ["/usr/bin/weft"],
+    entrypoint = ["/usr/bin/weft"],
     tars = [":weft_tar"],
 )
 
 oci_image(
     name = "weft_image_arm64_v8",
     base = "@alpine_linux_arm64_v8",
-    cmd = ["/usr/bin/weft_arm64"],
+    entrypoint = ["/usr/bin/weft_arm64"],
     tars = [":weft_tar_arm64"],
 )
 
