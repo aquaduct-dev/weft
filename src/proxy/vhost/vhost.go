@@ -451,7 +451,12 @@ func (p *VHostProxy) Start() error {
 		// Already serving; nothing to do.
 		return nil
 	}
-	p.s = meter.NewMeteredServer(fmt.Sprintf(":%d", p.port), p)
+
+	addr := fmt.Sprintf(":%d", p.port)
+	if p.bindIp != "" {
+		addr = fmt.Sprintf("%s:%d", p.bindIp, p.port)
+	}
+	p.s = meter.NewMeteredServer(addr, p)
 
 	if p.hasTLS() {
 		tlsConfig := &tls.Config{
@@ -466,7 +471,7 @@ func (p *VHostProxy) Start() error {
 				return nil, fmt.Errorf("no certificate for server name %s", hello.ServerName)
 			},
 		}
-		l, err := tls.Listen("tcp", fmt.Sprintf(":%d", p.port), tlsConfig)
+		l, err := tls.Listen("tcp", addr, tlsConfig)
 		if err != nil {
 			log.Error().Err(err).Int("port", p.port).Msg("VHost: tls.Listen failed")
 			return err
@@ -476,7 +481,7 @@ func (p *VHostProxy) Start() error {
 	}
 
 	log.Info().Int("port", p.port).Bool("has_tls", p.hasTLS()).Msg("Serving VHost")
-	l, err := net.Listen("tcp", fmt.Sprintf(":%d", p.port))
+	l, err := net.Listen("tcp", addr)
 	if err != nil {
 		log.Error().Err(err).Int("port", p.port).Msg("VHost: net.Listen failed")
 		return err
