@@ -476,6 +476,7 @@ func (p *VHostProxy) Start() error {
 			log.Error().Err(err).Int("port", p.port).Msg("VHost: tls.Listen failed")
 			return err
 		}
+		log.Info().Str("addr", l.Addr().String()).Msg("VHost: listening tls")
 		go p.s.Serve(l)
 		return nil
 	}
@@ -486,6 +487,7 @@ func (p *VHostProxy) Start() error {
 		log.Error().Err(err).Int("port", p.port).Msg("VHost: net.Listen failed")
 		return err
 	}
+	log.Info().Str("addr", l.Addr().String()).Msg("VHost: listening tcp")
 	go p.s.Serve(l)
 	return nil
 }

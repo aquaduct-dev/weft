@@ -136,6 +136,7 @@ func (p *TCPProxy) StartProxy(srcURL *url.URL, dstURL *url.URL, device *wireguar
 		return fmt.Errorf("listen tcp %s: %w", dstURL.Host, err)
 	}
 	p.Listener = ln // Set the listener for the TCPProxy
+	log.Info().Str("addr", ln.Addr().String()).Msg("TCPProxy: listening tcp")
 
 	go func() {
 		for {
@@ -164,7 +165,7 @@ func (p *UDPProxy) StartProxy(srcURL *url.URL, dstURL *url.URL, device *wireguar
 	}
 	p.Conn = l // Set the connection for the UDPProxy
 
-	log.Info().Str("src", srcURL.Host).Str("dst", dstURL.Host).Msg("UDPProxy: listening udp")
+	log.Info().Str("src", srcURL.Host).Str("dst", dstURL.Host).Str("addr", l.LocalAddr().String()).Msg("UDPProxy: listening udp")
 	go func() {
 		sessions := make(map[string]WGAwareUDPConn)
 		buf := make([]byte, 65535)
