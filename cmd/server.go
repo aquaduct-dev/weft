@@ -10,6 +10,7 @@ import (
 	"strconv"
 	"strings"
 	"syscall"
+	"time"
 
 	"github.com/aquaduct-dev/weft/src/server"
 	"github.com/rs/zerolog/log"
@@ -171,7 +172,11 @@ var serverCmd = &cobra.Command{
 				log.Fatal().Err(err).Msg("failed to parse address")
 			}
 			if err := netlink.AddrAdd(link, addr); err != nil {
-				log.Fatal().Err(err).Msg("failed to bind IP to interface")
+				if strings.Contains(err.Error(), "file exists") || err == syscall.EEXIST {
+					log.Info().Str("interface", bindInterface).Str("ip", bindIP).Msg("IP already bound to interface")
+				} else {
+					log.Fatal().Err(err).Msg("failed to bind IP to interface")
+				}
 			}
 			defer func() {
 				log.Info().Str("interface", bindInterface).Str("ip", bindIP).Msg("Unbinding IP from interface")
@@ -215,20 +220,28 @@ var serverCmd = &cobra.Command{
 			log.Info().Str("secret_file", secretFile).Msg("Wrote connection secret to file")
 		}
 
+		serverErrChan := make(chan error, 1)
 		go func() {
 			if err := srv.ListenAndServeTLS("", ""); err != nil && err != http.ErrServerClosed {
-				log.Fatal().Err(err).Msg("failed to serve HTTPS")
+				serverErrChan <- err
 			}
 		}()
 
 		// Wait for a signal to exit
 		sigChan := make(chan os.Signal, 1)
 		signal.Notify(sigChan, syscall.SIGINT, syscall.SIGTERM)
-		<-sigChan
 
-		log.Info().Msg("Server stopped.")
-		if err := srv.Shutdown(context.Background()); err != nil {
-			log.Fatal().Err(err).Msg("failed to shutdown")
+		select {
+		case <-sigChan:
+			log.Info().Msg("Server stopping...")
+		case err := <-serverErrChan:
+			log.Error().Err(err).Msg("failed to serve HTTPS")
+		}
+
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		if err := srv.Shutdown(ctx); err != nil {
+			log.Error().Err(err).Msg("failed to shutdown gracefully")
 		}
 	},
 }
