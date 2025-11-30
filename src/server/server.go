@@ -367,7 +367,9 @@ func (s *Server) Serve(req *types.ConnectRequest) (*types.ConnectResponse, error
 	}
 
 	// If the tunnel is new, allocate an IP from the subnet.
+	var createdTunnel bool
 	if _, ok := s.tunnels[req.TunnelName]; !ok {
+		createdTunnel = true
 		ip, err := s.getFreeIPFromPool()
 		if err != nil {
 			return nil, err
@@ -539,6 +541,15 @@ func (s *Server) Serve(req *types.ConnectRequest) (*types.ConnectResponse, error
 	}
 	_, err = s.ProxyManager.StartProxy(&tunnelSource, &tunnelEnd, req.TunnelName, s.device, certBytes, keyBytes, s.bindIP)
 	if err != nil {
+		// If we allocated a new IP for this tunnel but failed to start the proxy,
+		// we must release the IP and clean up the tunnel entry to prevent leaks.
+		if createdTunnel {
+			if p, ok := s.tunnels[req.TunnelName]; ok {
+				s.returnIPToPool(p.ip)
+				delete(s.tunnels, req.TunnelName)
+				delete(s.peerLastSeen, req.TunnelName)
+			}
+		}
 		return nil, err
 	}
 
