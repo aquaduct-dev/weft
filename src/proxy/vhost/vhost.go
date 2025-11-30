@@ -527,8 +527,8 @@ func (p *VHostProxy) CanPassACMEChallenge(ctx context.Context, host string) bool
 
 	// Determine our public IPv4 address by querying an external service (api.ipify.org).
 	// This avoids relying on local interface heuristics which may be incorrect for NATted hosts.
-	publicIP := ""
-	{
+	publicIP := p.bindIp
+	if publicIP == "" {
 		client := &http.Client{}
 		req, err := http.NewRequestWithContext(ctx, http.MethodGet, "https://api.ipify.org", nil)
 		if err != nil {
