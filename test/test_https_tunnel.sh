@@ -140,8 +140,7 @@ SERVER_LOG="$LOGDIR/server.log"
 SECRET_FILE="$LOGDIR/secret"
 
 echo "Starting weft server on port $SERVER_BIND_PORT..."
-#"$WEFT_BIN" server --verbose --port "$SERVER_BIND_PORT" --secret-file "$SECRET_FILE" >"$SERVER_LOG" 2>&1 &
-"$WEFT_BIN" server --verbose --port "$SERVER_BIND_PORT" --secret-file "$SECRET_FILE"  &
+"$WEFT_BIN" server --verbose --port "$SERVER_BIND_PORT" --secret-file "$SECRET_FILE"  >"$SERVER_LOG" 2>&1 &
 pids+=($!)
 
 # Wait for the secret file to be created
@@ -172,8 +171,7 @@ wait_for_port "$SERVER_BIND_PORT"
 echo "Starting weft tunnel to expose $LOCAL_URL at remote $REMOTE_URL..."
 # Pass certificate data as flags to the tunnel so the remote endpoint presents TLS
 # The tunnel command is expected to accept --tls-cert and --tls-key flags.
-#"$WEFT_BIN" tunnel --verbose "$WEFT_URL" "$LOCAL_URL" "$REMOTE_URL" --tls-cert "$CERT" --tls-key "$KEY" >"$TUNNEL_LOG" 2>&1 &
-"$WEFT_BIN" tunnel --verbose "$WEFT_URL" "$LOCAL_URL" "$REMOTE_URL" --tls-cert "$CERT" --tls-key "$KEY" &
+"$WEFT_BIN" tunnel --verbose "$WEFT_URL" "$LOCAL_URL" "$REMOTE_URL" --tls-cert "$CERT" --tls-key "$KEY" >"$TUNNEL_LOG" 2>&1 &
 pids+=($!)
 
 # --- 5) Verify HTTPS Access ---

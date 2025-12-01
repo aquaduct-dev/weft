@@ -313,24 +313,25 @@ func (p *ProxyManager) StartProxy(srcURL *url.URL, dstURL *url.URL, proxyName st
 		p.proxies[proxyName] = newProxy
 		return newProxy, nil
 	case "tcp>http", "http>http":
-		split := strings.Split(dstURL.Host, ":")
-		port := 80
-		if len(split) > 1 {
-			port, err = strconv.Atoi(split[1])
+		dstSplit := strings.Split(dstURL.Host, ":")
+		dstPort := 80
+		if len(dstSplit) > 1 {
+			dstPort, err = strconv.Atoi(dstSplit[1])
 			if err != nil {
-				return nil, fmt.Errorf("invalid port %s: %w", split[1], err)
+				return nil, fmt.Errorf("invalid port %s: %w", dstSplit[1], err)
 			}
 		}
-		newProxy := &VHostRouteProxy{Host: split[0], Port: port, BindIp: bindIp, IsHTTPS: false, name: proxyName, instanceId: generateInstanceId()}
+
+		newProxy := &VHostRouteProxy{Host: dstSplit[0], Port: dstPort, BindIp: bindIp, IsHTTPS: false, name: proxyName, instanceId: generateInstanceId()}
 		for name, existingProxy := range p.proxies {
 			if newProxy.Conflicts(existingProxy) {
 				return nil, fmt.Errorf("proxy conflicts with %s", name)
 			}
 		}
 
-		vhostProxy := p.VHostProxyManager.Proxy(bindIp, port)
+		vhostProxy := p.VHostProxyManager.Proxy(bindIp, dstPort)
 		// forward the provided wireguard device so upstream dialing can use its NetStack for WG IPs.
-		closer, handler, err := vhostProxy.AddHost(split[0], srcURL, device)
+		closer, handler, err := vhostProxy.AddHost(dstSplit[0], srcURL, device)
 		if err != nil {
 			return nil, err
 		}

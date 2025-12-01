@@ -76,6 +76,12 @@ func Tunnel(serverIP string, localUrl *url.URL, resp *types.ConnectResponse, pri
 		Scheme: localUrl.Scheme,
 		Host:   net.JoinHostPort(resp.ClientAddress, strconv.Itoa(resp.TunnelProxyPort)),
 	}
+	if localUrl.Scheme == "http" && localUrl.Port() == "" {
+		localUrl.Host = localUrl.Host + ":80"
+	}
+	if localUrl.Scheme == "https" && localUrl.Port() == "" {
+		localUrl.Host = localUrl.Host + ":443"
+	}
 	switch strings.ToLower(localUrl.Scheme) {
 	case "tcp", "http", "https":
 		remoteUrl.Scheme = "tcp"
