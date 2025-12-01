@@ -17,15 +17,15 @@ import (
 
 	"time"
 
-		"github.com/aquaduct-dev/weft/src/acme"
+	"github.com/aquaduct-dev/weft/src/acme"
 
-		"github.com/aquaduct-dev/weft/src/proxy/vhost/meter"
+	"github.com/aquaduct-dev/weft/src/proxy/vhost/meter"
 
-		"github.com/aquaduct-dev/weft/wireguard"
+	"github.com/aquaduct-dev/weft/wireguard"
 
-		"github.com/rs/zerolog/log"
+	"github.com/rs/zerolog/log"
 
-		"golang.org/x/crypto/acme/autocert"
+	"golang.org/x/crypto/acme/autocert"
 )
 
 // VHostProxy manages name-based vhosts and optional TLS-termination handlers.
@@ -349,35 +349,35 @@ func (p *VHostProxy) AddHostWithACME(host string, target *url.URL, device *wireg
 		}
 		err = proxy.Start()
 		if err != nil {
+			closer.Close()
 			log.Warn().AnErr("AddHostWithACME: Start error", err)
 			return VHostCloser{}, acmeHandler, err
 		}
-		defer closer.Close()
 
-		helper := acme.NewACMEHelper(p.manager.acmeManager)
-		cert, err := helper.WaitForCertificate(context.Background(), host)
-		if err != nil {
-			log.Error().Err(err).Str("host", host).Msg("VHost: failed to obtain ACME certificate in time")
-			return VHostCloser{}, acmeHandler, err
-		}
-		// Put the obtained certificate into tlsConfigs so Serve() can pick it up immediately.
-		p.mu.Lock()
-		if p.tlsConfigs == nil {
-			p.tlsConfigs = make(map[string]*tls.Config)
-		}
-		tcfg := &tls.Config{}
-		if cert != nil {
-			tcfg.Certificates = []tls.Certificate{*cert}
-		}
-		p.tlsConfigs[host] = tcfg
-		p.tlsHandlers[host] = meteredProxy
-		p.mu.Unlock()
-		log.Debug().Str("host", host).Msg("VHost: ACME certificate ready; starting TLS listener")
-		if err := p.Start(); err != nil {
-			log.Warn().Str("host", host).Msg("Could not start TLS proxy!")
-			VHostCloser{VHostProxy: p, Host: host, Tls: true}.Close()
-			return VHostCloser{}, meteredProxy, err
-		}
+		go func() {
+			defer closer.Close()
+			helper := acme.NewACMEHelper(p.manager.acmeManager)
+			cert, err := helper.WaitForCertificate(context.Background(), host)
+			if err != nil {
+				log.Error().Err(err).Str("host", host).Msg("VHost: failed to obtain ACME certificate in time")
+				return
+			}
+			p.mu.Lock()
+			if p.tlsConfigs == nil {
+				p.tlsConfigs = make(map[string]*tls.Config)
+			}
+			tcfg := &tls.Config{}
+			if cert != nil {
+				tcfg.Certificates = []tls.Certificate{*cert}
+			}
+			p.tlsConfigs[host] = tcfg
+			p.tlsHandlers[host] = meteredProxy
+			p.mu.Unlock()
+			log.Debug().Str("host", host).Msg("VHost: ACME certificate ready; starting TLS listener")
+			if err := p.Start(); err != nil {
+				log.Warn().Str("host", host).Msg("Could not start TLS proxy!")
+			}
+		}()
 	} else {
 		// Fallback: start Serve() so HTTP challenge endpoint is available.
 		log.Warn().Str("host", host).Msg("ACME: acmeManager not configured; not possible to obtain certificate")
