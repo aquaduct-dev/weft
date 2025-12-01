@@ -2,7 +2,9 @@
 package meter
 
 import (
+	"bufio"
 	"context"
+	"fmt"
 	"net"
 	"net/http"
 	"sync/atomic"
@@ -42,6 +44,19 @@ func (w *MeteredResponseWriter) Write(b []byte) (int, error) {
 
 func (w *MeteredResponseWriter) BytesWritten() uint64 {
 	return w.bytesWritten
+}
+
+func (w *MeteredResponseWriter) Hijack() (net.Conn, *bufio.ReadWriter, error) {
+	if h, ok := w.ResponseWriter.(http.Hijacker); ok {
+		return h.Hijack()
+	}
+	return nil, nil, fmt.Errorf("http.Hijacker interface is not supported by underlying ResponseWriter")
+}
+
+func (w *MeteredResponseWriter) Flush() {
+	if f, ok := w.ResponseWriter.(http.Flusher); ok {
+		f.Flush()
+	}
 }
 
 // MeteredHandlerFunc is an adapter to allow the use of ordinary functions as MeteredHandlers.

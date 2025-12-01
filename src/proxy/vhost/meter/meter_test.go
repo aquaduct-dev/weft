@@ -96,4 +96,85 @@ var _ = Describe("MeteredServer", func() {
 		expectedResponseSize := uint64(len(expectedResponseBody))
 		Expect(handler.BytesTx()).To(Equal(expectedResponseSize))
 	})
+
+	It("supports http.Hijacker interface", func() {
+		// 1. Create a handler that asserts Hijacker support
+		hijackHandler := meter.MakeMeteredHTTPHandler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			hijacker, ok := w.(http.Hijacker)
+			if !ok {
+				http.Error(w, "Hijacker not supported", http.StatusInternalServerError)
+				return
+			}
+			conn, _, err := hijacker.Hijack()
+			if err != nil {
+				http.Error(w, err.Error(), http.StatusInternalServerError)
+				return
+			}
+			defer conn.Close()
+			conn.Write([]byte("HTTP/1.1 200 OK\r\n\r\nHijacked!"))
+		}))
+		server := meter.NewMeteredServer("", hijackHandler)
+
+		// 2. Start server
+		listener, err := net.Listen("tcp", "127.0.0.1:0")
+		Expect(err).ToNot(HaveOccurred())
+		serverAddr := listener.Addr().String()
+
+		go func() {
+			if err := server.Serve(listener); err != nil && err != http.ErrServerClosed {
+				Fail(fmt.Sprintf("server failed: %v", err))
+			}
+		}()
+		defer server.Close()
+
+		// 3. Client request
+		conn, err := net.Dial("tcp", serverAddr)
+		Expect(err).ToNot(HaveOccurred())
+		defer conn.Close()
+
+		fmt.Fprintf(conn, "GET /hijack HTTP/1.1\r\nHost: %s\r\n\r\n", serverAddr)
+
+		// Read response
+		buf := make([]byte, 1024)
+		n, err := conn.Read(buf)
+		Expect(err).ToNot(HaveOccurred())
+		response := string(buf[:n])
+
+		Expect(response).To(ContainSubstring("Hijacked!"))
+	})
+
+	It("supports http.Flusher interface", func() {
+		// 1. Create a handler that uses Flusher
+		flushHandler := meter.MakeMeteredHTTPHandler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			flusher, ok := w.(http.Flusher)
+			if !ok {
+				http.Error(w, "Flusher not supported", http.StatusInternalServerError)
+				return
+			}
+			w.Write([]byte("Part1"))
+			flusher.Flush()
+			time.Sleep(10 * time.Millisecond)
+			w.Write([]byte("Part2"))
+		}))
+		server := meter.NewMeteredServer("", flushHandler)
+
+		// 2. Start server
+		listener, err := net.Listen("tcp", "127.0.0.1:0")
+		Expect(err).ToNot(HaveOccurred())
+		serverAddr := listener.Addr().String()
+
+		go func() {
+			server.Serve(listener)
+		}()
+		defer server.Close()
+
+		// 3. Client request
+		resp, err := http.Get(fmt.Sprintf("http://%s/flush", serverAddr))
+		Expect(err).ToNot(HaveOccurred())
+		defer resp.Body.Close()
+
+		body, err := io.ReadAll(resp.Body)
+		Expect(err).ToNot(HaveOccurred())
+		Expect(string(body)).To(Equal("Part1Part2"))
+	})
 })
