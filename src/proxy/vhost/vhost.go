@@ -469,7 +469,7 @@ func (p *VHostProxy) Start() error {
 						return &cfg.Certificates[0], nil
 					}
 				}
-				log.Info().Any("tls_config", keys(p.tlsConfigs)).Str("requested", hello.ServerName).Msg("VHost: no certificate found")
+				log.Warn().Any("tls_config", keys(p.tlsConfigs)).Str("requested", hello.ServerName).Msg("VHost: no certificate found (may still be acquiring)")
 				return nil, fmt.Errorf("no certificate for server name %s", hello.ServerName)
 			},
 		}
