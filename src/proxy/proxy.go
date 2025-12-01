@@ -68,7 +68,7 @@ func (p *ProxyManager) GetProxyCounters() map[string]struct {
 // ProxyTCP is a generic TCP proxy that forwards connections.
 func (p *TCPProxy) ProxyTCP(publicConn net.Conn, target string, device *wireguard.UserspaceDevice) {
 	log.Debug().Str("target", target).Msg("ProxyTCP: accepted public connection")
-	dialAddr, err := net.ResolveTCPAddr("tcp4", target)
+	dialAddr, err := net.ResolveTCPAddr("tcp", target)
 	if err != nil {
 		log.Error().Err(err).Str("target", target).Msg("ProxyTCP: resolve target failed")
 		publicConn.Close()
@@ -154,7 +154,7 @@ func (p *TCPProxy) StartProxy(srcURL *url.URL, dstURL *url.URL, device *wireguar
 
 // StartProxy starts the UDP proxy listener and begins forwarding connections.
 func (p *UDPProxy) StartProxy(srcURL *url.URL, dstURL *url.URL, device *wireguard.UserspaceDevice, bindIp string) error {
-	srcAddr, err := net.ResolveUDPAddr("udp4", srcURL.Host)
+	srcAddr, err := net.ResolveUDPAddr("udp", srcURL.Host)
 	if err != nil {
 		return fmt.Errorf("resolve udp %s: %w", srcURL.Host, err)
 	}
@@ -278,7 +278,7 @@ func (p *ProxyManager) StartProxy(srcURL *url.URL, dstURL *url.URL, proxyName st
 	switch proxyType {
 	case "tcp>tcp", "https>https", "http>tcp":
 		rewriteHost(dstURL, bindIp)
-		addr, err := net.ResolveTCPAddr("tcp4", dstURL.Host)
+		addr, err := net.ResolveTCPAddr("tcp", dstURL.Host)
 		if err != nil {
 			return nil, err
 		}
@@ -296,7 +296,7 @@ func (p *ProxyManager) StartProxy(srcURL *url.URL, dstURL *url.URL, proxyName st
 		return newProxy, nil
 	case "udp>udp":
 		rewriteHost(dstURL, bindIp)
-		addr, err := net.ResolveUDPAddr("udp4", dstURL.Host)
+		addr, err := net.ResolveUDPAddr("udp", dstURL.Host)
 		if err != nil {
 			return nil, err
 		}
