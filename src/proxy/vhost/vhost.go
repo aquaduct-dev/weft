@@ -360,6 +360,7 @@ func (p *VHostProxy) AddHostWithACME(host string, target *url.URL, device *wireg
 			cert, err := helper.WaitForCertificate(context.Background(), host)
 			if err != nil {
 				log.Error().Err(err).Str("host", host).Msg("VHost: failed to obtain ACME certificate in time")
+				VHostCloser{VHostProxy: p, Host: host, Tls: true}.Close()
 				return
 			}
 			p.mu.Lock()
@@ -376,6 +377,7 @@ func (p *VHostProxy) AddHostWithACME(host string, target *url.URL, device *wireg
 			log.Debug().Str("host", host).Msg("VHost: ACME certificate ready; starting TLS listener")
 			if err := p.Start(); err != nil {
 				log.Warn().Str("host", host).Msg("Could not start TLS proxy!")
+				VHostCloser{VHostProxy: p, Host: host, Tls: true}.Close()
 			}
 		}()
 	} else {
