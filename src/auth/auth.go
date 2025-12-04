@@ -189,7 +189,7 @@ func WithJWT(rt http.RoundTripper, jwt string, jwtRenewalFunction func() (string
 	return withJwt{jwt: jwt, rt: rt, jwtRefresh: jwtRenewalFunction}
 }
 
-func (h withJwt) IsJWTValid() bool {
+func (h *withJwt) IsJWTValid() bool {
 	if h.jwt == "" {
 		return false
 	}
@@ -207,7 +207,7 @@ func (h withJwt) IsJWTValid() bool {
 
 }
 
-func (h withJwt) RoundTrip(req *http.Request) (*http.Response, error) {
+func (h *withJwt) RoundTrip(req *http.Request) (*http.Response, error) {
 	req = req.Clone(req.Context())
 	if !h.IsJWTValid() {
 		log.Info().Msg("Login: refreshing JWT...")
