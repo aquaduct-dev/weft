@@ -65,7 +65,6 @@ type Server struct {
 	// ConnectionSecret is the shared secret used for the login challenge + JWT signing.
 	ConnectionSecret string
 
-	// VhostProxy implements virtual-host routing for hostname-based tunnels.
 	ProxyManager *proxy.ProxyManager
 	// bindIP constrains all server listeners (HTTP and proxy listeners) when set.
 	bindIP string
@@ -195,6 +194,10 @@ func NewServer(port int, bindIP string, connectionSecret string, usageReportingU
 	if bindIP != "" {
 		s.ProxyManager.SetBindIP(bindIP)
 	}
+	s.ProxyManager.Cleanup = func(tunnelName string) {
+		s.RemoveTunnel(tunnelName)
+	}
+	s.ProxyManager.VHostProxyManager.Cleanup = s.ProxyManager.Cleanup
 	var err error
 	s.device, s.privateKey, s.WgListenPort, err = CreateDevice(0) // Always use a random port for the wireguard device
 	if err != nil {
@@ -731,10 +734,12 @@ func (s *Server) startUsageReporter(interval time.Duration) {
 }
 
 type TunnelUsage struct {
-	TunnelName string `json:"tunnel_name"`
-	InstanceId string `json:"instance_id"`
-	BytesTx    uint64 `json:"bytes_tx"`
-	BytesRx    uint64 `json:"bytes_rx"`
+	TunnelName  string `json:"tunnel_name"`
+	InstanceId  string `json:"instance_id"`
+	BytesTx     uint64 `json:"bytes_tx"`
+	BytesRx     uint64 `json:"bytes_rx"`
+	Source      string `json:"source"`
+	Destination string `json:"destination"`
 }
 
 type UsageReport struct {
@@ -757,25 +762,31 @@ func (s *Server) reportUsage(ctx context.Context, tunnels []string) {
 
 	if tunnels == nil {
 		// Report all
-		for name := range s.tunnels {
+		for name, peer := range s.tunnels {
 			if counters, ok := proxies[name]; ok {
 				report.Tunnels = append(report.Tunnels, TunnelUsage{
-					TunnelName: name,
-					InstanceId: counters.InstanceId,
-					BytesTx:    counters.Tx,
-					BytesRx:    counters.Rx,
+					TunnelName:  name,
+					InstanceId:  counters.InstanceId,
+					BytesTx:     counters.Tx,
+					BytesRx:     counters.Rx,
+					Source:      peer.proxiedUpstream,
+					Destination: peer.dstURL,
 				})
 			}
 		}
 	} else {
 		for _, name := range tunnels {
 			if counters, ok := proxies[name]; ok {
-				report.Tunnels = append(report.Tunnels, TunnelUsage{
-					TunnelName: name,
-					InstanceId: counters.InstanceId,
-					BytesTx:    counters.Tx,
-					BytesRx:    counters.Rx,
-				})
+				if peer, ok := s.tunnels[name]; ok {
+					report.Tunnels = append(report.Tunnels, TunnelUsage{
+						TunnelName:  name,
+						InstanceId:  counters.InstanceId,
+						BytesTx:     counters.Tx,
+						BytesRx:     counters.Rx,
+						Source:      peer.proxiedUpstream,
+						Destination: peer.dstURL,
+					})
+				}
 			}
 		}
 	}
@@ -840,6 +851,11 @@ func (s *Server) ShutdownHandler(w http.ResponseWriter, r *http.Request) {
 
 	s.reportUsage(r.Context(), []string{tunnelName})
 
+	s.RemoveTunnel(tunnelName)
+	w.WriteHeader(http.StatusOK)
+}
+
+func (s *Server) RemoveTunnel(tunnelName string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	for name, p := range s.tunnels {
@@ -850,7 +866,6 @@ func (s *Server) ShutdownHandler(w http.ResponseWriter, r *http.Request) {
 			delete(s.peerLastSeen, name)
 		}
 	}
-	w.WriteHeader(http.StatusOK)
 }
 
 // ConfigToString converts a wgtypes.Config struct into the WireGuard UAPI string format.

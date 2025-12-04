@@ -21,6 +21,7 @@ type ProxyManager struct {
 	// bindIP constrains proxy listeners to a specific IP when set.
 	bindIP            string
 	VHostProxyManager *vhost.VHostProxyManager
+	Cleanup           func(tunnelName string)
 }
 
 func NewProxyManager() *ProxyManager {
@@ -359,7 +360,7 @@ func (p *ProxyManager) StartProxy(srcURL *url.URL, dstURL *url.URL, proxyName st
 		// If certPEM/keyPEM not provided, configure automatic issuance via ACME HTTP-01.
 		if len(certPEM) == 0 || len(keyPEM) == 0 {
 			log.Debug().Str("proxy", proxyName).Msg("Proxy: calling AddHostWithACME")
-			closer, handler, err := vhostProxy.AddHostWithACME(split[0], srcURL, device, bindIp)
+			closer, handler, err := vhostProxy.AddHostWithACME(split[0], srcURL, device, bindIp, proxyName)
 			if err != nil {
 				return nil, err
 			}
@@ -378,6 +379,7 @@ func (p *ProxyManager) StartProxy(srcURL *url.URL, dstURL *url.URL, proxyName st
 			p.proxies[proxyName] = newProxy
 			return newProxy, nil
 		}
+
 	default:
 		err = fmt.Errorf("unsupported proxy type: %s", proxyType)
 	}

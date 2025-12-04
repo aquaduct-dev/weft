@@ -63,6 +63,7 @@ type VHostProxyManager struct {
 	acmePort       int
 	acmeEmail      string
 	certsCachePath string
+	Cleanup        func(tunnelName string)
 }
 
 func NewVHostProxyManager() *VHostProxyManager {
@@ -310,7 +311,7 @@ func (p *VHostProxy) AddHostWithTLS(host string, target *url.URL, device *wiregu
 }
 
 // AddHostWithACME registers an HTTP reverse proxy and enables ACME for the given host.
-func (p *VHostProxy) AddHostWithACME(host string, target *url.URL, device *wireguard.UserspaceDevice, bindIp string) (VHostCloser, *meter.MeteredHTTPHandler, error) {
+func (p *VHostProxy) AddHostWithACME(host string, target *url.URL, device *wireguard.UserspaceDevice, bindIp, proxyName string) (VHostCloser, *meter.MeteredHTTPHandler, error) {
 
 	// Before enabling ACME for the host, verify the server appears reachable from the public internet
 	// for HTTP-01 challenges. This reduces time wasted attempting issuance for hosts that won't complete.
@@ -360,7 +361,7 @@ func (p *VHostProxy) AddHostWithACME(host string, target *url.URL, device *wireg
 			cert, err := helper.WaitForCertificate(context.Background(), host)
 			if err != nil {
 				log.Error().Err(err).Str("host", host).Msg("VHost: failed to obtain ACME certificate in time")
-				VHostCloser{VHostProxy: p, Host: host, Tls: true}.Close()
+				p.manager.Cleanup(proxyName)
 				return
 			}
 			p.mu.Lock()
@@ -377,7 +378,8 @@ func (p *VHostProxy) AddHostWithACME(host string, target *url.URL, device *wireg
 			log.Debug().Str("host", host).Msg("VHost: ACME certificate ready; starting TLS listener")
 			if err := p.Start(); err != nil {
 				log.Warn().Str("host", host).Msg("Could not start TLS proxy!")
-				VHostCloser{VHostProxy: p, Host: host, Tls: true}.Close()
+				p.manager.Cleanup(proxyName)
+				return
 			}
 		}()
 	} else {
