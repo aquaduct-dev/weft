@@ -1,14 +1,16 @@
-name: Build ARM64v8
+name: Build arm64v8
 
 on:
-  push:
-    branches:
-      - 'main'
+  workflow_run:
+    workflows: ["Test"]
+    types:
+      - completed
 
 jobs:
   build-arm64v8:
     name: Build ARM64v8
     runs-on: ubuntu-latest
+    if: ${{ github.event.workflow_run.conclusion == 'success' }}
     env:
       BAZEL_BUILD_TARGET_ARM64: //:weft_arm64
     steps:
@@ -28,6 +30,7 @@ jobs:
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
+          ref: ${{ github.event.workflow_run.head_sha }}
 
       - name: Set up Java (required by Bazel)
         uses: actions/setup-java@v4
