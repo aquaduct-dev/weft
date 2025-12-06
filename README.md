@@ -82,7 +82,7 @@ HTTP and HTTPS proxies are more complicated.  Each server-side `VHostProxy` must
 
 ### HTTPS Zero-Trust Secret Verification
 
-The Weft server does not generally have a signed TLS certificate.  Weft uses a short AES-based challenge to verify both the server and client possess the secret to prevent clients from connecting to fake servers.
+The Weft server does not have a signed TLS certificate.  Weft uses a short AES-based challenge to verify both the server and client possess the secret to prevent clients from connecting to fake servers.
 
 1. Client `GET`s `/login`.
 2. Server generates a random nonce and returns the string "server-<nonce>" encrypted with the common secret.
@@ -95,6 +95,6 @@ The Weft server does not generally have a signed TLS certificate.  Weft uses a s
 Subsequently, the token is used for healthchecks.  When it expires, the client must repeat the challenge to obtain a new token.
 
 Notes:
-- All AES operations use the shared connection secret as the key; the nonce is single-use.
-- The protocol proves knowledge of the secret both ways without exposing the secret or requiring signed certs.
-- JWT is used for subsequent requests; when it expires the challenge repeats.
+- All AES operations use the shared connection secret as the key.  The nonce is single-use.
+- The protocol allows both sides to prove they have the same secret without ever exchanging it.
+- The JWT is used for all subsequent requests.
