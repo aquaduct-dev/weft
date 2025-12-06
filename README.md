@@ -4,7 +4,7 @@
 
 ## What is this?
 
-Weft is a Layer 4/Layer 7 proxy built around [wireguard-go](https://github.com/WireGuard/wireguard-go) and designed for scalable, secure hosting of internet-facing resources from environments which lack public internet access.
+Weft is a Layer 4/Layer 7 tunnelling proxy built around [wireguard-go](https://github.com/WireGuard/wireguard-go) and designed for scalable, secure hosting of internet-facing resources from environments which lack public internet access.
 
 ## How does it work?
 
