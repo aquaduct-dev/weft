@@ -8,40 +8,61 @@ Weft is a Layer 4/Layer 7 proxy built around [wireguard-go](https://github.com/W
 
 ## How does it work?
 
+### Server
+
 Start a Weft server on a host with at least one publically routable IP:
 
 `weft server`
 
-There are optional arguments:
- - `--email` can be passed an email address for use with LetsEncrypt.
- - `--bind-ips` can be passed a comma separated list of IPs that the server will listen on.
+Optional arguments:
+ - `--bind-ip`: Comma separated list of IPs that the server will listen on (defaults to auto-discovery).
+ - `--port`: Server connection port (default 9092).
+ - `--email`: Email address for LetsEncrypt ACME registration.
+ - `--connection-secret`: Manually set the connection secret.
+ - `--secret-file`: Path to write the generated connection secret to.
+ - `--certs-cache-path`: Path to cache ACME certificates.
+ - `--bind-interface`: Interface to bind the IP to (e.g., `eth0`).  If not set, the IP is not bound (the existing system IPs are used).
+ - `--usage-reporting-url`: URL to post usage reports to.
+ - `--cloudflare-token`: Cloudflare API Token for DNS updates.
 
- - `--port` can be passed a port to change the server connection port (default 9092).
- - `--verbose` can be passed to have the server log detailed connection information.
+The server will print a connection secret on startup.
 
- - `--certs-cache-path` can be passed to cache certificates.
- - `--connection-secret` can be passed to directly provision a secret.
+### Tunnel
 
-The server will print a connection secret (and optionally write it to a file) on startup.
-
-Then, start a Weft tunnel:
+Start a Weft tunnel to expose a local service:
 
 `weft tunnel weft://{connection-secret}@{your-server-ip} [local url] [remote url]`
 
-Supported protocols are:
+Supported protocols for `remote url`:
  - `tcp://`
  - `udp://`
  - `http://`
  - `https://`
 
-The optional arguments are:
- - `--tls-secret` can be passed to directly provision a secret.
- - `--verbose` can be passed to have the tunnel log detailed connection information.
- - `--opentelemetery-connection-string` can be passed to have the tunnel log OpenTelemetery metrics.
+Optional arguments:
+ - `--tunnel-name`: Logical name for the tunnel (defaults to hash of src|dst).
+ - `--verbose`: Log detailed connection information.
 
-Otherwise, if the DNS records are set up correctly, the server will attempt an `HTTP01` challenge to acquire a certificate for the domain in question.
+Example:
+`weft tunnel weft://secret@1.2.3.4 http://localhost:8080 https://my-app.example.com`
 
-That's it!  Your local URL is now proxied and available on the internet at the remote url.
+### Other Commands
+
+**List Tunnels:**
+`weft list [server url]`
+Lists active tunnels on the server.
+ - `--connection-secret`: Connection secret (if not in URL).
+ - `--human-readable`, `-l`: Print bytes in human-readable format.
+
+**Probe ACME:**
+`weft probe [domain]`
+Checks if the server can answer an ACME challenge for the given domain.
+ - `--bind-ip`: IP to bind the probe listener to.
+
+**One-off Proxy:**
+`weft proxy [src url] [dst url]`
+Starts a standalone proxy between two URLs.
+ - `--proxy-name`: Logical name for the proxy.
 
 ## Under the Hood
 
@@ -59,9 +80,6 @@ TCP and UDP proxies are simple on the server side: they simply proxy to the tunn
 
 HTTP and HTTPS proxies are more complicated.  Each server-side `VHostProxy` must target the tunnel proxy port.  On the tunnel side, the proxy port should only forward TCP to the local HTTP server.
 
-
-The server should only ever proxy TCP/UDP from the client, but the client should proxy TCP/UDP/HTTP/HTTPS from its local network (allowing it to use local DNS) to TCP/UDP connections on the server.
-
 ### HTTPS Zero-Trust Secret Verification
 
 The Weft server does not generally have a signed TLS certificate.  Weft uses a short AES-based challenge to verify both the server and client possess the secret to prevent clients from connecting to fake servers.
@@ -70,8 +88,9 @@ The Weft server does not generally have a signed TLS certificate.  Weft uses a s
 2. Server generates a random nonce and returns the string "server-<nonce>" encrypted with the common secret.
 3. Client decrypts and verifies that the "server-" prefix is present.
 4. Client encrypts the nonce and `POST`s it to `/login`.
-5. Server verifies the returned ciphertext; on success it issues a short-lived JWT (~30m).
-6. Client pins the server's certificate and uses it for subsequent requests.
+5. Server decrypts the received ciphertext and verifies it matches the stored challenge.
+6. On success, Server issues a short-lived JWT (~30m).
+7. Client includes the JWT in the `Authorization` header for subsequent requests.
 
 Subsequently, the token is used for healthchecks.  When it expires, the client must repeat the challenge to obtain a new token.
 
