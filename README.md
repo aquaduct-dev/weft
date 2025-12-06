@@ -1,6 +1,6 @@
 # Weft 
 
-[![Build Status](https://github.com/github.com/aquaduct-dev/weft/actions/workflows/bazel-release.yml/badge.svg)](https://github.com/github.com/aquaduct-dev/weft/actions/workflows/bazel-release.yml)
+[![Test](https://github.com/aquaduct-dev/weft/actions/workflows/test.yml/badge.svg)](https://github.com/aquaduct-dev/weft/actions/workflows/test.yml) [![Release](https://github.com/aquaduct-dev/weft/actions/workflows/release.yml/badge.svg)](https://github.com/aquaduct-dev/weft/actions/workflows/release.yml)
 
 ## What is this?
 
