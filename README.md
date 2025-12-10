@@ -101,3 +101,15 @@ Notes:
 - All AES operations use the shared connection secret as the key.  The nonce is single-use.
 - The protocol allows both sides to prove they have the same secret without ever exchanging it.
 - The JWT is used for all subsequent requests.
+
+## Development
+
+### Pre-commit Hook
+
+To ensure code quality and build consistency, you can set up a git pre-commit hook that automatically runs `gazelle fix` and `bazel test //...` before each commit.
+
+To install the hook, run:
+
+```bash
+./scripts/setup-pre-commit-hook.sh
+```
