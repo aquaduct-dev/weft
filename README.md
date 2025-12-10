@@ -33,11 +33,14 @@ Start a Weft tunnel to expose a local service:
 
 `weft tunnel weft://{connection-secret}@{your-server-ip} [local url] [remote url]`
 
-Supported protocols for `remote url`:
- - `tcp://`
- - `udp://`
- - `http://`
- - `https://`
+Supported protocols:
+ - `tcp>tcp` (plain proxy)
+ - `tcp>http` (proxy HTTP requests from domain to TCP server)
+ - `tcp>https` (terminate and proxy HTTPS requests from domain to TCP server)
+ - `http>http` (proxy HTTP requests from domain to HTTP server)
+ - `http>https` (terminate and proxy HTTPS requests from domain to HTTP server)
+ - `https>https` (proxy HTTPS requests from domain to HTTPS server, stripping encryption and re-encrypting)
+ - `udp>udp` (proxy UDP)
 
 Optional arguments:
  - `--tunnel-name`: Logical name for the tunnel (defaults to hash of src|dst).
