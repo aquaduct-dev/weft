@@ -406,4 +406,22 @@ var _ = Describe("ServerTunnel integration (Ginkgo) - separate file", func() {
 		Eventually(dnsUpdated).Should(BeClosed())
 	})
 
+	It("resolves domain name server address to IP", func() {
+		w := httptest.NewRecorder()
+		r := encodeRequest(types.ConnectRequest{
+			ClientPublicKey: privateKey.PublicKey().String(),
+			RemotePort:      remotePort,
+			Protocol:        "http",
+			Hostname:        "test-domain-res.com",
+			TunnelName:      "test-tunnel-domain",
+		}, token)
+
+		tunnelSrv.ConnectHandler(w, r)
+		connectResp := decodeResponse(w.Body)
+
+		device, err := tunnel.Tunnel("localhost", &url.URL{Scheme: "http", Host: fmt.Sprintf("127.0.0.1:%d", backendPort)}, &connectResp, privateKey, proxy.NewProxyManager(), "test-tunnel-domain", nil, nil)
+		Expect(err).ToNot(HaveOccurred())
+		device.Device.Close()
+	})
+
 })

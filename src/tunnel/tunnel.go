@@ -52,13 +52,25 @@ func Tunnel(serverIP string, localUrl *url.URL, resp *types.ConnectResponse, pri
 		host = serverIP
 	}
 
+	// Resolve domain name to IP if necessary.
+	if _, err := netip.ParseAddr(host); err != nil {
+		ips, err := net.LookupIP(host)
+		if err != nil {
+			return nil, fmt.Errorf("failed to resolve server address %q: %w", host, err)
+		}
+		if len(ips) == 0 {
+			return nil, fmt.Errorf("no IP addresses found for host %q", host)
+		}
+		host = ips[0].String()
+	}
+
 	// Create device config with the client's private key.
 	peerConf := fmt.Sprintf("private_key=%s\nreplace_peers=true\npublic_key=%s\nallowed_ip=%s\nendpoint=%s\npersistent_keepalive_interval=1",
 		hex.EncodeToString(privateKey[:]),
 		resp.ServerPublicKey,
 		"0.0.0.0/0",
 		// Use ServerWGPort (server WireGuard UDP listen port) as the endpoint port.
-		fmt.Sprintf("%s:%d", host, resp.ServerWGPort),
+		net.JoinHostPort(host, strconv.Itoa(resp.ServerWGPort)),
 	)
 
 	// Create the userspace WireGuard device bound to the assigned client address.
