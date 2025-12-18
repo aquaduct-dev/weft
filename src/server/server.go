@@ -508,7 +508,8 @@ func (s *Server) reportUsage(ctx context.Context, tunnels []string) {
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode >= 400 {
-		log.Warn().Int("status", resp.StatusCode).Msg("usage report failed")
+		bodyBytes, _ := io.ReadAll(resp.Body)
+		log.Warn().Int("status", resp.StatusCode).Str("body", string(bodyBytes)).Msg("usage report failed")
 	} else {
 		log.Debug().Int("count", len(report.Tunnels)).Msg("usage report sent")
 	}
