@@ -10,14 +10,16 @@ is factored into a reusable package-level function so other packages can call it
 package tunnel
 
 import (
-	"encoding/hex"
+	"context"
 	"fmt"
 	"net"
 	"net/netip"
 	"net/url"
 	"strconv"
 	"strings"
+	"time"
 
+	"github.com/aquaduct-dev/weft/src/internal/util"
 	"github.com/aquaduct-dev/weft/src/proxy"
 	"github.com/aquaduct-dev/weft/types"
 	"github.com/aquaduct-dev/weft/wireguard"
@@ -36,64 +38,100 @@ import (
 // Note: endpoint is currently set to the control API loopback (127.0.0.1:9092) as a
 // default placeholder to match the prior in-repo behaviour.
 func Tunnel(serverIP string, localUrl *url.URL, hostname string, resp *types.ConnectResponse, privateKey wgtypes.Key, p *proxy.ProxyManager, tunnelName string, tlsCertPEM []byte, tlsKeyPEM []byte) (*wireguard.UserspaceDevice, error) {
-	// Build peer UAPI config using server-provided values.
-
-	// Parse and validate the client address assigned by the server.
 	clientAddress, err := netip.ParseAddr(resp.ClientAddress)
 	if err != nil {
 		return nil, fmt.Errorf("failed to parse client address from server response (%q): %w", resp.ClientAddress, err)
 	}
-
-	// Log the assigned client address so tests and debugging can confirm we used the server-assigned IP.
 	log.Debug().Str("client_ip", clientAddress.String()).Msg("Tunnel: using assigned client IP from server response")
 
+	resolvedIP, err := resolveServerIP(serverIP)
+	if err != nil {
+		return nil, err
+	}
+
+	peerConf, err := buildWireGuardConfig(resolvedIP, resp, privateKey)
+	if err != nil {
+		return nil, err
+	}
+	device, err := wireguard.NewUserspaceDevice(peerConf, []netip.Addr{clientAddress})
+	if err != nil {
+		return nil, fmt.Errorf("failed to create WireGuard device: %w", err)
+	}
+
+	log.Info().Str("server_ip", serverIP).Int("server_wg_port", resp.ServerWGPort).Str("client_ip", clientAddress.String()).Msg("Tunnel established")
+
+	remoteUrl, err := buildRemoteURL(localUrl, hostname, resp)
+	if err != nil {
+		device.Device.Close()
+		return nil, err
+	}
+
+	if _, err := p.StartProxy(localUrl, remoteUrl, tunnelName, device, tlsCertPEM, tlsKeyPEM, resp.ClientAddress); err != nil {
+		device.Device.Close()
+		return nil, fmt.Errorf("failed to start proxy: %w", err)
+	}
+
+	return device, nil
+}
+
+func resolveServerIP(serverIP string) (string, error) {
 	host, _, err := net.SplitHostPort(serverIP)
 	if err != nil {
 		host = serverIP
 	}
 
-	// Resolve domain name to IP if necessary.
-	if _, err := netip.ParseAddr(host); err != nil {
-		ips, err := net.LookupIP(host)
-		if err != nil {
-			return nil, fmt.Errorf("failed to resolve server address %q: %w", host, err)
-		}
-		if len(ips) == 0 {
-			return nil, fmt.Errorf("no IP addresses found for host %q", host)
-		}
-		host = ips[0].String()
+	if _, err := netip.ParseAddr(host); err == nil {
+		return host, nil
 	}
 
-	// Create device config with the client's private key.
-	peerConf := fmt.Sprintf("private_key=%s\nreplace_peers=true\npublic_key=%s\nallowed_ip=%s\nendpoint=%s\npersistent_keepalive_interval=1",
-		hex.EncodeToString(privateKey[:]),
-		resp.ServerPublicKey,
-		"0.0.0.0/0",
-		// Use ServerWGPort (server WireGuard UDP listen port) as the endpoint port.
-		net.JoinHostPort(host, strconv.Itoa(resp.ServerWGPort)),
-	)
-
-	// Create the userspace WireGuard device bound to the assigned client address.
-	addrList := []netip.Addr{clientAddress}
-
-	device, err := wireguard.NewUserspaceDevice(peerConf, addrList)
+	addrs, err := net.DefaultResolver.LookupNetIP(context.Background(), "ip", host)
 	if err != nil {
-		log.Fatal().Err(err).Msg("Failed to create WireGuard device")
-		return nil, err
+		return "", fmt.Errorf("failed to resolve server address %q: %w", host, err)
+	}
+	if len(addrs) == 0 {
+		return "", fmt.Errorf("no IP addresses found for host %q", host)
+	}
+	return addrs[0].String(), nil
+}
+
+func buildWireGuardConfig(resolvedIP string, resp *types.ConnectResponse, privateKey wgtypes.Key) (string, error) {
+	serverPubKey, err := wgtypes.ParseKey(resp.ServerPublicKey)
+	if err != nil {
+		return "", fmt.Errorf("invalid server public key: %w", err)
 	}
 
-	log.Info().Str("server_ip", serverIP).Int("server_wg_port", resp.ServerWGPort).Str("client_ip", clientAddress.String()).Msg("Tunnel established")
+	endpoint, err := net.ResolveUDPAddr("udp", net.JoinHostPort(resolvedIP, strconv.Itoa(resp.ServerWGPort)))
+	if err != nil {
+		return "", fmt.Errorf("failed to resolve server endpoint: %w", err)
+	}
 
+	keepalive := 1 * time.Second
+	cfg := wgtypes.Config{
+		PrivateKey:   &privateKey,
+		ReplacePeers: true,
+		Peers: []wgtypes.PeerConfig{
+			{
+				PublicKey: serverPubKey,
+				AllowedIPs: []net.IPNet{
+					{IP: net.IPv4zero, Mask: net.CIDRMask(0, 32)},
+				},
+				Endpoint:                    endpoint,
+				PersistentKeepaliveInterval: &keepalive,
+			},
+		},
+	}
+
+	return wireguard.ConfigToString(cfg)
+}
+
+func buildRemoteURL(localUrl *url.URL, hostname string, resp *types.ConnectResponse) (*url.URL, error) {
 	remoteUrl := &url.URL{
 		Scheme: localUrl.Scheme,
 		Host:   net.JoinHostPort(resp.ClientAddress, strconv.Itoa(resp.TunnelProxyPort)),
 	}
-	
-	if localUrl.Scheme == "http" && localUrl.Port() == "" {
-		localUrl.Host = localUrl.Host + ":80"
-	}
-	if localUrl.Scheme == "https" && localUrl.Port() == "" {
-		localUrl.Host = localUrl.Host + ":443"
+
+	if err := util.EnsurePort(localUrl); err != nil {
+		return nil, err
 	}
 
 	switch strings.ToLower(localUrl.Scheme) {
@@ -108,17 +146,8 @@ func Tunnel(serverIP string, localUrl *url.URL, hostname string, resp *types.Con
 	case "udp":
 		remoteUrl.Scheme = "udp"
 	default:
-		return nil, fmt.Errorf("unsupported protocol %q", strings.ToLower(localUrl.Scheme))
+		return nil, fmt.Errorf("unsupported protocol %q", localUrl.Scheme)
 	}
-
-	// 5. Start the proxy
-	// Start proxy. If TLS cert/key paths were provided, forward them to StartProxy
-	// so the proxy manager can present the provided certificate on the remote
-	// HTTPS endpoint. The proxy.StartProxy signature accepts optional cert/key
-	// arguments via the last two parameters (pass nil when not used).
-	if _, err := p.StartProxy(localUrl, remoteUrl, tunnelName, device, tlsCertPEM, tlsKeyPEM, resp.ClientAddress); err != nil {
-		log.Fatal().Err(err).Msg("Failed to start proxy")
-	}
-
-	return device, nil
+	return remoteUrl, nil
 }
+

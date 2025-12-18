@@ -4,31 +4,42 @@ import (
 	"fmt"
 	"io"
 	"net"
-	"strings"
+	"net/netip"
 	"sync/atomic"
 
+	"github.com/aquaduct-dev/weft/src/internal/constants"
 	"github.com/aquaduct-dev/weft/src/proxy/vhost/meter"
 	"github.com/aquaduct-dev/weft/wireguard"
 	"github.com/rs/zerolog/log"
 	"gvisor.dev/gvisor/pkg/tcpip/adapters/gonet"
 )
 
-// Proxy is an interface for all proxy types.
+// Proxy defines the common interface for all types of traffic forwarders (TCP, UDP, VHost).
 type Proxy interface {
 	io.Closer
+	// Conflicts returns true if this proxy would conflict with another (e.g., same port).
 	Conflicts(other Proxy) bool
+	// Name returns the unique tunnel name associated with this proxy.
 	Name() string
+	// Endpoint returns a string representation of the proxy's listening address.
 	Endpoint() string
+	// ListenAddr returns the network address the proxy is listening on.
 	ListenAddr() net.Addr
+	// BytesTx returns the total bytes transmitted through this proxy.
 	BytesTx() uint64
+	// BytesRx returns the total bytes received through this proxy.
 	BytesRx() uint64
+	// BytesTotal returns the sum of Tx and Rx bytes.
 	BytesTotal() uint64
+	// InstanceId returns a unique identifier for this specific proxy execution.
 	InstanceId() string
 }
 
-// TCPProxy is a proxy for TCP connections.
+// TCPProxy implements a transparent TCP layer-4 proxy.
 type TCPProxy struct {
+	// Listener is the underlying TCP listener.
 	Listener   net.Listener
+	// Addr is the address the proxy is configured to listen on.
 	Addr       *net.TCPAddr
 	name       string
 	bytesRx    atomic.Uint64
@@ -109,10 +120,12 @@ func (p *TCPProxy) Conflicts(other Proxy) bool {
 	}
 }
 
-// UDPProxy is a proxy for UDP connections.
+// UDPProxy implements a transparent UDP layer-4 proxy.
 type UDPProxy struct {
 	name       string
+	// Conn is the underlying UDP connection (could be WireGuard-aware).
 	Conn       WGAwareUDPConn
+	// Addr is the address the proxy is configured to listen on.
 	Addr       *net.UDPAddr
 	bytesRx    atomic.Uint64
 	bytesTx    atomic.Uint64
@@ -169,17 +182,25 @@ func (p *UDPProxy) BytesTotal() uint64 {
 	return p.BytesRx() + p.BytesTx()
 }
 
-// VHostRouteProxy is a proxy for vhost routes.
+// VHostRouteProxy implements a layer-7 HTTP/HTTPS proxy with virtual host routing.
 type VHostRouteProxy struct {
 	name       string
 	handler    *meter.MeteredHTTPHandler
+	// Closer allows shutting down the specific vhost route.
 	Closer     io.Closer
+	// Host is the hostname matched by this proxy.
 	Host       string
+	// Port is the port matched by this proxy.
 	Port       int
+	// BindIp is the IP address the proxy is bound to.
 	BindIp     string
+	// IsHTTPS indicates if the proxy expects TLS traffic.
 	IsHTTPS    bool
+	// Rewrite is the path prefix rewrite rule.
 	Rewrite    string
+	// Matchers are the rules used to select this route.
 	Matchers   map[string]string
+	// Modifiers are the rules used to transform requests on this route.
 	Modifiers  map[string]string
 	instanceId string
 }
@@ -310,8 +331,20 @@ func (w WGAwareUDPConn) Close() error {
 	return nil
 }
 
+func isWGAddr(addr string) bool {
+	host, _, err := net.SplitHostPort(addr)
+	if err != nil {
+		host = addr
+	}
+	ip, err := netip.ParseAddr(host)
+	if err != nil {
+		return false
+	}
+	return constants.DefaultSubnet.Contains(ip)
+}
+
 func WGAwareUDPDial(addr *net.UDPAddr, device *wireguard.UserspaceDevice) (WGAwareUDPConn, error) {
-	if strings.HasPrefix(addr.String(), "10.1.") {
+	if isWGAddr(addr.String()) {
 		if device == nil {
 			return WGAwareUDPConn{}, fmt.Errorf("cannot dial on WireGuard host %s without wireguard device", addr.String())
 		}
@@ -325,7 +358,7 @@ func WGAwareUDPDial(addr *net.UDPAddr, device *wireguard.UserspaceDevice) (WGAwa
 }
 
 func WGAwareUDPListen(addr *net.UDPAddr, device *wireguard.UserspaceDevice) (WGAwareUDPConn, error) {
-	if strings.HasPrefix(addr.String(), "10.1.") {
+	if isWGAddr(addr.String()) {
 		if device == nil {
 			return WGAwareUDPConn{}, fmt.Errorf("cannot listen on WireGuard host %s without wireguard device", addr.String())
 		}
@@ -338,7 +371,7 @@ func WGAwareUDPListen(addr *net.UDPAddr, device *wireguard.UserspaceDevice) (WGA
 }
 
 func WGAwareTCPDial(addr *net.TCPAddr, device *wireguard.UserspaceDevice) (net.Conn, error) {
-	if strings.HasPrefix(addr.String(), "10.1.") {
+	if isWGAddr(addr.String()) {
 		if device == nil {
 			return nil, fmt.Errorf("cannot dial on WireGuard host %s without wireguard device", addr.String())
 		}
@@ -349,7 +382,7 @@ func WGAwareTCPDial(addr *net.TCPAddr, device *wireguard.UserspaceDevice) (net.C
 }
 
 func WGAwareTCPListen(addr *net.TCPAddr, device *wireguard.UserspaceDevice) (net.Listener, error) {
-	if strings.HasPrefix(addr.String(), "10.1.") {
+	if isWGAddr(addr.String()) {
 		if device == nil {
 			return nil, fmt.Errorf("cannot listen on WireGuard host %s without wireguard device", addr.String())
 		}

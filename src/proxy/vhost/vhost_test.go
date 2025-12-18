@@ -36,7 +36,9 @@ var _ = ginkgo.Describe("VHostProxy", func() {
 		manager := NewVHostProxyManager()
 		vp := NewVHostProxy(VHostKey{Port: 0}, manager)
 		vp.mu.Lock()
-		vp.handlers["example.test"] = meter.MakeMeteredHTTPHandler(httputil.NewSingleHostReverseProxy(u))
+		vp.routes["example.test"] = []*Route{{
+			Handler: meter.MakeMeteredHTTPHandler(httputil.NewSingleHostReverseProxy(u)),
+		}}
 		vp.mu.Unlock()
 
 		req := httptest.NewRequest("GET", "http://example.test/", nil)
@@ -65,7 +67,12 @@ var _ = ginkgo.Describe("VHostProxy", func() {
 		certPEM, keyPEM, err := crypto.GenerateCert("secure.test", []string{})
 		gomega.Expect(err).ToNot(gomega.HaveOccurred())
 
-		closer, _, err := vp.AddHostWithTLS("secure.test", "", u, nil, string(certPEM), string(keyPEM))
+		closer, _, err := vp.AddHostWithTLS(RouteConfig{
+			Host:    "secure.test",
+			Target:  u,
+			CertPEM: string(certPEM),
+			KeyPEM:  string(keyPEM),
+		})
 		gomega.Expect(err).ToNot(gomega.HaveOccurred())
 		defer closer.Close()
 
@@ -143,7 +150,10 @@ var _ = ginkgo.Describe("VHostProxy", func() {
 		defer up.Close()
 		u, err := url.Parse(up.URL)
 		gomega.Expect(err).ToNot(gomega.HaveOccurred())
-		proxy.AddHost("example.test", "", u, nil)
+		proxy.AddHost(RouteConfig{
+			Host:   "example.test",
+			Target: u,
+		})
 
 		go proxy.Start()
 

@@ -6,6 +6,7 @@ go_library(
     importpath = "github.com/aquaduct-dev/weft/src/tunnel",
     visibility = ["//visibility:public"],
     deps = [
+        "//src/internal/util",
         "//src/proxy",
         "//types",
         "//wireguard",

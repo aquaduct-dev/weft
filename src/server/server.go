@@ -13,11 +13,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
-	"math/big"
-	"net"
 	"net/http"
 	"net/netip"
-	"net/url"
 	"strconv"
 	"strings"
 	"sync"
@@ -25,7 +22,7 @@ import (
 
 	"github.com/aquaduct-dev/weft/src/crypto"
 	"github.com/aquaduct-dev/weft/src/dns"
-	proxy "github.com/aquaduct-dev/weft/src/proxy"
+	"github.com/aquaduct-dev/weft/src/internal/constants"
 	"github.com/aquaduct-dev/weft/types"
 	"github.com/aquaduct-dev/weft/wireguard"
 	"github.com/golang-jwt/jwt/v4"
@@ -33,91 +30,67 @@ import (
 	"golang.zx2c4.com/wireguard/wgctrl/wgtypes"
 )
 
+// Server implements the Weft control plane, managing tunnel registration,
+// authentication, and proxy orchestration.
 type Server struct {
 	*http.Server
 
-	// device is the userspace WireGuard device that handles packet routing for peers.
-	device *wireguard.UserspaceDevice
+	// Store manages the persistence and state of tunnel peers.
+	Store     TunnelStore
+	// Dataplane manages the underlying networking (WireGuard/Proxies).
+	Dataplane Dataplane
 
-	// privateKey is the server's WireGuard private key used when forming the server peer.
-	privateKey wgtypes.Key
-
-	// tunnels maps a logical tunnel name (client-specified or computed) to the
-	// assigned WireGuard address for that tunnel's client.
-	tunnels map[string]peer
-
-	// peerLastSeen stores the last time a tunnel name checked in (healthchecks).
-	// Used by the janitor to prune stale entries.
-	peerLastSeen map[string]time.Time
-
-	// usedIPs tracks allocated addresses in the subnet.
-	usedIPs map[netip.Addr]bool
-
-	// subnet is the WireGuard subnet reserved for clients (e.g., 10.0.0.0/24).
-	subnet netip.Prefix
-
-	// mu protects access to mutable fields (tunnels, proxies, nextIP, etc.).
+	// mu protects access to mutable fields (closing, challenges).
 	mu sync.Mutex
 
 	// closing indicates the server is shutting down and prevents new mutations.
 	closing bool
 
-	// ConnectionSecret is the shared secret used for the login challenge + JWT signing.
+	// ConnectionSecret is the shared secret used for the login challenge and JWT signing.
 	ConnectionSecret string
 
-	ProxyManager *proxy.ProxyManager
 	// bindIP constrains all server listeners (HTTP and proxy listeners) when set.
 	bindIP string
 
-	// UsageReportingURL is the URL where usage stats are posted.
+	// UsageReportingURL is the destination for periodic usage statistics reports.
 	UsageReportingURL string
 
-	// CloudflareToken is the token used to update DNS records.
+	// CloudflareToken is used for automated DNS updates when new tunnels are established.
 	CloudflareToken string
 
-	// DNSUpdater is the function called to update DNS records.
+	// DNSUpdater is the strategy used to update external DNS records.
 	DNSUpdater func(token, hostname, ip string) error
 
-	// apiTLSConfig is an optional TLS config for API-related listeners (kept for future use).
+	// apiTLSConfig is the TLS configuration for the server's control plane API.
 	apiTLSConfig *tls.Config
 
-	// WgListenPort records the UDP port the server's WireGuard device is listening on.
-	// This is returned to clients so they can configure the correct endpoint.
-	WgListenPort int
-
-	// challenges maps remote addresses to outstanding login challenges.
+	// challenges maps remote client addresses to their active login challenges.
 	challenges map[string]string
 }
 
-type peer struct {
-	publicKey       wgtypes.Key
-	ip              netip.Addr
-	proxiedUpstream string
-	dstURL          string
-}
-
+// CreateDevice initializes a new userspace WireGuard device on the specified port.
+// It returns the device, the generated private key, and the actual port used.
 func CreateDevice(port int) (*wireguard.UserspaceDevice, wgtypes.Key, int, error) {
 	privateKey, err := wgtypes.GeneratePrivateKey()
 	if err != nil {
 		return nil, wgtypes.Key{}, 0, fmt.Errorf("failed to generate private key: %w", err)
 	}
 
-	subnet := netip.MustParsePrefix("10.1.0.0/16")
+	subnet := constants.DefaultSubnet
 
-	// Build device config. Currently the userspace device constructor expects a
-	// WireGuard-style config. We always provide private_key and listen_port.
-	// The wireguard userspace device may not support an explicit bind address in
-	// the config string across all implementations; however, we accept a
-	// bindIP parameter and log it so operators know we attempted to constrain
-	// bindings. If the underlying implementation supports endpoint binding via
-	// the conf string, include it here.
-	conf := fmt.Sprintf("private_key=%s\nlisten_port=%d", hex.EncodeToString(privateKey[:]), port)
+	cfg := wgtypes.Config{
+		PrivateKey: &privateKey,
+		ListenPort: &port,
+	}
+	conf, err := wireguard.ConfigToString(cfg)
+	if err != nil {
+		return nil, wgtypes.Key{}, 0, fmt.Errorf("failed to marshal wireguard config: %w", err)
+	}
 	device, err := wireguard.NewUserspaceDevice(conf, []netip.Addr{subnet.Addr()})
 	if err != nil {
 		return nil, wgtypes.Key{}, 0, fmt.Errorf("failed to create wireguard device: %w", err)
 	}
 
-	// Get the actual listen port from the device
 	ipc, err := device.Device.IpcGet()
 	if err != nil {
 		return nil, wgtypes.Key{}, 0, fmt.Errorf("failed to get IPC info: %w", err)
@@ -138,10 +111,10 @@ func CreateDevice(port int) (*wireguard.UserspaceDevice, wgtypes.Key, int, error
 	return device, privateKey, actualPort, nil
 }
 
+// NewServer creates and initializes a new Weft control plane server.
 func NewServer(port int, bindIP string, connectionSecret string, usageReportingURL string, cloudflareToken string) *Server {
 	mux := http.NewServeMux()
 
-	// Generate self-signed certificate for HTTPS
 	certPEM, keyPEM, certGenErr := crypto.GenerateCert("weft-server", []string{})
 	if certGenErr != nil {
 		log.Fatal().Err(certGenErr).Msg("failed to generate self-signed certificate")
@@ -154,19 +127,17 @@ func NewServer(port int, bindIP string, connectionSecret string, usageReportingU
 
 	apiTLSCfg := &tls.Config{
 		Certificates: []tls.Certificate{cert},
-		MinVersion:   tls.VersionTLS12, // Enforce TLS 1.2 or higher
+		MinVersion:   tls.VersionTLS12,
 	}
 
 	if connectionSecret == "" {
-		// Generate a random connection secret on startup.
-		s, err := generateRandomSecret(10) // 10 bytes for a secure secret
+		s, err := generateRandomSecret(10)
 		if err != nil {
 			log.Fatal().Err(err).Msg("failed to generate connection secret")
 		}
 		connectionSecret = s
 	}
 
-	// Configure HTTP server address. If bindIP is specified, bind only to that IP.
 	addr := fmt.Sprintf(":%d", port)
 	if bindIP != "" {
 		addr = fmt.Sprintf("%s:%d", bindIP, port)
@@ -175,14 +146,10 @@ func NewServer(port int, bindIP string, connectionSecret string, usageReportingU
 		Server: &http.Server{
 			Addr:      addr,
 			Handler:   mux,
-			TLSConfig: apiTLSCfg, // Assign the TLS config here
+			TLSConfig: apiTLSCfg,
 		},
-		tunnels:           make(map[string]peer),
-		peerLastSeen:      make(map[string]time.Time),
-		subnet:            netip.MustParsePrefix("10.1.0.0/16"),
-		usedIPs:           make(map[netip.Addr]bool),
+		Store:             NewInMemoryTunnelStore(),
 		ConnectionSecret:  connectionSecret,
-		ProxyManager:      proxy.NewProxyManager(),
 		apiTLSConfig:      apiTLSCfg,
 		challenges:        make(map[string]string),
 		bindIP:            bindIP,
@@ -190,25 +157,17 @@ func NewServer(port int, bindIP string, connectionSecret string, usageReportingU
 		CloudflareToken:   cloudflareToken,
 		DNSUpdater:        dns.UpdateRecord,
 	}
-	// Propagate bindIP to the ProxyManager so proxies bind to the same IP.
-	if bindIP != "" {
-		s.ProxyManager.SetBindIP(bindIP)
-	}
-	s.ProxyManager.Cleanup = func(tunnelName string) {
-		s.RemoveTunnel(tunnelName)
-	}
-	s.ProxyManager.VHostProxyManager.Cleanup = s.ProxyManager.Cleanup
-	var err error
-	s.device, s.privateKey, s.WgListenPort, err = CreateDevice(0) // Always use a random port for the wireguard device
+
+	dp, err := NewTunnelDataplane(0, bindIP, s.RemoveTunnel, s.isShuttingDown)
 	if err != nil {
 		panic(err)
 	}
+	s.Dataplane = dp
 
 	mux.HandleFunc("/connect", s.ConnectHandler)
 	mux.HandleFunc("/healthcheck", s.HealthcheckHandler)
 	mux.HandleFunc("/shutdown", s.ShutdownHandler)
 	mux.HandleFunc("/login", s.LoginHandler)
-	// List current tunnels with tx/rx/total. Requires Bearer JWT auth.
 	mux.HandleFunc("/list", s.ListHandler)
 	mux.HandleFunc("/metrics", s.MetricsHandler)
 	go s.startJanitor(11 * time.Second)
@@ -217,6 +176,7 @@ func NewServer(port int, bindIP string, connectionSecret string, usageReportingU
 	return s
 }
 
+// MetricsHandler serves Prometheus-formatted usage metrics for all active tunnels.
 func (s *Server) MetricsHandler(w http.ResponseWriter, r *http.Request) {
 	user, _, ok := r.BasicAuth()
 	if !ok || user != s.ConnectionSecret {
@@ -225,15 +185,14 @@ func (s *Server) MetricsHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	s.mu.Lock()
-	defer s.mu.Unlock()
+	proxies := s.Dataplane.GetProxyCounters()
+	tunnels := s.Store.GetAllPeers()
 
-	proxies := s.ProxyManager.GetProxyCounters()
 	var b strings.Builder
-	for name, peer := range s.tunnels {
+	for name, peer := range tunnels {
 		if counters, ok := proxies[name]; ok {
-			b.WriteString(fmt.Sprintf("weft_tunnel_bytes_transmitted_total{tunnel_id=\"%s\",src=\"%s\",dst=\"%s\"} %d\n", name, peer.proxiedUpstream, peer.dstURL, counters.Tx))
-			b.WriteString(fmt.Sprintf("weft_tunnel_bytes_received_total{tunnel_id=\"%s\",src=\"%s\",dst=\"%s\"} %d\n", name, peer.proxiedUpstream, peer.dstURL, counters.Rx))
+			b.WriteString(fmt.Sprintf("weft_tunnel_bytes_transmitted_total{tunnel_id=\"%%s\",src=\"%%s\",dst=\"%%s\"} %%d\n", name, peer.ProxiedUpstream, peer.DstURL, counters.Tx))
+			b.WriteString(fmt.Sprintf("weft_tunnel_bytes_received_total{tunnel_id=\"%%s\",src=\"%%s\",dst=\"%%s\"} %%d\n", name, peer.ProxiedUpstream, peer.DstURL, counters.Rx))
 		}
 	}
 
@@ -241,8 +200,6 @@ func (s *Server) MetricsHandler(w http.ResponseWriter, r *http.Request) {
 	w.Write([]byte(b.String()))
 }
 
-// generateRandomSecret generates a cryptographically secure random string of the specified byte length.
-// The string is base64 URL-encoded to ensure it's safe for use in URLs and other text-based contexts.
 func generateRandomSecret(length int) (string, error) {
 	b := make([]byte, length)
 	_, err := rand.Read(b)
@@ -252,54 +209,7 @@ func generateRandomSecret(length int) (string, error) {
 	return base64.URLEncoding.EncodeToString(b), nil
 }
 
-// getFreeIPFromPool finds an available IP address in the server's subnet.
-// This function assumes the caller holds the mutex.
-func (s *Server) getFreeIPFromPool() (netip.Addr, error) {
-
-	// Reserve .1 for the server itself
-	hostAddr, _ := netip.ParseAddr("10.1.0.1")
-	if _, used := s.usedIPs[hostAddr]; !used {
-		s.usedIPs[hostAddr] = true
-	}
-	addr := hostAddr
-	for {
-		addr = addr.Next()
-		if !s.subnet.Contains(addr) {
-			return netip.Addr{}, fmt.Errorf("subnet exhausted")
-		}
-
-		// Don't allocate the broadcast address. The broadcast address is the last address in the subnet.
-		if !s.subnet.Contains(addr.Next()) {
-			continue // This is the broadcast address, skip it.
-		}
-
-		if _, used := s.usedIPs[addr]; !used {
-			s.usedIPs[addr] = true
-			return addr, nil
-		}
-	}
-}
-
-// returnIPToPool returns an IP address to the pool of available addresses.
-// This function assumes the caller holds the mutex.
-func (s *Server) returnIPToPool(ip netip.Addr) {
-	delete(s.usedIPs, ip)
-}
-
-// GetFreeIPFromPool finds an available IP address in the server's subnet.
-func (s *Server) GetFreeIPFromPool() (netip.Addr, error) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	return s.getFreeIPFromPool()
-}
-
-// ReturnIPToPool returns an IP address to the pool of available addresses.
-func (s *Server) ReturnIPToPool(ip netip.Addr) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	s.returnIPToPool(ip)
-}
-
+// ConnectHandler processes requests from clients to establish a new tunnel connection.
 func (s *Server) ConnectHandler(w http.ResponseWriter, r *http.Request) {
 	authHeader := r.Header.Get("Authorization")
 	if authHeader == "" {
@@ -314,7 +224,6 @@ func (s *Server) ConnectHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	tokenString := parts[1]
-
 	_, err := s.ValidateJWT(tokenString)
 	if err != nil {
 		http.Error(w, "Invalid token", http.StatusUnauthorized)
@@ -328,26 +237,20 @@ func (s *Server) ConnectHandler(w http.ResponseWriter, r *http.Request) {
 
 	var req types.ConnectRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		// Return the full JSON decoding error to help clients debug malformed payloads.
-		// Avoid leaking request bodies or secrets; the error text itself (e.g., "invalid character")
-		// is safe and useful for debugging.
-		http.Error(w, fmt.Sprintf("Invalid request body: %v", err), http.StatusBadRequest)
+		http.Error(w, fmt.Sprintf("Invalid request body: %%v", err), http.StatusBadRequest)
 		return
 	}
 
 	resp, err := s.Serve(&req)
 	if err != nil {
-		// Translate well-known error types into appropriate HTTP status codes so clients can act,
-		// but include the full underlying error text in the response body to aid debugging.
 		if err.Error() == "invalid connection secret" {
-			http.Error(w, fmt.Sprintf("Invalid connection secret: %v", err), http.StatusUnauthorized)
+			http.Error(w, fmt.Sprintf("Invalid connection secret: %%v", err), http.StatusUnauthorized)
 			return
 		}
 		if strings.Contains(err.Error(), "already exists") || strings.Contains(err.Error(), "conflict") {
-			http.Error(w, fmt.Sprintf("Conflict: %v", err), http.StatusConflict)
+			http.Error(w, fmt.Sprintf("Conflict: %%v", err), http.StatusConflict)
 			return
 		}
-		// Default: return the full error text.
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
@@ -360,383 +263,168 @@ func (s *Server) ConnectHandler(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
+// Serve processes a connection request, allocates resources, and returns the tunnel configuration.
 func (s *Server) Serve(req *types.ConnectRequest) (*types.ConnectResponse, error) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
 	clientPublicKey, err := wgtypes.ParseKey(req.ClientPublicKey)
 	if err != nil {
 		return nil, fmt.Errorf("invalid client public key")
 	}
 
-	// If the tunnel is new, allocate an IP from the subnet.
-	var createdTunnel bool
-	if _, ok := s.tunnels[req.TunnelName]; !ok {
-		createdTunnel = true
-		ip, err := s.getFreeIPFromPool()
-		if err != nil {
-			return nil, err
-		}
-		s.tunnels[req.TunnelName] = peer{
-			ip:              ip,
-			publicKey:       clientPublicKey,
-			proxiedUpstream: req.ProxiedUpstream,
-			dstURL:          fmt.Sprintf("%s://%s:%d", req.Protocol, req.Hostname, req.RemotePort),
-		}
-
-		// Update Cloudflare DNS if token is present and this is a hostname proxy (http/https)
-		if s.CloudflareToken != "" && req.Hostname != "" && (req.Protocol == "http" || req.Protocol == "https") {
-			if s.bindIP != "" && s.bindIP != "0.0.0.0" {
-				updater := s.DNSUpdater
-				go func(hostname, ip string) {
-					if err := updater(s.CloudflareToken, hostname, ip); err != nil {
-						log.Error().Err(err).Str("hostname", hostname).Msg("Failed to update Cloudflare DNS")
-					}
-				}(req.Hostname, s.bindIP)
-			} else {
-				log.Warn().Str("hostname", req.Hostname).Msg("Cloudflare token set but bindIP is invalid/empty, skipping DNS update")
-			}
-		}
-	}
-	peerIP := s.tunnels[req.TunnelName].ip
-	// mark as seen now (new connection). Record by tunnelName.
-	s.peerLastSeen[req.TunnelName] = time.Now()
-
-	// Build wgtypes.Config from current tunnels for consistent UAPI generation.
-	// Ensure server WireGuard device is listening on an ephemeral port bound to the WireGuard interface.
-	// If s.WgListenPort==0, ask the device for its effective listen_port and use that. If the device
-	// is nil, return an error.
-	if s.device == nil || s.device.Device == nil {
-		return nil, fmt.Errorf("device closed (cannot configure peers)")
-	}
-	// Read current IPC info to determine the active listen_port in case it was set to 0 at creation.
-	ipc, _ := s.device.Device.IpcGet()
-	for _, line := range strings.Split(ipc, "\n") {
-		if portStr, ok := strings.CutPrefix(line, "listen_port="); ok {
-			if p, err := strconv.Atoi(strings.TrimSpace(portStr)); err == nil && p != 0 {
-				s.WgListenPort = p
-			}
-		}
-	}
-
-	cfg := wgtypes.Config{ListenPort: &s.WgListenPort}
-	for _, p := range s.tunnels {
-		cfg.Peers = append(cfg.Peers, wgtypes.PeerConfig{
-			PublicKey:  p.publicKey,
-			AllowedIPs: []net.IPNet{{IP: net.IP(p.ip.AsSlice()), Mask: net.CIDRMask(32, 32)}, {IP: net.ParseIP("10.1.0.1"), Mask: net.CIDRMask(32, 32)}},
-		})
-	}
-	newConfig, err := ConfigToString(cfg)
-	if err != nil {
-		log.Fatal().Err(err).Msg("ConfigToString failed")
-	}
-	log.Debug().Str("config", newConfig).Msg("Config")
-
-	if s.device != nil {
-		// Defensive logging: record that we're preparing an IPC config update.
-		// Compute checksum of the new config and compare with the device's current IPC state.
-		log.Debug().Bool("replace_peers", strings.Contains(newConfig, "replace_peers=true")).Msg("IpcSet: preparing peer config update")
-		if s.device.Device == nil {
-			log.Warn().Msg("IpcSet: device.Device is nil (device closed?)")
-			return nil, fmt.Errorf("device closed (cannot configure peers)")
-		}
-		log.Debug().Msg("IpcSet: device not nil")
-		if s.isShuttingDown() {
-			log.Warn().Msg("IpcSet: server is shutting down; refusing to configure peers")
-			return nil, fmt.Errorf("server shutting down (cannot configure peers)")
-		}
-		log.Debug().Msg("IpcSet: device not shutting down")
-		// Read current device config for comparison.
-		currentConfig, getErr := s.device.Device.IpcGet()
-		if getErr != nil {
-			// If we cannot read current config, log and proceed to attempt an update.
-			log.Warn().Err(getErr).Msg("IpcSet: failed to read current device config; will attempt to apply new config")
-		}
-		// Sanitize configs for logging/comparison by removing private_key lines.
-		sanitize := func(conf string) string {
-			var out []string
-			for _, line := range strings.Split(conf, "\n") {
-				if strings.HasPrefix(strings.TrimSpace(line), "private_key=") {
-					out = append(out, "private_key=<redacted>")
-					continue
-				}
-				out = append(out, line)
-			}
-			return strings.Join(out, "\n")
-		}
-		sanitizedNew := sanitize(newConfig)
-		sanitizedCurrent := sanitize(currentConfig)
-		log.Debug().Msg("IpcSet: comparing configs for change detection")
-		if sanitizedCurrent == sanitizedNew && sanitizedCurrent != "" {
-			log.Debug().Msg("IpcSet: skipping apply; device config unchanged")
-		} else {
-			log.Debug().Msg("IpcSet: applying peer config")
-			// Log sanitized newConfig so we can validate what is being applied (private_key redacted).
-			log.Debug().Str("newConfig", sanitizedNew).Msg("IpcSet: newConfig to apply (redacted)")
-			// Also log server wgListenPort and whether device.Device appears non-nil.
-			log.Debug().Int("wgListenPort", s.WgListenPort).Bool("device.Device_nil", s.device.Device == nil).Msg("IpcSet: server state")
-			err = s.device.Device.IpcSet(newConfig)
-			if err != nil {
-				// On error, fetch and log current device state (sanitized) to help debugging.
-				log.Error().Err(err).Msg("IpcSet error")
-				if cur, e := s.device.Device.IpcGet(); e == nil {
-					// redact private_key before logging
-					redacted := sanitize(cur)
-					log.Debug().Str("current_config", redacted).Msg("IpcSet: current device IPC state after error (redacted)")
-				} else {
-					log.Error().Err(e).Msg("IpcSet: failed to read device IPC after error")
-				}
-				return nil, fmt.Errorf("failed to configure peer: %w", err)
-			}
-			// Diagnostic: read back the device IPC state after successful apply and log sanitized value.
-			if cur, e := s.device.Device.IpcGet(); e == nil {
-				redacted := sanitize(cur)
-				log.Debug().Str("current_config", redacted).Msg("IpcSet: device IPC state after apply (redacted)")
-			} else {
-				log.Error().Err(e).Msg("IpcSet: failed to read device IPC after successful apply")
-			}
-		}
-	}
-
-	// Assign tunnelProxyPort randomly
-	tunnelProxyPortBigInt, err := rand.Int(rand.Reader, big.NewInt(10000))
+	p, created, err := s.getOrCreateTunnelPeer(req, clientPublicKey)
 	if err != nil {
 		return nil, err
 	}
-	tunnelProxyPort := int(tunnelProxyPortBigInt.Uint64()) + 10000
-	
-	var tunnelSource url.URL
-	if strings.Contains(req.RemoteModifiers, "redirect") {
-		u, err := url.Parse(req.ProxiedUpstream)
-		if err == nil {
-			tunnelSource = *u
-		} else {
-			tunnelSource = url.URL{
-				Host:   fmt.Sprintf("%s:%d", peerIP.String(), tunnelProxyPort),
-				Scheme: "http",
-			}
-		}
-	} else {
-		tunnelSource = url.URL{
-			Host:   fmt.Sprintf("%s:%d", peerIP.String(), tunnelProxyPort),
-			Scheme: "http",
-		}
-	}
-	tunnelSource.Fragment = req.RemoteModifiers
 
-	tunnelEnd := url.URL{
-		Host:     fmt.Sprintf("%s:%d", req.Hostname, req.RemotePort),
-		Scheme:   "http",
-		Path:     req.RemotePath,
-		RawQuery: req.RemoteQuery,
-		Fragment: req.RemoteFragment,
-	}
-	switch req.Protocol {
-	case "tcp":
-		tunnelSource.Scheme = "tcp"
-		tunnelEnd.Scheme = "tcp"
-	case "udp":
-		tunnelSource.Scheme = "udp"
-		tunnelEnd.Scheme = "udp"
-	case "http":
-		tunnelSource.Scheme = "http"
-		tunnelEnd.Scheme = "http"
-	case "https":
-		tunnelSource.Scheme = "http"
-		tunnelEnd.Scheme = "https"
-	default:
-		return nil, fmt.Errorf("unknown protocol: %s", req.Protocol)
-	}
-	// If protocol is https and client supplied certs, pass them to the proxy so the server
-	// can terminate TLS using the provided certificate. Both certificate and private key
-	// must be provided together.
-	var certBytes, keyBytes []byte
-	if req.Protocol == "https" {
-		if req.CertificatePEM != "" || req.PrivateKeyPEM != "" {
-			// Require both fields when one is present.
-			if req.CertificatePEM == "" || req.PrivateKeyPEM == "" {
-				return nil, fmt.Errorf("missing certificate or private key for https protocol")
-			}
-			// Do not log certificate contents; only log that certs were provided.
-			log.Info().Str("tunnel", req.TunnelName).Msg("Serve: using provided TLS certificate for https proxy")
-			certBytes = []byte(req.CertificatePEM)
-			keyBytes = []byte(req.PrivateKeyPEM)
-		}
-	}
-	_, err = s.ProxyManager.StartProxy(&tunnelSource, &tunnelEnd, req.TunnelName, s.device, certBytes, keyBytes, s.bindIP)
-	if err != nil {
-		// If we allocated a new IP for this tunnel but failed to start the proxy,
-		// we must release the IP and clean up the tunnel entry to prevent leaks.
-		if createdTunnel {
-			if p, ok := s.tunnels[req.TunnelName]; ok {
-				s.returnIPToPool(p.ip)
-				delete(s.tunnels, req.TunnelName)
-				delete(s.peerLastSeen, req.TunnelName)
-			}
+	if err := s.Dataplane.UpdateWireGuardConfig(s.Store.GetAllPeers()); err != nil {
+		if created {
+			s.RemoveTunnel(req.TunnelName)
 		}
 		return nil, err
 	}
 
-	publicKey := s.privateKey.PublicKey()
-	// Map certain error messages to more specific HTTP-handling codes in the caller.
-	// The HTTP handler will translate:
-	//   - "port_conflict:<port>" -> 409 Conflict
-	//   - "missing_port_for_protocol" or "url_missing_port" -> 422 Unprocessable Entity
-	// After applying peer config, ensure WgListenPort is current by re-reading device IPC.
-	if ipcAfter, err2 := s.device.Device.IpcGet(); err2 == nil {
-		for _, line := range strings.Split(ipcAfter, "\n") {
-			if portStr, ok := strings.CutPrefix(line, "listen_port="); ok {
-				if p, err := strconv.Atoi(strings.TrimSpace(portStr)); err == nil && p != 0 {
-					s.WgListenPort = p
-				}
-			}
+	tunnelProxyPort, err := s.Dataplane.StartProxy(req, p.IP)
+	if err != nil {
+		if created {
+			s.RemoveTunnel(req.TunnelName)
 		}
+		return nil, err
 	}
-	// Prepare ConnectResponse including both the server's WireGuard listen port and the
-	// tunnel proxy port assigned for this connection (for protocols where server chooses).
 
-	resp := &types.ConnectResponse{
-		ServerPublicKey: hex.EncodeToString(publicKey[:]),
-		ClientAddress:   peerIP.String(),
-		// ServerWGPort is the UDP listen port of the server's WireGuard device.
-		ServerWGPort: s.WgListenPort,
-		// TunnelProxyPort is the port on the server side that will proxy to the client's WG IP.
+	pubKey := s.Dataplane.GetPrivateKey().PublicKey()
+	return &types.ConnectResponse{
+		ServerPublicKey: hex.EncodeToString(pubKey[:]),
+		ClientAddress:   p.IP.String(),
+		ServerWGPort:    s.Dataplane.GetWgListenPort(),
 		TunnelProxyPort: tunnelProxyPort,
-	}
-
-	return resp, nil
+	}, nil
 }
 
+// getOrCreateTunnelPeer retrieves an existing peer or creates a new one, including IP allocation.
+func (s *Server) getOrCreateTunnelPeer(req *types.ConnectRequest, clientPublicKey wgtypes.Key) (Peer, bool, error) {
+	if p, ok := s.Store.GetPeer(req.TunnelName); ok {
+		s.Store.SetLastSeen(req.TunnelName, time.Now())
+		return p, false, nil
+	}
+
+	ip, err := s.Store.GetFreeIP()
+	if err != nil {
+		return Peer{}, false, err
+	}
+
+	p := Peer{
+		IP:              ip,
+		PublicKey:       clientPublicKey,
+		ProxiedUpstream: req.ProxiedUpstream,
+		DstURL:          fmt.Sprintf("%s://%s:%d", req.Protocol, req.Hostname, req.RemotePort),
+	}
+	s.Store.SetPeer(req.TunnelName, p)
+	s.Store.SetLastSeen(req.TunnelName, time.Now())
+
+	if s.CloudflareToken != "" && req.Hostname != "" && (req.Protocol == "http" || req.Protocol == "https") {
+		if s.bindIP != "" && s.bindIP != "0.0.0.0" {
+			updater := s.DNSUpdater
+			go func(hostname, ip string) {
+				if err := updater(s.CloudflareToken, hostname, ip); err != nil {
+					log.Error().Err(err).Str("hostname", hostname).Msg("Failed to update Cloudflare DNS")
+				}
+			}(req.Hostname, s.bindIP)
+		} else {
+			log.Warn().Str("hostname", req.Hostname).Msg("Cloudflare token set but bindIP is invalid/empty, skipping DNS update")
+		}
+	}
+
+	return p, true, nil
+}
+
+// HealthcheckHandler provides an endpoint for clients to report their health status.
 func (s *Server) HealthcheckHandler(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodPost { // Changed to POST to receive a body
+	if r.Method != http.MethodPost {
 		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
 
 	var req types.HealthcheckRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil && err != io.EOF {
-		// io.EOF means an empty body, which is acceptable for healthchecks
-		http.Error(w, fmt.Sprintf("Invalid request body: %v", err), http.StatusBadRequest)
+		http.Error(w, fmt.Sprintf("Invalid request body: %%v", err), http.StatusBadRequest)
 		return
 	}
 
-	// Validate JWT token from Authorization header
 	authHeader := r.Header.Get("Authorization")
 	if authHeader == "" {
-		log.Warn().Msg("HealthcheckHandler: missing Authorization header")
 		http.Error(w, "Authorization header required", http.StatusUnauthorized)
 		return
 	}
 
 	parts := strings.Split(authHeader, " ")
 	if len(parts) != 2 || parts[0] != "Bearer" {
-		log.Warn().Msg("HealthcheckHandler: invalid Authorization header format")
 		http.Error(w, "Invalid Authorization header", http.StatusUnauthorized)
 		return
 	}
 
 	tokenString := parts[1]
-
 	token, err := s.ValidateJWT(tokenString)
 	if err != nil {
-		log.Warn().Err(err).Msg("HealthcheckHandler: failed to validate JWT")
 		http.Error(w, "Invalid token", http.StatusUnauthorized)
 		return
 	}
 
-	// Extract proxy name from JWT claims
 	claims, ok := token.Claims.(jwt.MapClaims)
 	if !ok {
-		log.Warn().Msg("HealthcheckHandler: failed to extract JWT claims")
 		http.Error(w, "Invalid token claims", http.StatusUnauthorized)
 		return
 	}
 
 	proxyName, ok := claims["sub"].(string)
 	if !ok || proxyName == "" {
-		log.Warn().Any("claims", claims).Msg("HealthcheckHandler: missing or invalid proxy name in JWT sub claim")
-		http.Error(w, fmt.Sprintf("Missing proxy name in token %v", claims), http.StatusBadRequest)
+		http.Error(w, "Missing proxy name in token", http.StatusBadRequest)
 		return
 	}
 
-	log.Debug().Str("proxy_name", proxyName).Str("message", req.Message).Msg("HealthcheckHandler: received healthcheck")
-
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	// Check if the proxy (tunnel) exists
-	peer, exists := s.tunnels[proxyName]
+	p, exists := s.Store.GetPeer(proxyName)
 	if !exists {
-		log.Warn().Str("proxy_name", proxyName).Msg("HealthcheckHandler: proxy not found")
-		http.Error(w, fmt.Sprintf("Proxy '%s' not found", proxyName), http.StatusNotFound)
+		http.Error(w, fmt.Sprintf("Proxy '%%s' not found", proxyName), http.StatusNotFound)
 		return
 	}
 
-	// Update last seen time for this proxy
-	s.peerLastSeen[proxyName] = time.Now()
+	s.Store.SetLastSeen(proxyName, time.Now())
 
-	// Check if the proxy is healthy by verifying the peer is still configured
-	// and the WireGuard device is available
-	if s.device == nil {
-		log.Debug().Str("proxy_name", proxyName).Msg("HealthcheckHandler: device is nil. This is expected in tests.")
-	}
-
-	// Return success status with proxy information
 	resp := types.HealthcheckResponse{
 		Status:  "healthy",
-		Message: fmt.Sprintf("Proxy '%s' is healthy. IP: %s. Request message: '%s'", proxyName, peer.ip.String(), req.Message),
+		Message: fmt.Sprintf("Proxy '%%s' is healthy. IP: %%s. Request message: '%%s'", proxyName, p.IP.String(), req.Message),
 	}
 
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusOK)
-	if err := json.NewEncoder(w).Encode(resp); err != nil {
-		log.Error().Err(err).Str("proxy_name", proxyName).Msg("HealthcheckHandler: failed to encode response")
-		http.Error(w, "Failed to encode response", http.StatusInternalServerError)
-		return
-	}
-
-	log.Debug().Str("proxy_name", proxyName).Msg("HealthcheckHandler: proxy is healthy")
+	json.NewEncoder(w).Encode(resp)
 }
 
-// startJanitor launches a background goroutine that periodically prunes stale peer last-seen entries.
-// interval controls how often the janitor runs. It keeps peers seen within 2 * interval.
 func (s *Server) startJanitor(interval time.Duration) {
 	go func() {
 		ticker := time.NewTicker(interval)
 		defer ticker.Stop()
 		for range ticker.C {
-			s.mu.Lock()
-			if s.closing {
-				s.mu.Unlock()
+			if s.isShuttingDown() {
 				return
 			}
 			cutoff := time.Now().Add(-2 * interval)
+			lastSeen := s.Store.GetAllLastSeen()
 			var staleTunnels []string
-			for k, last := range s.peerLastSeen {
+			for k, last := range lastSeen {
 				if last.Before(cutoff) {
 					staleTunnels = append(staleTunnels, k)
 				}
 			}
-			s.mu.Unlock() // Unlock to allow reportUsage to lock
 
 			if len(staleTunnels) > 0 {
 				s.reportUsage(context.Background(), staleTunnels)
 			}
 
-			s.mu.Lock() // Re-lock to delete
 			for _, k := range staleTunnels {
-				// Double check if still stale and exists (state might have changed)
-				if last, ok := s.peerLastSeen[k]; ok && last.Before(cutoff) {
-					if p, ok := s.tunnels[k]; ok {
-						s.returnIPToPool(p.ip)
-						delete(s.tunnels, k)
-					}
-					s.ProxyManager.Close(k)
-					delete(s.peerLastSeen, k)
+				if last, ok := s.Store.GetLastSeen(k); ok && last.Before(cutoff) {
+					s.RemoveTunnel(k)
 					log.Info().Str("peer", k).Msg("Janitor: removed stale tunnel")
 				}
 			}
-			s.mu.Unlock()
 		}
 	}()
 }
@@ -754,64 +442,47 @@ func (s *Server) startUsageReporter(interval time.Duration) {
 	}()
 }
 
-type TunnelUsage struct {
-	TunnelName  string `json:"tunnel_name"`
-	InstanceId  string `json:"instance_id"`
-	BytesTx     uint64 `json:"bytes_tx"`
-	BytesRx     uint64 `json:"bytes_rx"`
-	Source      string `json:"source"`
-	Destination string `json:"destination"`
-}
-
-type UsageReport struct {
-	Tunnels []TunnelUsage `json:"tunnels"`
-}
-
-// reportUsage sends usage stats for specific tunnels, or all if tunnels is nil.
 func (s *Server) reportUsage(ctx context.Context, tunnels []string) {
 	if s.UsageReportingURL == "" {
 		return
 	}
-	s.mu.Lock()
-	if s.closing {
-		s.mu.Unlock()
+	if s.isShuttingDown() {
 		return
 	}
 
-	proxies := s.ProxyManager.GetProxyCounters()
+	proxies := s.Dataplane.GetProxyCounters()
+	peers := s.Store.GetAllPeers()
 	var report UsageReport
 
 	if tunnels == nil {
-		// Report all
-		for name, peer := range s.tunnels {
+		for name, p := range peers {
 			if counters, ok := proxies[name]; ok {
 				report.Tunnels = append(report.Tunnels, TunnelUsage{
 					TunnelName:  name,
 					InstanceId:  counters.InstanceId,
 					BytesTx:     counters.Tx,
 					BytesRx:     counters.Rx,
-					Source:      peer.proxiedUpstream,
-					Destination: peer.dstURL,
+					Source:      p.ProxiedUpstream,
+					Destination: p.DstURL,
 				})
 			}
 		}
 	} else {
 		for _, name := range tunnels {
 			if counters, ok := proxies[name]; ok {
-				if peer, ok := s.tunnels[name]; ok {
+				if p, ok := s.Store.GetPeer(name); ok {
 					report.Tunnels = append(report.Tunnels, TunnelUsage{
 						TunnelName:  name,
 						InstanceId:  counters.InstanceId,
 						BytesTx:     counters.Tx,
 						BytesRx:     counters.Rx,
-						Source:      peer.proxiedUpstream,
-						Destination: peer.dstURL,
+						Source:      p.ProxiedUpstream,
+						Destination: p.DstURL,
 					})
 				}
 			}
 		}
 	}
-	s.mu.Unlock() // Unlock before network call
 
 	if len(report.Tunnels) == 0 {
 		return
@@ -844,6 +515,8 @@ func (s *Server) reportUsage(ctx context.Context, tunnels []string) {
 }
 
 func (s *Server) isShuttingDown() bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	return s.closing
 }
 
@@ -861,7 +534,6 @@ func (s *Server) ShutdownHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	tokenString := parts[1]
-
 	token, err := s.ValidateJWT(tokenString)
 	if err != nil {
 		http.Error(w, "Invalid token", http.StatusUnauthorized)
@@ -869,63 +541,22 @@ func (s *Server) ShutdownHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	tunnelName := token.Claims.(jwt.MapClaims)["sub"].(string)
-
 	s.reportUsage(r.Context(), []string{tunnelName})
-
 	s.RemoveTunnel(tunnelName)
 	w.WriteHeader(http.StatusOK)
 }
 
+// RemoveTunnel cleans up all resources associated with a tunnel name.
 func (s *Server) RemoveTunnel(tunnelName string) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	for name, p := range s.tunnels {
-		if name == tunnelName {
-			s.ProxyManager.Close(name)
-			s.returnIPToPool(p.ip)
-			delete(s.tunnels, name)
-			delete(s.peerLastSeen, name)
-		}
+	if p, ok := s.Store.GetPeer(tunnelName); ok {
+		s.Dataplane.CloseProxy(tunnelName)
+		s.Store.ReleaseIP(p.IP)
+		s.Store.DeletePeer(tunnelName)
+		s.Store.DeleteLastSeen(tunnelName)
 	}
 }
 
-// ConfigToString converts a wgtypes.Config struct into the WireGuard UAPI string format.
-func ConfigToString(cfg wgtypes.Config) (string, error) {
-	var b strings.Builder
-
-	// Always replace peers for now (UAPI expects top-level flags first)
-	b.WriteString("replace_peers=true\n")
-
-	// Emit each peer using UAPI format (flat key-value pairs, no section headers)
-	for _, peer := range cfg.Peers {
-		if peer.PublicKey != (wgtypes.Key{}) {
-			b.WriteString(fmt.Sprintf("public_key=%s\n", hex.EncodeToString(peer.PublicKey[:])))
-		}
-
-		if len(peer.AllowedIPs) > 0 {
-			for _, ipNet := range peer.AllowedIPs {
-				b.WriteString(fmt.Sprintf("allowed_ip=%s\n", ipNet.String()))
-			}
-		}
-
-		// Endpoint if present
-		if peer.Endpoint != nil {
-			b.WriteString(fmt.Sprintf("endpoint=%s\n", peer.Endpoint.String()))
-		}
-
-		// Persistent keepalive (seconds)
-		if peer.PersistentKeepaliveInterval != nil && *peer.PersistentKeepaliveInterval != 0 {
-			secs := max(0, int(*peer.PersistentKeepaliveInterval/time.Second))
-			b.WriteString(fmt.Sprintf("persistent_keepalive_interval=%d\n", secs))
-		}
-	}
-
-	// Ensure trailing newline
-	if !strings.HasSuffix(b.String(), "\n") {
-		b.WriteString("\n")
-	}
-	return b.String(), nil
-}
+// LoginHandler manages the multi-step challenge-response authentication for proxies.
 func (s *Server) LoginHandler(w http.ResponseWriter, r *http.Request) {
 	switch r.Method {
 	case http.MethodGet:
@@ -968,16 +599,13 @@ func (s *Server) verifyChallenge(w http.ResponseWriter, r *http.Request) {
 	var encrypted []byte
 	var proxyName string
 
-	// Check if this is JSON (contains proxy_name) or binary (legacy)
 	if r.Header.Get("Content-Type") == "application/json" {
-		// Parse JSON body
 		var loginReq map[string]any
 		if err := json.Unmarshal(body, &loginReq); err != nil {
 			http.Error(w, "Failed to parse JSON body", http.StatusBadRequest)
 			return
 		}
 
-		// Extract challenge and proxy_name
 		challengeData, ok := loginReq["challenge"]
 		if !ok {
 			http.Error(w, "Missing challenge in JSON body", http.StatusBadRequest)
@@ -985,13 +613,12 @@ func (s *Server) verifyChallenge(w http.ResponseWriter, r *http.Request) {
 		}
 
 		proxyData, ok := loginReq["proxy_name"]
-		proxyName = proxyData.(string)
-		if !ok || proxyName == "" {
+		proxyName, _ = proxyData.(string)
+		if proxyName == "" {
 			http.Error(w, "Missing proxy_name in JSON body", http.StatusBadRequest)
 			return
 		}
 
-		// Challenge should be base64 encoded bytes
 		if challengeStr, ok := challengeData.(string); ok {
 			var err error
 			encrypted, err = base64.StdEncoding.DecodeString(challengeStr)
@@ -1026,10 +653,6 @@ func (s *Server) verifyChallenge(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// At this point, the client is authenticated.
-	// Generate a JWT and return it.
-
-	// Build JWT claims
 	claims := jwt.MapClaims{
 		"nbf": time.Now().Unix(),
 		"exp": time.Now().Add(30 * time.Minute).Unix(),
@@ -1045,15 +668,13 @@ func (s *Server) verifyChallenge(w http.ResponseWriter, r *http.Request) {
 
 	w.Write([]byte(tokenString))
 	log.Debug().Str("client", r.RemoteAddr).Msg("verifyChallenge: Client passed challenge")
-	log.Info().Str("client", r.RemoteAddr).Msg("New login")
 }
 
-// ValidateJWT parses and validates a JWT token string using the server's ConnectionSecret.
-// It returns the parsed token if valid, otherwise an error.
+// ValidateJWT parses and validates a JSON Web Token against the server's connection secret.
 func (s *Server) ValidateJWT(tokenString string) (*jwt.Token, error) {
 	token, err := jwt.Parse(tokenString, func(token *jwt.Token) (any, error) {
 		if _, ok := token.Method.(*jwt.SigningMethodHMAC); !ok {
-			return nil, fmt.Errorf("unexpected signing method: %v", token.Header["alg"])
+			return nil, fmt.Errorf("unexpected signing method: %%v", token.Header["alg"])
 		}
 		return []byte(s.ConnectionSecret), nil
 	})
@@ -1069,6 +690,7 @@ func (s *Server) ValidateJWT(tokenString string) (*jwt.Token, error) {
 	return token, nil
 }
 
+// ListHandler returns a list of all active tunnels and their current usage statistics.
 func (s *Server) ListHandler(w http.ResponseWriter, r *http.Request) {
 	authHeader := r.Header.Get("Authorization")
 	if authHeader == "" {
@@ -1083,14 +705,14 @@ func (s *Server) ListHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	tokenString := parts[1]
-
 	_, err := s.ValidateJWT(tokenString)
 	if err != nil {
 		http.Error(w, "Invalid token", http.StatusUnauthorized)
 		return
 	}
-	s.mu.Lock()
-	defer s.mu.Unlock()
+
+	proxies := s.Dataplane.GetProxyCounters()
+	peers := s.Store.GetAllPeers()
 
 	type tunnelInfo struct {
 		Tx     uint64 `json:"tx"`
@@ -1099,13 +721,11 @@ func (s *Server) ListHandler(w http.ResponseWriter, r *http.Request) {
 		DstURL string `json:"dst"`
 	}
 
-	proxies := s.ProxyManager.GetProxyCounters()
 	response := make(map[string]tunnelInfo)
-
-	for name, peer := range s.tunnels {
+	for name, peer := range peers {
 		info := tunnelInfo{
-			SrcURL: peer.proxiedUpstream,
-			DstURL: peer.dstURL,
+			SrcURL: peer.ProxiedUpstream,
+			DstURL: peer.DstURL,
 		}
 		if counters, ok := proxies[name]; ok {
 			info.Tx = counters.Tx
@@ -1115,8 +735,5 @@ func (s *Server) ListHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	w.Header().Set("Content-Type", "application/json")
-	if err := json.NewEncoder(w).Encode(response); err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
-		return
-	}
+	json.NewEncoder(w).Encode(response)
 }

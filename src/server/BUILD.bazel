@@ -2,12 +2,18 @@ load("@rules_go//go:def.bzl", "go_library")
 
 go_library(
     name = "server",
-    srcs = ["server.go"],
+    srcs = [
+        "dataplane.go",
+        "server.go",
+        "store.go",
+        "types.go",
+    ],
     importpath = "github.com/aquaduct-dev/weft/src/server",
     visibility = ["//visibility:public"],
     deps = [
         "//src/crypto",
         "//src/dns",
+        "//src/internal/constants",
         "//src/proxy",
         "//types",
         "//wireguard",

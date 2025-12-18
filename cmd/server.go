@@ -5,9 +5,9 @@ import (
 	"math/rand"
 	"net"
 	"net/http"
+	"net/netip"
 	"os"
 	"os/signal"
-	"strconv"
 	"strings"
 	"syscall"
 	"time"
@@ -19,37 +19,11 @@ import (
 )
 
 func isLikelyPublic(addr string) bool {
-	// trim whitespace and lower-case for IPv6 heuristics
-	a := strings.TrimSpace(addr)
-	if a == "" {
+	parsed, err := netip.ParseAddr(strings.TrimSpace(addr))
+	if err != nil {
 		return false
 	}
-	// Quick leading checks for common non-routable prefixes
-	switch {
-	case strings.HasPrefix(a, "10."):
-		return false
-	case strings.HasPrefix(a, "192.168."):
-		return false
-	case strings.HasPrefix(a, "127."):
-		return false
-	case strings.HasPrefix(a, "169.254."):
-		return false
-	case strings.HasPrefix(a, "172."):
-		parts := strings.SplitN(a, ".", 3)
-		if len(parts) >= 2 {
-			sec := parts[1]
-			if strings.HasPrefix(sec, "1") || strings.HasPrefix(sec, "2") || strings.HasPrefix(sec, "3") {
-				if n, err := strconv.Atoi(sec); err == nil && n >= 16 && n <= 31 {
-					return false
-				}
-			}
-		}
-	}
-	lower := strings.ToLower(a)
-	if strings.HasPrefix(lower, "fe80") || strings.HasPrefix(lower, "fc") || strings.HasPrefix(lower, "fd") || strings.HasPrefix(lower, "::1") {
-		return false
-	}
-	return true
+	return !parsed.IsLoopback() && !parsed.IsPrivate() && !parsed.IsLinkLocalUnicast() && !parsed.IsUnspecified()
 }
 
 func discoverPublicIP(defaultZero bool) string {
@@ -60,7 +34,7 @@ func discoverPublicIP(defaultZero bool) string {
 		return ""
 	}
 
-	var candidates []net.IP
+	var candidates []netip.Addr
 	// Try asking an external service (Hetzner) for our public IP and include it as a candidate.
 	// This helps on systems where the local interfaces don't expose the public IP directly.
 	{
@@ -75,8 +49,8 @@ func discoverPublicIP(defaultZero bool) string {
 				n, _ := resp.Body.Read(buf)
 				ipStr := string(buf[:n])
 				ipStr = strings.TrimSpace(ipStr)
-				parsed := net.ParseIP(ipStr)
-				if parsed != nil && parsed.To4() != nil && !parsed.IsLoopback() && !parsed.IsPrivate() {
+				parsed, err := netip.ParseAddr(ipStr)
+				if err == nil && parsed.Is4() && !parsed.IsLoopback() && !parsed.IsPrivate() {
 					log.Info().Str("ip", ipStr).Msg("Hetzner service returned public IP candidate")
 					candidates = append(candidates, parsed)
 				} else {
@@ -95,14 +69,20 @@ func discoverPublicIP(defaultZero bool) string {
 		}
 
 		for _, addr := range addrs {
-			var ip net.IP
+			var ip netip.Addr
 			switch v := addr.(type) {
 			case *net.IPNet:
-				ip = v.IP
+				if v.IP != nil {
+					ip, _ = netip.AddrFromSlice(v.IP)
+					ip = ip.Unmap()
+				}
 			case *net.IPAddr:
-				ip = v.IP
+				if v.IP != nil {
+					ip, _ = netip.AddrFromSlice(v.IP)
+					ip = ip.Unmap()
+				}
 			}
-			if ip == nil || ip.IsLoopback() || ip.IsPrivate() || ip.To4() == nil {
+			if !ip.IsValid() || ip.IsLoopback() || ip.IsPrivate() || !ip.Is4() {
 				continue
 			}
 
@@ -203,12 +183,12 @@ var serverCmd = &cobra.Command{
 		log.Info().Int("port", port).Msg("Starting Weft server")
 		srv := server.NewServer(port, bindIP, connectionSecret, usageReportingURL, cloudflareToken)
 		if email != "" {
-			srv.ProxyManager.VHostProxyManager.SetACMEEmail(email)
+			srv.Dataplane.SetACMEEmail(email)
 		}
 
 		certsCachePath, _ := cmd.Flags().GetString("certs-cache-path")
 		if certsCachePath != "" {
-			srv.ProxyManager.VHostProxyManager.SetCertsCachePath(certsCachePath)
+			srv.Dataplane.SetCertsCachePath(certsCachePath)
 		}
 
 		log.Info().Str("connection_secret", srv.ConnectionSecret).Msg("Connection Secret")

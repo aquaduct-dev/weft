@@ -144,7 +144,7 @@ var _ = Describe("ServerTunnel integration (Ginkgo) - separate file", func() {
 		connectResp := decodeResponse(w.Body)
 
 		// TODO: Remove extra args
-		device, err := tunnel.Tunnel("127.0.0.1", &url.URL{Scheme: "http", Host: fmt.Sprintf("127.0.0.1:%d", backendPort)}, &connectResp, privateKey, proxy.NewProxyManager(), "test-tunnel", nil, nil)
+		device, err := tunnel.Tunnel("127.0.0.1", &url.URL{Scheme: "http", Host: fmt.Sprintf("127.0.0.1:%d", backendPort)}, "test.com", &connectResp, privateKey, proxy.NewProxyManager(), "test-tunnel", nil, nil)
 		Expect(err).ToNot(HaveOccurred())
 		defer device.Device.Close()
 
@@ -206,7 +206,7 @@ var _ = Describe("ServerTunnel integration (Ginkgo) - separate file", func() {
 
 		// Create tunnel device; pass upstream URL so the tunnel knows it's https.
 		By("connecting to the tunnel from the server")
-		device, err := tunnel.Tunnel("127.0.0.1", &url.URL{Scheme: "http", Host: fmt.Sprintf("127.0.0.1:%d", backendPort)}, &connectResp, privateKey, proxy.NewProxyManager(), "test-tunnel", certPem, keyPem)
+		device, err := tunnel.Tunnel("127.0.0.1", &url.URL{Scheme: "http", Host: fmt.Sprintf("127.0.0.1:%d", backendPort)}, "test.com", &connectResp, privateKey, proxy.NewProxyManager(), "test-tunnel", certPem, keyPem)
 		Expect(err).ToNot(HaveOccurred())
 		defer device.Device.Close()
 
@@ -285,7 +285,7 @@ var _ = Describe("ServerTunnel integration (Ginkgo) - separate file", func() {
 		tunnelSrv.ConnectHandler(w, r)
 		connectResp := decodeResponse(w.Body)
 
-		device, err := tunnel.Tunnel("127.0.0.1", &url.URL{Scheme: "tcp", Host: fmt.Sprintf("127.0.0.1:%d", echoPort)}, &connectResp, privateKey, proxy.NewProxyManager(), "test-tunnel", nil, nil)
+		device, err := tunnel.Tunnel("127.0.0.1", &url.URL{Scheme: "tcp", Host: fmt.Sprintf("127.0.0.1:%d", echoPort)}, "test.com", &connectResp, privateKey, proxy.NewProxyManager(), "test-tunnel", nil, nil)
 		Expect(err).ToNot(HaveOccurred())
 		defer device.Device.Close()
 
@@ -345,7 +345,7 @@ var _ = Describe("ServerTunnel integration (Ginkgo) - separate file", func() {
 		tunnelSrv.ConnectHandler(w, r)
 		connectResp := decodeResponse(w.Body)
 
-		device, err := tunnel.Tunnel("127.0.0.1", &url.URL{Scheme: "tcp", Host: fmt.Sprintf("127.0.0.1:%d", backendPort)}, &connectResp, privateKey, proxy.NewProxyManager(), "test-tunnel-usage", nil, nil)
+		device, err := tunnel.Tunnel("127.0.0.1", &url.URL{Scheme: "tcp", Host: fmt.Sprintf("127.0.0.1:%d", backendPort)}, "test.com", &connectResp, privateKey, proxy.NewProxyManager(), "test-tunnel-usage", nil, nil)
 		Expect(err).ToNot(HaveOccurred())
 		defer device.Device.Close()
 
@@ -398,7 +398,7 @@ var _ = Describe("ServerTunnel integration (Ginkgo) - separate file", func() {
 		tunnelSrv.ConnectHandler(w, r)
 		connectResp := decodeResponse(w.Body)
 
-		device, err := tunnel.Tunnel("127.0.0.1", &url.URL{Scheme: "http", Host: fmt.Sprintf("127.0.0.1:%d", backendPort)}, &connectResp, privateKey, proxy.NewProxyManager(), "dns-test-tunnel", nil, nil)
+		device, err := tunnel.Tunnel("127.0.0.1", &url.URL{Scheme: "http", Host: fmt.Sprintf("127.0.0.1:%d", backendPort)}, "dns.test.com", &connectResp, privateKey, proxy.NewProxyManager(), "dns-test-tunnel", nil, nil)
 		Expect(err).ToNot(HaveOccurred())
 		defer device.Device.Close()
 
@@ -419,7 +419,7 @@ var _ = Describe("ServerTunnel integration (Ginkgo) - separate file", func() {
 		tunnelSrv.ConnectHandler(w, r)
 		connectResp := decodeResponse(w.Body)
 
-		device, err := tunnel.Tunnel("localhost", &url.URL{Scheme: "http", Host: fmt.Sprintf("127.0.0.1:%d", backendPort)}, &connectResp, privateKey, proxy.NewProxyManager(), "test-tunnel-domain", nil, nil)
+		device, err := tunnel.Tunnel("localhost", &url.URL{Scheme: "http", Host: fmt.Sprintf("127.0.0.1:%d", backendPort)}, "domain.test.com", &connectResp, privateKey, proxy.NewProxyManager(), "test-tunnel-domain", nil, nil)
 		Expect(err).ToNot(HaveOccurred())
 		device.Device.Close()
 	})

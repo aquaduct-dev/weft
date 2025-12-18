@@ -1,5 +1,5 @@
-load("@rules_shell//shell:sh_test.bzl", "sh_test")
 load("@rules_shell//shell:sh_library.bzl", "sh_library")
+load("@rules_shell//shell:sh_test.bzl", "sh_test")
 
 sh_library(
     name = "lib",
@@ -12,19 +12,19 @@ sh_library(
 sh_test(
     name = "test_tcp_tunnel",
     srcs = ["test_tcp_tunnel.sh"],
-    deps = [":lib"],
     env = {
         "PROTO": "tcp",
     },
+    deps = [":lib"],
 )
 
 sh_test(
     name = "test_http_tunnel",
     srcs = ["test_tcp_tunnel.sh"],
-    deps = [":lib"],
     env = {
         "PROTO": "http",
     },
+    deps = [":lib"],
 )
 
 sh_test(
@@ -33,10 +33,10 @@ sh_test(
     data = [
         "test_tcp_tunnel.sh",
     ],
-    deps = [":lib"],
     env = {
         "PROTO": "https",
     },
+    deps = [":lib"],
 )
 
 sh_test(
@@ -78,28 +78,28 @@ sh_test(
 sh_test(
     name = "test_tcp_proxy",
     srcs = ["test_tcp_proxy.sh"],
-    deps = [":lib"],
     env = {
         "PROTO": "tcp",
     },
+    deps = [":lib"],
 )
 
 sh_test(
     name = "test_http_proxy",
     srcs = ["test_tcp_proxy.sh"],
-    deps = [":lib"],
     env = {
         "PROTO": "http",
     },
+    deps = [":lib"],
 )
 
 sh_test(
     name = "test_udp_proxy",
     srcs = ["test_udp_proxy.sh"],
-    deps = [":lib"],
     env = {
         "PROTO": "udp",
     },
+    deps = [":lib"],
 )
 
 sh_test(

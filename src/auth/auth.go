@@ -38,6 +38,8 @@ func getCertificates(serverAddr string) ([]*x509.Certificate, error) {
 	return conn.ConnectionState().PeerCertificates, nil
 }
 
+// GetToken executes the challenge-response login flow with the specified Weft server
+// and returns a signed JWT if successful.
 func GetToken(serverAddr, connectionSecret, proxyName string) (string, error) {
 	client := http.Client{
 		Transport: &http.Transport{
@@ -144,7 +146,8 @@ func jwtExpiry(jwtString string) (time.Time, error) {
 	return jwtExpiry, nil
 }
 
-// Login performs the zero-trust authentication flow with the server and returns a JWT.
+// Login performs the full zero-trust authentication flow with the server, including
+// certificate discovery, and returns an http.Client configured with a JWT-refreshing transport.
 func Login(serverAddr, connectionSecret, proxyName string) (*http.Client, error) {
 	token, err := GetToken(serverAddr, connectionSecret, proxyName)
 	if err != nil {
@@ -181,6 +184,7 @@ type withJwt struct {
 	rt http.RoundTripper
 }
 
+// WithJWT wraps an existing http.RoundTripper with JWT authentication and automatic token renewal.
 func WithJWT(rt http.RoundTripper, jwt string, jwtRenewalFunction func() (string, error)) withJwt {
 	if rt == nil {
 		panic("Need an http.RoundTripper!")
@@ -224,6 +228,7 @@ func (h *withJwt) RoundTrip(req *http.Request) (*http.Response, error) {
 func encodeBase64(b []byte) string {
 	return base64.StdEncoding.EncodeToString(b)
 }
+// Encrypt encrypts plaintext using an AES-GCM key derived from the provided secret.
 func Encrypt(key, text string) ([]byte, error) {
 	hasher := sha256.New()
 	hasher.Write([]byte(key))
@@ -248,6 +253,7 @@ func Encrypt(key, text string) ([]byte, error) {
 	return ciphertext, nil
 }
 
+// Decrypt decrypts ciphertext using an AES-GCM key derived from the provided secret.
 func Decrypt(key string, ciphertext []byte) ([]byte, error) {
 	hasher := sha256.New()
 	hasher.Write([]byte(key))

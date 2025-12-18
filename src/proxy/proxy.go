@@ -7,23 +7,28 @@ import (
 	"fmt"
 	"net"
 	"net/url"
-	"strconv"
 	"strings"
 	"time"
 
+	"github.com/aquaduct-dev/weft/src/internal/util"
 	"github.com/aquaduct-dev/weft/src/proxy/vhost"
 	"github.com/aquaduct-dev/weft/wireguard"
 	"github.com/rs/zerolog/log"
 )
 
+// ProxyManager orchestrates the lifecycle of all active proxies (TCP, UDP, and VHost).
 type ProxyManager struct {
+	// proxies maps tunnel names to their active Proxy implementation.
 	proxies map[string]Proxy
 	// bindIP constrains proxy listeners to a specific IP when set.
 	bindIP            string
+	// VHostProxyManager manages shared HTTP/HTTPS listeners for virtual hosting.
 	VHostProxyManager *vhost.VHostProxyManager
+	// Cleanup is a callback invoked when a proxy is closed.
 	Cleanup           func(tunnelName string)
 }
 
+// NewProxyManager initializes a new ProxyManager with an empty proxy map.
 func NewProxyManager() *ProxyManager {
 	return &ProxyManager{
 		proxies:           make(map[string]Proxy),
@@ -228,26 +233,6 @@ func (p *ProxyManager) Close(proxyName string) {
 	}
 }
 
-func ensurePort(u *url.URL) error {
-	if u.Port() == "" {
-		switch u.Scheme {
-		case "http":
-			u.Host += ":80"
-		case "https":
-			u.Host += ":443"
-		default:
-			return fmt.Errorf("unsupported scheme for missing port: %s", u.String())
-		}
-	}
-	return nil
-}
-func rewriteHost(u *url.URL, host string) {
-	if host == "0.0.0.0" || host == "" {
-		return
-	}
-	u.Host = host + ":" + u.Port()
-}
-
 func parseMatchers(u *url.URL) map[string]string {
 	matchers := make(map[string]string)
 	for k, v := range u.Query() {
@@ -285,14 +270,6 @@ func parseModifiers(u *url.URL) map[string]string {
 	return modifiers
 }
 
-func parsePort(host string, defaultPort int) (int, error) {
-	split := strings.Split(host, ":")
-	if len(split) > 1 {
-		return strconv.Atoi(split[1])
-	}
-	return defaultPort, nil
-}
-
 func generateInstanceId() string {
 	b := make([]byte, 16)
 	_, err := rand.Read(b)
@@ -303,14 +280,16 @@ func generateInstanceId() string {
 	return hex.EncodeToString(b)
 }
 
+// StartProxy initializes and starts a new proxy based on the protocol schemes in srcURL and dstURL.
+// It returns the newly created Proxy instance or an error if initialization fails.
 func (p *ProxyManager) StartProxy(srcURL *url.URL, dstURL *url.URL, proxyName string, device *wireguard.UserspaceDevice, certPEM, keyPEM []byte, bindIp string) (Proxy, error) {
 	log.Debug().Str("src", srcURL.String()).Str("src_fragment", srcURL.Fragment).Str("dst", dstURL.String()).Str("dst_fragment", dstURL.Fragment).Str("proxy", proxyName).Msg("Proxy: starting proxy")
 	var err error
 	// Ensure ports are set in the URLs.
-	if err = ensurePort(srcURL); err != nil {
+	if err = util.EnsurePort(srcURL); err != nil {
 		return nil, err
 	}
-	if err = ensurePort(dstURL); err != nil {
+	if err = util.EnsurePort(dstURL); err != nil {
 		return nil, err
 	}
 
@@ -323,7 +302,7 @@ func (p *ProxyManager) StartProxy(srcURL *url.URL, dstURL *url.URL, proxyName st
 
 	switch proxyType {
 	case "tcp>tcp", "https>https", "http>tcp":
-		rewriteHost(dstURL, bindIp)
+		util.RewriteHost(dstURL, bindIp)
 		addr, err := net.ResolveTCPAddr("tcp", dstURL.Host)
 		if err != nil {
 			return nil, err
@@ -341,7 +320,7 @@ func (p *ProxyManager) StartProxy(srcURL *url.URL, dstURL *url.URL, proxyName st
 		p.proxies[proxyName] = newProxy
 		return newProxy, nil
 	case "udp>udp":
-		rewriteHost(dstURL, bindIp)
+		util.RewriteHost(dstURL, bindIp)
 		addr, err := net.ResolveUDPAddr("udp", dstURL.Host)
 		if err != nil {
 			return nil, err
@@ -359,7 +338,7 @@ func (p *ProxyManager) StartProxy(srcURL *url.URL, dstURL *url.URL, proxyName st
 		p.proxies[proxyName] = newProxy
 		return newProxy, nil
 	case "tcp>http", "http>http":
-		dstPort, err := parsePort(dstURL.Host, 80)
+		dstPort, err := util.ParsePort(dstURL.Host, 80)
 		if err != nil {
 			return nil, err
 		}
@@ -388,7 +367,14 @@ func (p *ProxyManager) StartProxy(srcURL *url.URL, dstURL *url.URL, proxyName st
 
 		vhostProxy := p.VHostProxyManager.Proxy(bindIp, dstPort)
 		// forward the provided wireguard device so upstream dialing can use its NetStack for WG IPs.
-		closer, handler, err := vhostProxy.AddHost(strings.Split(dstURL.Host, ":")[0], dstURL.Path, matchers, modifiers, srcURL, device)
+		closer, handler, err := vhostProxy.AddHost(vhost.RouteConfig{
+			Host:       strings.Split(dstURL.Host, ":")[0],
+			PathPrefix: dstURL.Path,
+			Matchers:   matchers,
+			Modifiers:  modifiers,
+			Target:     srcURL,
+			Device:     device,
+		})
 		if err != nil {
 			return nil, err
 		}
@@ -397,7 +383,7 @@ func (p *ProxyManager) StartProxy(srcURL *url.URL, dstURL *url.URL, proxyName st
 		p.proxies[proxyName] = newProxy
 		return newProxy, nil
 	case "tcp>https", "http>https":
-		port, err := parsePort(dstURL.Host, 443)
+		port, err := util.ParsePort(dstURL.Host, 443)
 		if err != nil {
 			return nil, err
 		}
@@ -426,10 +412,21 @@ func (p *ProxyManager) StartProxy(srcURL *url.URL, dstURL *url.URL, proxyName st
 		}
 
 		vhostProxy := p.VHostProxyManager.Proxy(bindIp, port)
+		cfg := vhost.RouteConfig{
+			Host:       host,
+			PathPrefix: dstURL.Path,
+			Matchers:   matchers,
+			Modifiers:  modifiers,
+			Target:     srcURL,
+			Device:     device,
+			BindIP:     bindIp,
+			ProxyName:  proxyName,
+		}
+
 		// If certPEM/keyPEM not provided, configure automatic issuance via ACME HTTP-01.
 		if len(certPEM) == 0 || len(keyPEM) == 0 {
 			log.Debug().Str("proxy", proxyName).Msg("Proxy: calling AddHostWithACME")
-			closer, handler, err := vhostProxy.AddHostWithACME(host, dstURL.Path, matchers, modifiers, srcURL, device, bindIp, proxyName)
+			closer, handler, err := vhostProxy.AddHostWithACME(cfg)
 			if err != nil {
 				return nil, err
 			}
@@ -439,7 +436,9 @@ func (p *ProxyManager) StartProxy(srcURL *url.URL, dstURL *url.URL, proxyName st
 			return newProxy, nil
 		} else {
 			log.Debug().Str("proxy", proxyName).Msg("Proxy: calling AddHostWithTLS")
-			closer, handler, err := vhostProxy.AddHostWithTLS(host, dstURL.Path, matchers, modifiers, srcURL, device, string(certPEM), string(keyPEM))
+			cfg.CertPEM = string(certPEM)
+			cfg.KeyPEM = string(keyPEM)
+			closer, handler, err := vhostProxy.AddHostWithTLS(cfg)
 			if err != nil {
 				return nil, err
 			}

@@ -8,6 +8,7 @@ import (
 	"net"
 	"net/http"
 	"net/http/httputil"
+	"net/netip"
 	"net/url"
 	"os"
 	"path/filepath"
@@ -28,39 +29,113 @@ import (
 	"golang.org/x/crypto/acme/autocert"
 )
 
+// Matcher defines an interface for request matching logic.
+type Matcher interface {
+	Matches(r *http.Request) bool
+}
+
+// Modifier defines an interface for request/response modification logic.
+// If Apply returns true, the request is considered handled and further processing stops.
+type Modifier interface {
+	Apply(w http.ResponseWriter, r *http.Request) bool
+}
+
+// PathMatcher matches requests based on a path prefix.
+type PathMatcher struct {
+	Prefix string
+}
+
+func (m *PathMatcher) Matches(r *http.Request) bool {
+	return m.Prefix == "" || strings.HasPrefix(r.URL.Path, m.Prefix)
+}
+
+// HeaderMatcher matches requests based on a header value regex.
+type HeaderMatcher struct {
+	Name  string
+	Regex *regexp.Regexp
+}
+
+func (m *HeaderMatcher) Matches(r *http.Request) bool {
+	return m.Regex.MatchString(r.Header.Get(m.Name))
+}
+
+// QueryMatcher matches requests based on a query parameter regex.
+type QueryMatcher struct {
+	Key   string
+	Regex *regexp.Regexp
+}
+
+func (m *QueryMatcher) Matches(r *http.Request) bool {
+	return m.Regex.MatchString(r.URL.Query().Get(m.Key))
+}
+
+// MethodMatcher matches requests based on the HTTP method.
+type MethodMatcher struct {
+	Method string
+}
+
+func (m *MethodMatcher) Matches(r *http.Request) bool {
+	return r.Method == m.Method
+}
+
+// HeaderModifier modifies request headers.
+type HeaderModifier struct {
+	Name  string
+	Value string
+}
+
+func (m *HeaderModifier) Apply(w http.ResponseWriter, r *http.Request) bool {
+	if m.Value == "!del" {
+		r.Header.Del(m.Name)
+	} else if strings.HasPrefix(m.Value, "+") {
+		if r.Header.Get(m.Name) == "" {
+			r.Header.Set(m.Name, strings.TrimPrefix(m.Value, "+"))
+		}
+	} else {
+		r.Header.Set(m.Name, m.Value)
+	}
+	return false
+}
+
+// RedirectModifier performs an HTTP redirect.
+type RedirectModifier struct {
+	Target *url.URL
+}
+
+func (m *RedirectModifier) Apply(w http.ResponseWriter, r *http.Request) bool {
+	target := *m.Target
+	target.Fragment = ""
+	http.Redirect(w, r, target.String(), http.StatusFound)
+	return true
+}
+
+// PathPrefixModifier strips a path prefix from the request.
+type PathPrefixModifier struct {
+	Prefix string
+}
+
+func (m *PathPrefixModifier) Apply(w http.ResponseWriter, r *http.Request) bool {
+	if m.Prefix != "" {
+		r.URL.Path = strings.TrimPrefix(r.URL.Path, m.Prefix)
+		if !strings.HasPrefix(r.URL.Path, "/") {
+			r.URL.Path = "/" + r.URL.Path
+		}
+	}
+	return false
+}
+
 // Route represents a single VHost route with optional matchers and modifiers.
 type Route struct {
-	Handler    *meter.MeteredHTTPHandler
-	Matchers   map[string]string
-	Modifiers  map[string]string
-	Target     *url.URL
-	PathPrefix string
+	Handler   *meter.MeteredHTTPHandler
+	Matchers  []Matcher
+	Modifiers []Modifier
 }
 
 // Matches returns true if the request matches this route's criteria.
 func (route *Route) Matches(r *http.Request) bool {
-	if route.PathPrefix != "" && !strings.HasPrefix(r.URL.Path, route.PathPrefix) {
-		return false
-	}
-	for k, v := range route.Matchers {
-		if strings.HasPrefix(k, "header:") {
-			headerName := strings.TrimPrefix(k, "header:")
-			val := r.Header.Get(headerName)
-			matched, _ := regexp.MatchString("^"+v+"$", val)
-			if !matched {
-				return false
-			}
-		} else if strings.HasPrefix(k, "query:") {
-			queryParam := strings.TrimPrefix(k, "query:")
-			val := r.URL.Query().Get(queryParam)
-			matched, _ := regexp.MatchString("^"+v+"$", val)
-			if !matched {
-				return false
-			}
-		} else if k == "method" {
-			if r.Method != v {
-				return false
-			}
+	for _, m := range route.Matchers {
+		if !m.Matches(r) {
+			return false
 		}
 	}
 	return true
@@ -69,30 +144,28 @@ func (route *Route) Matches(r *http.Request) bool {
 // Apply applies redirects and header modifications to the request.
 // It returns true if a redirect was performed and no further handling is needed.
 func (route *Route) Apply(w http.ResponseWriter, r *http.Request) bool {
-	// Handle redirects
-	if route.Modifiers["redirect"] == "true" {
-		target := *route.Target
-		target.Fragment = ""
-		http.Redirect(w, r, target.String(), http.StatusFound)
-		return true
-	}
-
-	// Apply header modifications
-	for k, v := range route.Modifiers {
-		if k == "redirect" {
-			continue
-		}
-		if v == "!del" {
-			r.Header.Del(k)
-		} else if strings.HasPrefix(v, "+") {
-			if r.Header.Get(k) == "" {
-				r.Header.Set(k, strings.TrimPrefix(v, "+"))
-			}
-		} else {
-			r.Header.Set(k, v)
+	for _, m := range route.Modifiers {
+		if m.Apply(w, r) {
+			return true
 		}
 	}
 	return false
+}
+
+// RouteConfig groups parameters for adding a host to a VHostProxy.
+type RouteConfig struct {
+	Host       string
+	PathPrefix string
+	Matchers   map[string]string
+	Modifiers  map[string]string
+	Target     *url.URL
+	Device     *wireguard.UserspaceDevice
+
+	// Optional TLS/ACME config
+	CertPEM   string
+	KeyPEM    string
+	BindIP    string
+	ProxyName string
 }
 
 // VHostProxy manages name-based vhosts and optional TLS-termination handlers.
@@ -313,74 +386,97 @@ func (w *WGAwareRoundTripper) RoundTrip(req *http.Request) (*http.Response, erro
 	return tr.RoundTrip(req)
 }
 
-func (p *VHostProxy) newMeteredReverseProxy(target *url.URL, pathPrefix string, modifiers map[string]string, device *wireguard.UserspaceDevice) (*meter.MeteredHTTPHandler, *Route) {
-	proxy := httputil.NewSingleHostReverseProxy(target)
+func (p *VHostProxy) parseRoute(cfg RouteConfig) *Route {
+	route := &Route{}
+
+	// Matchers
+	if cfg.PathPrefix != "" {
+		route.Matchers = append(route.Matchers, &PathMatcher{Prefix: cfg.PathPrefix})
+	}
+	for k, v := range cfg.Matchers {
+		if strings.HasPrefix(k, "header:") {
+			route.Matchers = append(route.Matchers, &HeaderMatcher{
+				Name:  strings.TrimPrefix(k, "header:"),
+				Regex: regexp.MustCompile("^" + v + "$"),
+			})
+		} else if strings.HasPrefix(k, "query:") {
+			route.Matchers = append(route.Matchers, &QueryMatcher{
+				Key:   strings.TrimPrefix(k, "query:"),
+				Regex: regexp.MustCompile("^" + v + "$"),
+			})
+		} else if k == "method" {
+			route.Matchers = append(route.Matchers, &MethodMatcher{Method: v})
+		}
+	}
+
+	// Modifiers
+	if cfg.Modifiers["redirect"] == "true" {
+		route.Modifiers = append(route.Modifiers, &RedirectModifier{Target: cfg.Target})
+	}
+
+	// Add PathPrefixModifier if needed
+	if cfg.PathPrefix != "" {
+		route.Modifiers = append(route.Modifiers, &PathPrefixModifier{Prefix: cfg.PathPrefix})
+	}
+
+	for k, v := range cfg.Modifiers {
+		if k == "redirect" {
+			continue
+		}
+		route.Modifiers = append(route.Modifiers, &HeaderModifier{Name: k, Value: v})
+	}
+
+	return route
+}
+
+func (p *VHostProxy) newMeteredReverseProxy(cfg RouteConfig) (*meter.MeteredHTTPHandler, *Route) {
+	route := p.parseRoute(cfg)
+
+	proxy := httputil.NewSingleHostReverseProxy(cfg.Target)
 	originalDirector := proxy.Director
 	proxy.Director = func(req *http.Request) {
-		if pathPrefix != "" {
-			req.URL.Path = strings.TrimPrefix(req.URL.Path, pathPrefix)
-			if !strings.HasPrefix(req.URL.Path, "/") {
-				req.URL.Path = "/" + req.URL.Path
-			}
-		}
-		// Apply header modifications in Director
-		for k, v := range modifiers {
-			if k == "redirect" {
-				continue
-			}
-			if v == "!del" {
-				req.Header.Del(k)
-			} else if strings.HasPrefix(v, "+") {
-				if req.Header.Get(k) == "" {
-					req.Header.Set(k, strings.TrimPrefix(v, "+"))
-				}
-			} else {
-				req.Header.Set(k, v)
-			}
-		}
 		originalDirector(req)
+		// Apply non-terminal modifiers after originalDirector to ensure they take precedence.
+		for _, mod := range route.Modifiers {
+			if _, ok := mod.(*RedirectModifier); !ok {
+				mod.Apply(nil, req)
+			}
+		}
 	}
-	proxy.Transport = &WGAwareRoundTripper{device: device, target: target}
+	proxy.Transport = &WGAwareRoundTripper{device: cfg.Device, target: cfg.Target}
 	meteredProxy := meter.MakeMeteredHTTPHandler(proxy)
+	route.Handler = meteredProxy
 
-	route := &Route{
-		Handler:    meteredProxy,
-		Target:     target,
-		PathPrefix: pathPrefix,
-		Modifiers:  modifiers,
-	}
 	return meteredProxy, route
 }
 
 // AddHost registers an HTTP reverse proxy for the given host.
-func (p *VHostProxy) AddHost(host string, pathPrefix string, matchers map[string]string, modifiers map[string]string, target *url.URL, device *wireguard.UserspaceDevice) (VHostCloser, *meter.MeteredHTTPHandler, error) {
+func (p *VHostProxy) AddHost(cfg RouteConfig) (VHostCloser, *meter.MeteredHTTPHandler, error) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 
-	meteredProxy, route := p.newMeteredReverseProxy(target, pathPrefix, modifiers, device)
-	route.Matchers = matchers
+	meteredProxy, route := p.newMeteredReverseProxy(cfg)
 
-	p.routes[host] = append(p.routes[host], route)
-	p.device = device
+	p.routes[cfg.Host] = append(p.routes[cfg.Host], route)
+	p.device = cfg.Device
 
 	if err := p.Start(); err != nil {
 		return VHostCloser{}, meteredProxy, err
 	}
-	log.Info().Str("host", host).Int("port", p.port).Str("target", target.String()).Msg("HTTP proxy configured")
-	return VHostCloser{VHostProxy: p, Host: host, Tls: false, Route: route}, meteredProxy, nil
+	log.Info().Str("host", cfg.Host).Int("port", p.port).Str("target", cfg.Target.String()).Msg("HTTP proxy configured")
+	return VHostCloser{VHostProxy: p, Host: cfg.Host, Tls: false, Route: route}, meteredProxy, nil
 }
 
 // AddHostWithTLS registers a host reverse proxy and an HTTPS handler that
 // terminates TLS using the provided certificate and key PEM strings.
-func (p *VHostProxy) AddHostWithTLS(host string, pathPrefix string, matchers map[string]string, modifiers map[string]string, target *url.URL, device *wireguard.UserspaceDevice, certPEM, keyPEM string) (VHostCloser, *meter.MeteredHTTPHandler, error) {
+func (p *VHostProxy) AddHostWithTLS(cfg RouteConfig) (VHostCloser, *meter.MeteredHTTPHandler, error) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 
-	meteredProxy, route := p.newMeteredReverseProxy(target, pathPrefix, modifiers, device)
-	route.Matchers = matchers
+	meteredProxy, route := p.newMeteredReverseProxy(cfg)
 
 	// Create a tls.Config from the PEMs.
-	cert, err := tls.X509KeyPair([]byte(certPEM), []byte(keyPEM))
+	cert, err := tls.X509KeyPair([]byte(cfg.CertPEM), []byte(cfg.KeyPEM))
 	if err != nil {
 		return VHostCloser{}, meteredProxy, err
 	}
@@ -389,8 +485,7 @@ func (p *VHostProxy) AddHostWithTLS(host string, pathPrefix string, matchers map
 	}
 
 	// Store the HTTPS handler (mux) and its TLS config so the Server can mount it on a listener.
-	// We store the mux in tlsHandlers and the tls.Config in a parallel map.
-	p.tlsRoutes[host] = append(p.tlsRoutes[host], route)
+	p.tlsRoutes[cfg.Host] = append(p.tlsRoutes[cfg.Host], route)
 
 	// lazily create tlsConfigs map if needed
 	if p.tlsConfigs == nil {
@@ -398,50 +493,46 @@ func (p *VHostProxy) AddHostWithTLS(host string, pathPrefix string, matchers map
 	}
 
 	// Register TLS config for the provided host key.
-	p.tlsConfigs[host] = tlsConfig
+	p.tlsConfigs[cfg.Host] = tlsConfig
 
-	p.device = device
+	p.device = cfg.Device
 
 	if err = p.Start(); err != nil {
 		return VHostCloser{}, meteredProxy, err
 	}
-	log.Info().Str("host", host).Int("port", p.port).Str("target", target.String()).Msg("HTTPS proxy configured")
-	return VHostCloser{VHostProxy: p, Host: host, Tls: true, Route: route}, meteredProxy, nil
+	log.Info().Str("host", cfg.Host).Int("port", p.port).Str("target", cfg.Target.String()).Msg("HTTPS proxy configured")
+	return VHostCloser{VHostProxy: p, Host: cfg.Host, Tls: true, Route: route}, meteredProxy, nil
 }
 
 // AddHostWithACME registers an HTTP reverse proxy and enables ACME for the given host.
-func (p *VHostProxy) AddHostWithACME(host string, pathPrefix string, matchers map[string]string, modifiers map[string]string, target *url.URL, device *wireguard.UserspaceDevice, bindIp, proxyName string) (VHostCloser, *meter.MeteredHTTPHandler, error) {
+func (p *VHostProxy) AddHostWithACME(cfg RouteConfig) (VHostCloser, *meter.MeteredHTTPHandler, error) {
 
 	// Before enabling ACME for the host, verify the server appears reachable from the public internet
 	// for HTTP-01 challenges. This reduces time wasted attempting issuance for hosts that won't complete.
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	if !p.CanPassACMEChallenge(ctx, host) {
-		// If the host cannot be web-hosted, remove the proxy entry we just added to keep state consistent.
-		delete(p.routes, host)
-		log.Warn().Str("host", host).Msg("VHost: host not reachable for ACME HTTP-01 challenge; aborting ACME setup")
-		return VHostCloser{}, &meter.MeteredHTTPHandler{}, fmt.Errorf("host %s not reachable for ACME HTTP-01 challenge", host)
+	if !p.CanPassACMEChallenge(ctx, cfg.Host) {
+		log.Warn().Str("host", cfg.Host).Msg("VHost: host not reachable for ACME HTTP-01 challenge; aborting ACME setup")
+		return VHostCloser{}, &meter.MeteredHTTPHandler{}, fmt.Errorf("host %s not reachable for ACME HTTP-01 challenge", cfg.Host)
 	}
 
-	closer, err := p.manager.AddACMEHost(host, bindIp)
+	closer, err := p.manager.AddACMEHost(cfg.Host, cfg.BindIP)
 	if err != nil {
 		return VHostCloser{}, &meter.MeteredHTTPHandler{}, err
 	}
 	defer closer.Close()
 
-	meteredProxy, route := p.newMeteredReverseProxy(target, pathPrefix, modifiers, device)
-	route.Matchers = matchers
+	meteredProxy, route := p.newMeteredReverseProxy(cfg)
 
 	// Log that ACME registration has been requested for this host.
-	log.Debug().Str("host", host).Msg("ACME: host registered with manager for issuance")
+	log.Debug().Str("host", cfg.Host).Msg("ACME: host registered with manager for issuance")
 
-	// Wait for certificate to be available before advertising/serving HTTPS on this port.
-	// We do the wait asynchronously to avoid blocking callers, but only start the TLS
-	// listener once the certificate is present. Serve() will check hasTLS() and mount TLS.
-	// Small backoff and then wait up to 2 minutes for ACME issuance.
 	if p.manager.acmeManager != nil {
-		proxy := p.manager.Proxy(bindIp, 80)
-		closer, acmeHandler, err := proxy.AddHost("acme-"+host, "", nil, nil, &url.URL{Scheme: "http", Host: host + ":80"}, nil)
+		proxy := p.manager.Proxy(cfg.BindIP, 80)
+		closer, acmeHandler, err := proxy.AddHost(RouteConfig{
+			Host:   "acme-" + cfg.Host,
+			Target: &url.URL{Scheme: "http", Host: cfg.Host + ":80"},
+		})
 		if err != nil {
 			log.Warn().AnErr("AddHostWithACME: AddHost error", err)
 			return VHostCloser{}, acmeHandler, err
@@ -456,10 +547,10 @@ func (p *VHostProxy) AddHostWithACME(host string, pathPrefix string, matchers ma
 		go func() {
 			defer closer.Close()
 			helper := acme.NewACMEHelper(p.manager.acmeManager)
-			cert, err := helper.WaitForCertificate(context.Background(), host)
+			cert, err := helper.WaitForCertificate(context.Background(), cfg.Host)
 			if err != nil {
-				log.Error().Err(err).Str("host", host).Msg("VHost: failed to obtain ACME certificate in time")
-				p.manager.Cleanup(proxyName)
+				log.Error().Err(err).Str("host", cfg.Host).Msg("VHost: failed to obtain ACME certificate in time")
+				p.manager.Cleanup(cfg.ProxyName)
 				return
 			}
 			p.mu.Lock()
@@ -470,27 +561,27 @@ func (p *VHostProxy) AddHostWithACME(host string, pathPrefix string, matchers ma
 			if cert != nil {
 				tcfg.Certificates = []tls.Certificate{*cert}
 			}
-			p.tlsConfigs[host] = tcfg
-			
-			p.tlsRoutes[host] = append(p.tlsRoutes[host], route)
-			
+			p.tlsConfigs[cfg.Host] = tcfg
+
+			p.tlsRoutes[cfg.Host] = append(p.tlsRoutes[cfg.Host], route)
+
 			p.mu.Unlock()
-			p.device = device
-			log.Debug().Str("host", host).Msg("VHost: ACME certificate ready; starting TLS listener")
+			p.device = cfg.Device
+			log.Debug().Str("host", cfg.Host).Msg("VHost: ACME certificate ready; starting TLS listener")
 			if err := p.Start(); err != nil {
-				log.Warn().Str("host", host).Msg("Could not start TLS proxy!")
-				p.manager.Cleanup(proxyName)
+				log.Warn().Str("host", cfg.Host).Msg("Could not start TLS proxy!")
+				p.manager.Cleanup(cfg.ProxyName)
 				return
 			}
 		}()
 	} else {
 		// Fallback: start Serve() so HTTP challenge endpoint is available.
-		log.Warn().Str("host", host).Msg("ACME: acmeManager not configured; not possible to obtain certificate")
-		VHostCloser{VHostProxy: p, Host: host, Tls: true, Route: route}.Close()
+		log.Warn().Str("host", cfg.Host).Msg("ACME: acmeManager not configured; not possible to obtain certificate")
+		VHostCloser{VHostProxy: p, Host: cfg.Host, Tls: true, Route: route}.Close()
 	}
 
-	log.Info().Str("host", host).Int("port", p.port).Str("target", target.String()).Msg("ACME-based HTTPS proxy configured")
-	return VHostCloser{VHostProxy: p, Host: host, Tls: true, Route: route}, meteredProxy, nil
+	log.Info().Str("host", cfg.Host).Int("port", p.port).Str("target", cfg.Target.String()).Msg("ACME-based HTTPS proxy configured")
+	return VHostCloser{VHostProxy: p, Host: cfg.Host, Tls: true, Route: route}, meteredProxy, nil
 }
 
 func (p *VHostProxy) ServeHTTP(w *meter.MeteredResponseWriter, r *meter.MeteredRequest) {
@@ -642,10 +733,6 @@ func (p *VHostProxy) GetTLSConfig(host string) *tls.Config {
 // can complete an ACME HTTP-01 challenge for the given host. It attempts to
 // resolve the host and then perform a minimal HTTP GET to the ACME challenge
 // path served by the autocert.Manager on the manager's configured ACME port.
-// This method is conservative: it requires a non-loopback, public IPv4 address
-// on the local machine and that an HTTP request to http://<host>/.well-known/acme-challenge/
-// returns a successful status (2xx or 3xx). Detailed logs are emitted to help
-// debug challenge reachability and routing.
 func (p *VHostProxy) CanPassACMEChallenge(ctx context.Context, host string) bool {
 	// Basic validation
 	if host == "" {
@@ -661,7 +748,6 @@ func (p *VHostProxy) CanPassACMEChallenge(ctx context.Context, host string) bool
 	}
 
 	// Determine our public IPv4 address by querying an external service (api.ipify.org).
-	// This avoids relying on local interface heuristics which may be incorrect for NATted hosts.
 	publicIP := p.bindIp
 	if publicIP == "" {
 		client := &http.Client{}
@@ -687,8 +773,8 @@ func (p *VHostProxy) CanPassACMEChallenge(ctx context.Context, host string) bool
 			return false
 		}
 		// Validate it's an IPv4 address
-		parsed := net.ParseIP(publicIP)
-		if parsed == nil || parsed.To4() == nil {
+		parsed, err := netip.ParseAddr(publicIP)
+		if err != nil || !parsed.Is4() {
 			log.Debug().Str("public_ip", publicIP).Msg("CanWebHost: api.ipify.org did not return a valid IPv4")
 			return false
 		}
@@ -696,22 +782,24 @@ func (p *VHostProxy) CanPassACMEChallenge(ctx context.Context, host string) bool
 	}
 
 	// Check that at least one resolved IP is a public IPv4 (not private, not loopback)
-	var targetIPv4 net.IP
+	var targetIPv4 netip.Addr
 	for _, ip := range ips {
-		if ip.To4() == nil {
+		addr, ok := netip.AddrFromSlice(ip)
+		if !ok || !addr.Is4() {
 			continue
 		}
-		if ip.IsLoopback() || ip.IsUnspecified() || ip.IsLinkLocalUnicast() || ip.IsLinkLocalMulticast() {
+		addr = addr.Unmap()
+		if addr.IsLoopback() || addr.IsUnspecified() || addr.IsLinkLocalUnicast() || addr.IsLinkLocalMulticast() {
 			continue
 		}
-		if ip.IsPrivate() {
+		if addr.IsPrivate() {
 			// if host resolves only to private addresses, it may not be reachable from the Internet
 			continue
 		}
-		targetIPv4 = ip
+		targetIPv4 = addr
 		break
 	}
-	if targetIPv4 == nil {
+	if !targetIPv4.IsValid() {
 		log.Debug().Str("host", host).Msg("CanWebHost: host does not resolve to a public IPv4 address")
 		// Continue, but fail — ACME HTTP-01 requires a publicly routable host.
 		return false
@@ -725,7 +813,10 @@ func (p *VHostProxy) CanPassACMEChallenge(ctx context.Context, host string) bool
 
 	proxy := p.manager.Proxy(targetIPv4.String(), 80)
 	// Pass nil device for the dummy ACME host (no WG device needed here).
-	closer, _, err := proxy.AddHost("probe-acme", "", nil, nil, &url.URL{Scheme: "http", Host: "localhost:80"}, nil)
+	closer, _, err := proxy.AddHost(RouteConfig{
+		Host:   "probe-acme",
+		Target: &url.URL{Scheme: "http", Host: "localhost:80"},
+	})
 	if err != nil {
 		log.Warn().AnErr("CanWebHost: AddHost error", err)
 		return false

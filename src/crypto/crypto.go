@@ -17,6 +17,7 @@ import (
 	"io"
 	"math/big"
 	"net"
+	"net/netip"
 	"time"
 )
 
@@ -76,6 +77,8 @@ func Decrypt(key string, ciphertext []byte) ([]byte, error) {
 	return plaintext, nil
 }
 
+// GenerateCert creates a new self-signed X.509 certificate and private key.
+// It includes the provided commonName and additional IPs in the SAN extension.
 func GenerateCert(commonName string, additionalIps []string) ([]byte, []byte, error) {
 	priv, err := rsa.GenerateKey(rand.Reader, 2048)
 	if err != nil {
@@ -87,9 +90,11 @@ func GenerateCert(commonName string, additionalIps []string) ([]byte, []byte, er
 	}
 	netIps := []net.IP{}
 	for _, ip := range additionalIps {
-		netIps = append(netIps, net.ParseIP(ip))
+		if addr, err := netip.ParseAddr(ip); err == nil {
+			netIps = append(netIps, net.IP(addr.AsSlice()))
+		}
 	}
-	netIps = append(netIps, net.IPv4zero, net.ParseIP("127.0.0.1"))
+	netIps = append(netIps, net.IPv4zero, net.IPv4(127, 0, 0, 1))
 	template := &x509.Certificate{
 		SerialNumber: serial,
 		Subject: pkix.Name{

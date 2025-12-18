@@ -4,8 +4,11 @@ This package provides a wrapper around the wireguard-go library.
 package wireguard
 
 import (
+	"encoding/hex"
 	"fmt"
 	"net/netip"
+	"strings"
+	"time"
 
 	"golang.zx2c4.com/wireguard/conn"
 	"golang.zx2c4.com/wireguard/device"
@@ -76,4 +79,51 @@ func GeneratePrivateKey() (wgtypes.Key, error) {
 		return wgtypes.Key{}, fmt.Errorf("failed to generate private key: %w", err)
 	}
 	return key, nil
+}
+
+// ConfigToString converts a wgtypes.Config struct into the WireGuard UAPI string format.
+func ConfigToString(cfg wgtypes.Config) (string, error) {
+	var b strings.Builder
+
+	if cfg.PrivateKey != nil {
+		b.WriteString(fmt.Sprintf("private_key=%s\n", hex.EncodeToString(cfg.PrivateKey[:])))
+	}
+
+	if cfg.ListenPort != nil {
+		b.WriteString(fmt.Sprintf("listen_port=%d\n", *cfg.ListenPort))
+	}
+
+	if cfg.ReplacePeers {
+		b.WriteString("replace_peers=true\n")
+	}
+
+	// Emit each peer using UAPI format (flat key-value pairs, no section headers)
+	for _, peer := range cfg.Peers {
+		if peer.PublicKey != (wgtypes.Key{}) {
+			b.WriteString(fmt.Sprintf("public_key=%s\n", hex.EncodeToString(peer.PublicKey[:])))
+		}
+
+		if len(peer.AllowedIPs) > 0 {
+			for _, ipNet := range peer.AllowedIPs {
+				b.WriteString(fmt.Sprintf("allowed_ip=%s\n", ipNet.String()))
+			}
+		}
+
+		// Endpoint if present
+		if peer.Endpoint != nil {
+			b.WriteString(fmt.Sprintf("endpoint=%s\n", peer.Endpoint.String()))
+		}
+
+		// Persistent keepalive (seconds)
+		if peer.PersistentKeepaliveInterval != nil && *peer.PersistentKeepaliveInterval != 0 {
+			secs := max(0, int(*peer.PersistentKeepaliveInterval/time.Second))
+			b.WriteString(fmt.Sprintf("persistent_keepalive_interval=%d\n", secs))
+		}
+	}
+
+	// Ensure trailing newline
+	if !strings.HasSuffix(b.String(), "\n") {
+		b.WriteString("\n")
+	}
+	return b.String(), nil
 }
