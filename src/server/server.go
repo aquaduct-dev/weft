@@ -292,7 +292,7 @@ func (s *Server) Serve(req *types.ConnectRequest) (*types.ConnectResponse, error
 
 	pubKey := s.Dataplane.GetPrivateKey().PublicKey()
 	return &types.ConnectResponse{
-		ServerPublicKey: hex.EncodeToString(pubKey[:]),
+		ServerPublicKey: pubKey.String(),
 		ClientAddress:   p.IP.String(),
 		ServerWGPort:    s.Dataplane.GetWgListenPort(),
 		TunnelProxyPort: tunnelProxyPort,
