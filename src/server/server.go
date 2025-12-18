@@ -504,16 +504,37 @@ func (s *Server) Serve(req *types.ConnectRequest) (*types.ConnectResponse, error
 		return nil, err
 	}
 	tunnelProxyPort := int(tunnelProxyPortBigInt.Uint64()) + 10000
-	tunnelSource := url.URL{
-		Host:   fmt.Sprintf("%s:%d", peerIP.String(), tunnelProxyPort),
-		Scheme: "tcp",
+	
+	var tunnelSource url.URL
+	if strings.Contains(req.RemoteModifiers, "redirect") {
+		u, err := url.Parse(req.ProxiedUpstream)
+		if err == nil {
+			tunnelSource = *u
+		} else {
+			tunnelSource = url.URL{
+				Host:   fmt.Sprintf("%s:%d", peerIP.String(), tunnelProxyPort),
+				Scheme: "http",
+			}
+		}
+	} else {
+		tunnelSource = url.URL{
+			Host:   fmt.Sprintf("%s:%d", peerIP.String(), tunnelProxyPort),
+			Scheme: "http",
+		}
 	}
+	tunnelSource.Fragment = req.RemoteModifiers
+
 	tunnelEnd := url.URL{
-		Host:   fmt.Sprintf("%s:%d", req.Hostname, req.RemotePort),
-		Scheme: "tcp",
+		Host:     fmt.Sprintf("%s:%d", req.Hostname, req.RemotePort),
+		Scheme:   "http",
+		Path:     req.RemotePath,
+		RawQuery: req.RemoteQuery,
+		Fragment: req.RemoteFragment,
 	}
 	switch req.Protocol {
 	case "tcp":
+		tunnelSource.Scheme = "tcp"
+		tunnelEnd.Scheme = "tcp"
 	case "udp":
 		tunnelSource.Scheme = "udp"
 		tunnelEnd.Scheme = "udp"

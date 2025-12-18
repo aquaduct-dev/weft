@@ -6,6 +6,15 @@ type ConnectRequest struct {
 	RemotePort      int    `json:"remote_port"`
 	Protocol        string `json:"protocol"`
 	Hostname        string `json:"hostname"`
+	// Path prefix to match on the remote side. If set, this prefix will be stripped
+	// from the incoming request path before being proxied.
+	RemotePath string `json:"remote_path,omitempty"`
+	// Query string to match on the remote side.
+	RemoteQuery string `json:"remote_query,omitempty"`
+	// Fragment to match on the remote side (used for headers/methods).
+	RemoteFragment string `json:"remote_fragment,omitempty"`
+	// Modifiers to apply to the request (from localURL fragment).
+	RemoteModifiers string `json:"remote_modifiers,omitempty"`
 	// Optional PEM-encoded certificate and private key. When provided,
 	// the server will terminate TLS for the given Hostname using this cert.
 	// Certificate should be a PEM-encoded certificate (may contain chain).

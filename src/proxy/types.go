@@ -178,6 +178,9 @@ type VHostRouteProxy struct {
 	Port       int
 	BindIp     string
 	IsHTTPS    bool
+	Rewrite    string
+	Matchers   map[string]string
+	Modifiers  map[string]string
 	instanceId string
 }
 
@@ -208,8 +211,33 @@ func (p *VHostRouteProxy) Conflicts(other Proxy) bool {
 		if p.BindIp == o.BindIp && p.Port == o.Port && p.IsHTTPS != o.IsHTTPS {
 			return true
 		}
-		// If BindIp, Port, Host, and IsHTTPS are all the same, it's a duplicate conflict.
-		return p.BindIp == o.BindIp && p.Port == o.Port && p.Host == o.Host && p.IsHTTPS == o.IsHTTPS
+		// If BindIp, Port, Host, IsHTTPS are same, then check Rewrite, Matchers and Modifiers
+		if p.BindIp == o.BindIp && p.Port == o.Port && p.Host == o.Host && p.IsHTTPS == o.IsHTTPS {
+			// Compare Rewrites
+			if p.Rewrite != o.Rewrite {
+				return false
+			}
+			// Compare Matchers
+			if len(p.Matchers) != len(o.Matchers) {
+				return false
+			}
+			for k, v := range p.Matchers {
+				if ov, ok := o.Matchers[k]; !ok || ov != v {
+					return false
+				}
+			}
+			// Compare Modifiers
+			if len(p.Modifiers) != len(o.Modifiers) {
+				return false
+			}
+			for k, v := range p.Modifiers {
+				if ov, ok := o.Modifiers[k]; !ok || ov != v {
+					return false
+				}
+			}
+			return true // Everything matches, so it is a conflict
+		}
+		return false
 	default:
 		return false
 	}

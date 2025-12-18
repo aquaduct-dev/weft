@@ -65,7 +65,7 @@ var _ = ginkgo.Describe("VHostProxy", func() {
 		certPEM, keyPEM, err := crypto.GenerateCert("secure.test", []string{})
 		gomega.Expect(err).ToNot(gomega.HaveOccurred())
 
-		closer, _, err := vp.AddHostWithTLS("secure.test", u, nil, string(certPEM), string(keyPEM))
+		closer, _, err := vp.AddHostWithTLS("secure.test", "", u, nil, string(certPEM), string(keyPEM))
 		gomega.Expect(err).ToNot(gomega.HaveOccurred())
 		defer closer.Close()
 
@@ -143,7 +143,7 @@ var _ = ginkgo.Describe("VHostProxy", func() {
 		defer up.Close()
 		u, err := url.Parse(up.URL)
 		gomega.Expect(err).ToNot(gomega.HaveOccurred())
-		proxy.AddHost("example.test", u, nil)
+		proxy.AddHost("example.test", "", u, nil)
 
 		go proxy.Start()
 

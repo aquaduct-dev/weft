@@ -3,7 +3,6 @@ package vhost
 import (
 	"context"
 	"crypto/tls"
-	"crypto/x509"
 	"fmt"
 	"io"
 	"net"
@@ -12,6 +11,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"sync"
 
@@ -28,20 +28,90 @@ import (
 	"golang.org/x/crypto/acme/autocert"
 )
 
+// Route represents a single VHost route with optional matchers and modifiers.
+type Route struct {
+	Handler    *meter.MeteredHTTPHandler
+	Matchers   map[string]string
+	Modifiers  map[string]string
+	Target     *url.URL
+	PathPrefix string
+}
+
+// Matches returns true if the request matches this route's criteria.
+func (route *Route) Matches(r *http.Request) bool {
+	if route.PathPrefix != "" && !strings.HasPrefix(r.URL.Path, route.PathPrefix) {
+		return false
+	}
+	for k, v := range route.Matchers {
+		if strings.HasPrefix(k, "header:") {
+			headerName := strings.TrimPrefix(k, "header:")
+			val := r.Header.Get(headerName)
+			matched, _ := regexp.MatchString("^"+v+"$", val)
+			if !matched {
+				return false
+			}
+		} else if strings.HasPrefix(k, "query:") {
+			queryParam := strings.TrimPrefix(k, "query:")
+			val := r.URL.Query().Get(queryParam)
+			matched, _ := regexp.MatchString("^"+v+"$", val)
+			if !matched {
+				return false
+			}
+		} else if k == "method" {
+			if r.Method != v {
+				return false
+			}
+		}
+	}
+	return true
+}
+
+// Apply applies redirects and header modifications to the request.
+// It returns true if a redirect was performed and no further handling is needed.
+func (route *Route) Apply(w http.ResponseWriter, r *http.Request) bool {
+	// Handle redirects
+	if route.Modifiers["redirect"] == "true" {
+		target := *route.Target
+		target.Fragment = ""
+		http.Redirect(w, r, target.String(), http.StatusFound)
+		return true
+	}
+
+	// Apply header modifications
+	for k, v := range route.Modifiers {
+		if k == "redirect" {
+			continue
+		}
+		if v == "!del" {
+			r.Header.Del(k)
+		} else if strings.HasPrefix(v, "+") {
+			if r.Header.Get(k) == "" {
+				r.Header.Set(k, strings.TrimPrefix(v, "+"))
+			}
+		} else {
+			r.Header.Set(k, v)
+		}
+	}
+	return false
+}
+
 // VHostProxy manages name-based vhosts and optional TLS-termination handlers.
 type VHostProxy struct {
 	mu sync.RWMutex
 	s  *meter.MeteredServer
 
-	handlers map[string]*meter.MeteredHTTPHandler
-	bindIp   string
-	port     int
+	// routes holds list of routes per hostname.
+	routes map[string][]*Route
+	bindIp string
+	port   int
+
+	device *wireguard.UserspaceDevice
 
 	manager *VHostProxyManager
 
 	defaultHandler meter.MeteredHandler
-	// tlsHandlers holds HTTPS handlers per hostname when TLS termination is configured.
-	tlsHandlers map[string]*meter.MeteredHTTPHandler
+	// tlsRoutes holds HTTPS routes per hostname when TLS termination is configured.
+	tlsRoutes map[string][]*Route
 	// tlsConfigs holds tls.Config per hostname for mounting listeners.
 	tlsConfigs map[string]*tls.Config
 }
@@ -150,15 +220,44 @@ type VHostCloser struct {
 	VHostProxy *VHostProxy
 	Host       string
 	Tls        bool
+	Route      *Route
 }
 
 func (v VHostCloser) Close() error {
-	delete(v.VHostProxy.handlers, v.Host)
-	if v.Tls {
-		delete(v.VHostProxy.tlsHandlers, v.Host)
-		delete(v.VHostProxy.tlsConfigs, v.Host)
+	v.VHostProxy.mu.Lock()
+	defer v.VHostProxy.mu.Unlock()
+	
+	removeRoute := func(routes []*Route, target *Route) []*Route {
+		for i, r := range routes {
+			if r == target {
+				return append(routes[:i], routes[i+1:]...)
+			}
+		}
+		return routes
 	}
-	if v.VHostProxy.s != nil && len(v.VHostProxy.handlers) == 0 && len(v.VHostProxy.tlsHandlers) == 0 {
+
+	if !v.Tls {
+		if routes, ok := v.VHostProxy.routes[v.Host]; ok {
+			newRoutes := removeRoute(routes, v.Route)
+			if len(newRoutes) == 0 {
+				delete(v.VHostProxy.routes, v.Host)
+			} else {
+				v.VHostProxy.routes[v.Host] = newRoutes
+			}
+		}
+	} else {
+		if routes, ok := v.VHostProxy.tlsRoutes[v.Host]; ok {
+			newRoutes := removeRoute(routes, v.Route)
+			if len(newRoutes) == 0 {
+				delete(v.VHostProxy.tlsRoutes, v.Host)
+				delete(v.VHostProxy.tlsConfigs, v.Host)
+			} else {
+				v.VHostProxy.tlsRoutes[v.Host] = newRoutes
+			}
+		}
+	}
+	
+	if v.VHostProxy.s != nil && len(v.VHostProxy.routes) == 0 && len(v.VHostProxy.tlsRoutes) == 0 {
 		log.Info().Bool("has_tls", v.VHostProxy.hasTLS()).Int("port", v.VHostProxy.port).Msg("Closing VHost (no proxies)")
 		v.VHostProxy.s.Close()
 		v.VHostProxy.manager.mu.Lock()
@@ -172,15 +271,15 @@ func (v VHostCloser) Close() error {
 // NewVHostProxy creates a new VHostProxy backed by the provided userspace device.
 func NewVHostProxy(key VHostKey, manager *VHostProxyManager) *VHostProxy {
 	return &VHostProxy{
-		handlers: make(map[string]*meter.MeteredHTTPHandler),
-		manager:  manager,
-		port:     key.Port,
-		bindIp:   key.BindIp,
+		routes:  make(map[string][]*Route),
+		manager: manager,
+		port:    key.Port,
+		bindIp:  key.BindIp,
 		defaultHandler: meter.MeteredHandlerFunc(func(w *meter.MeteredResponseWriter, r *meter.MeteredRequest) {
 			http.NotFound(w, r.Request)
 		}),
-		tlsHandlers: make(map[string]*meter.MeteredHTTPHandler),
-		tlsConfigs:  make(map[string]*tls.Config),
+		tlsRoutes:  make(map[string][]*Route),
+		tlsConfigs: make(map[string]*tls.Config),
 	}
 }
 
@@ -214,33 +313,71 @@ func (w *WGAwareRoundTripper) RoundTrip(req *http.Request) (*http.Response, erro
 	return tr.RoundTrip(req)
 }
 
-// AddHost registers an HTTP reverse proxy for the given host.
-func (p *VHostProxy) AddHost(host string, target *url.URL, device *wireguard.UserspaceDevice) (VHostCloser, *meter.MeteredHTTPHandler, error) {
-	p.mu.Lock()
-	defer p.mu.Unlock()
-
+func (p *VHostProxy) newMeteredReverseProxy(target *url.URL, pathPrefix string, modifiers map[string]string, device *wireguard.UserspaceDevice) (*meter.MeteredHTTPHandler, *Route) {
 	proxy := httputil.NewSingleHostReverseProxy(target)
+	originalDirector := proxy.Director
+	proxy.Director = func(req *http.Request) {
+		if pathPrefix != "" {
+			req.URL.Path = strings.TrimPrefix(req.URL.Path, pathPrefix)
+			if !strings.HasPrefix(req.URL.Path, "/") {
+				req.URL.Path = "/" + req.URL.Path
+			}
+		}
+		// Apply header modifications in Director
+		for k, v := range modifiers {
+			if k == "redirect" {
+				continue
+			}
+			if v == "!del" {
+				req.Header.Del(k)
+			} else if strings.HasPrefix(v, "+") {
+				if req.Header.Get(k) == "" {
+					req.Header.Set(k, strings.TrimPrefix(v, "+"))
+				}
+			} else {
+				req.Header.Set(k, v)
+			}
+		}
+		originalDirector(req)
+	}
 	proxy.Transport = &WGAwareRoundTripper{device: device, target: target}
 	meteredProxy := meter.MakeMeteredHTTPHandler(proxy)
 
-	p.handlers[host] = meteredProxy
+	route := &Route{
+		Handler:    meteredProxy,
+		Target:     target,
+		PathPrefix: pathPrefix,
+		Modifiers:  modifiers,
+	}
+	return meteredProxy, route
+}
+
+// AddHost registers an HTTP reverse proxy for the given host.
+func (p *VHostProxy) AddHost(host string, pathPrefix string, matchers map[string]string, modifiers map[string]string, target *url.URL, device *wireguard.UserspaceDevice) (VHostCloser, *meter.MeteredHTTPHandler, error) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+
+	meteredProxy, route := p.newMeteredReverseProxy(target, pathPrefix, modifiers, device)
+	route.Matchers = matchers
+
+	p.routes[host] = append(p.routes[host], route)
+	p.device = device
+
 	if err := p.Start(); err != nil {
 		return VHostCloser{}, meteredProxy, err
 	}
 	log.Info().Str("host", host).Int("port", p.port).Str("target", target.String()).Msg("HTTP proxy configured")
-	return VHostCloser{VHostProxy: p, Host: host, Tls: false}, meteredProxy, nil
+	return VHostCloser{VHostProxy: p, Host: host, Tls: false, Route: route}, meteredProxy, nil
 }
 
 // AddHostWithTLS registers a host reverse proxy and an HTTPS handler that
 // terminates TLS using the provided certificate and key PEM strings.
-func (p *VHostProxy) AddHostWithTLS(host string, target *url.URL, device *wireguard.UserspaceDevice, certPEM, keyPEM string) (VHostCloser, *meter.MeteredHTTPHandler, error) {
+func (p *VHostProxy) AddHostWithTLS(host string, pathPrefix string, matchers map[string]string, modifiers map[string]string, target *url.URL, device *wireguard.UserspaceDevice, certPEM, keyPEM string) (VHostCloser, *meter.MeteredHTTPHandler, error) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 
-	proxy := httputil.NewSingleHostReverseProxy(target)
-	// Attach transport that uses the userspace device if present, and accept self-signed certs for upstreams.
-	proxy.Transport = &WGAwareRoundTripper{device: device, target: target}
-	meteredProxy := meter.MakeMeteredHTTPHandler(proxy)
+	meteredProxy, route := p.newMeteredReverseProxy(target, pathPrefix, modifiers, device)
+	route.Matchers = matchers
 
 	// Create a tls.Config from the PEMs.
 	cert, err := tls.X509KeyPair([]byte(certPEM), []byte(keyPEM))
@@ -253,7 +390,7 @@ func (p *VHostProxy) AddHostWithTLS(host string, target *url.URL, device *wiregu
 
 	// Store the HTTPS handler (mux) and its TLS config so the Server can mount it on a listener.
 	// We store the mux in tlsHandlers and the tls.Config in a parallel map.
-	p.tlsHandlers[host] = meteredProxy
+	p.tlsRoutes[host] = append(p.tlsRoutes[host], route)
 
 	// lazily create tlsConfigs map if needed
 	if p.tlsConfigs == nil {
@@ -263,55 +400,17 @@ func (p *VHostProxy) AddHostWithTLS(host string, target *url.URL, device *wiregu
 	// Register TLS config for the provided host key.
 	p.tlsConfigs[host] = tlsConfig
 
-	// Additionally, attempt to register the certificate for any DNS names or IPs
-	// present in the leaf certificate so SNI lookups (or client connections using
-	// the IP string) will be able to find the certificate.
-	// Parse the leaf ASN.1 certificate to discover SANs and common name.
-	parsedCerts, err := tls.X509KeyPair([]byte(certPEM), []byte(keyPEM))
-	if err == nil {
-		// Attempt to extract DNSNames/IPs from certificate.
-		// Use x509 parsing on the first certificate in DER form if possible.
-		// This code is best-effort; failures here should not prevent registering the primary host.
-		if len(parsedCerts.Certificate) > 0 {
-			if x509Cert, err := x509.ParseCertificate(parsedCerts.Certificate[0]); err == nil {
-				// Register for CommonName if present and not empty.
-				if x509Cert.Subject.CommonName != "" {
-					if _, exists := p.tlsConfigs[x509Cert.Subject.CommonName]; !exists {
-						p.tlsConfigs[x509Cert.Subject.CommonName] = tlsConfig
-					}
-				}
-				// Register for all DNS SANs.
-				for _, dns := range x509Cert.DNSNames {
-					if dns == "" {
-						continue
-					}
-					if _, exists := p.tlsConfigs[dns]; !exists {
-						p.tlsConfigs[dns] = tlsConfig
-					}
-				}
-				// Register for IP SANs (as string form).
-				for _, ip := range x509Cert.IPAddresses {
-					ipStr := ip.String()
-					if ipStr == "" {
-						continue
-					}
-					if _, exists := p.tlsConfigs[ipStr]; !exists {
-						p.tlsConfigs[ipStr] = tlsConfig
-					}
-				}
-			}
-		}
-	}
+	p.device = device
 
 	if err = p.Start(); err != nil {
 		return VHostCloser{}, meteredProxy, err
 	}
 	log.Info().Str("host", host).Int("port", p.port).Str("target", target.String()).Msg("HTTPS proxy configured")
-	return VHostCloser{VHostProxy: p, Host: host, Tls: true}, meteredProxy, nil
+	return VHostCloser{VHostProxy: p, Host: host, Tls: true, Route: route}, meteredProxy, nil
 }
 
 // AddHostWithACME registers an HTTP reverse proxy and enables ACME for the given host.
-func (p *VHostProxy) AddHostWithACME(host string, target *url.URL, device *wireguard.UserspaceDevice, bindIp, proxyName string) (VHostCloser, *meter.MeteredHTTPHandler, error) {
+func (p *VHostProxy) AddHostWithACME(host string, pathPrefix string, matchers map[string]string, modifiers map[string]string, target *url.URL, device *wireguard.UserspaceDevice, bindIp, proxyName string) (VHostCloser, *meter.MeteredHTTPHandler, error) {
 
 	// Before enabling ACME for the host, verify the server appears reachable from the public internet
 	// for HTTP-01 challenges. This reduces time wasted attempting issuance for hosts that won't complete.
@@ -319,7 +418,7 @@ func (p *VHostProxy) AddHostWithACME(host string, target *url.URL, device *wireg
 	defer cancel()
 	if !p.CanPassACMEChallenge(ctx, host) {
 		// If the host cannot be web-hosted, remove the proxy entry we just added to keep state consistent.
-		delete(p.handlers, host)
+		delete(p.routes, host)
 		log.Warn().Str("host", host).Msg("VHost: host not reachable for ACME HTTP-01 challenge; aborting ACME setup")
 		return VHostCloser{}, &meter.MeteredHTTPHandler{}, fmt.Errorf("host %s not reachable for ACME HTTP-01 challenge", host)
 	}
@@ -330,9 +429,8 @@ func (p *VHostProxy) AddHostWithACME(host string, target *url.URL, device *wireg
 	}
 	defer closer.Close()
 
-	proxy := httputil.NewSingleHostReverseProxy(target)
-	proxy.Transport = &WGAwareRoundTripper{device: device, target: target}
-	meteredProxy := meter.MakeMeteredHTTPHandler(proxy)
+	meteredProxy, route := p.newMeteredReverseProxy(target, pathPrefix, modifiers, device)
+	route.Matchers = matchers
 
 	// Log that ACME registration has been requested for this host.
 	log.Debug().Str("host", host).Msg("ACME: host registered with manager for issuance")
@@ -343,7 +441,7 @@ func (p *VHostProxy) AddHostWithACME(host string, target *url.URL, device *wireg
 	// Small backoff and then wait up to 2 minutes for ACME issuance.
 	if p.manager.acmeManager != nil {
 		proxy := p.manager.Proxy(bindIp, 80)
-		closer, acmeHandler, err := proxy.AddHost("acme-"+host, &url.URL{Scheme: "http", Host: host + ":80"}, nil)
+		closer, acmeHandler, err := proxy.AddHost("acme-"+host, "", nil, nil, &url.URL{Scheme: "http", Host: host + ":80"}, nil)
 		if err != nil {
 			log.Warn().AnErr("AddHostWithACME: AddHost error", err)
 			return VHostCloser{}, acmeHandler, err
@@ -373,8 +471,11 @@ func (p *VHostProxy) AddHostWithACME(host string, target *url.URL, device *wireg
 				tcfg.Certificates = []tls.Certificate{*cert}
 			}
 			p.tlsConfigs[host] = tcfg
-			p.tlsHandlers[host] = meteredProxy
+			
+			p.tlsRoutes[host] = append(p.tlsRoutes[host], route)
+			
 			p.mu.Unlock()
+			p.device = device
 			log.Debug().Str("host", host).Msg("VHost: ACME certificate ready; starting TLS listener")
 			if err := p.Start(); err != nil {
 				log.Warn().Str("host", host).Msg("Could not start TLS proxy!")
@@ -385,57 +486,56 @@ func (p *VHostProxy) AddHostWithACME(host string, target *url.URL, device *wireg
 	} else {
 		// Fallback: start Serve() so HTTP challenge endpoint is available.
 		log.Warn().Str("host", host).Msg("ACME: acmeManager not configured; not possible to obtain certificate")
-		VHostCloser{VHostProxy: p, Host: host, Tls: true}.Close()
+		VHostCloser{VHostProxy: p, Host: host, Tls: true, Route: route}.Close()
 	}
 
 	log.Info().Str("host", host).Int("port", p.port).Str("target", target.String()).Msg("ACME-based HTTPS proxy configured")
-	return VHostCloser{VHostProxy: p, Host: host, Tls: true}, meteredProxy, nil
+	return VHostCloser{VHostProxy: p, Host: host, Tls: true, Route: route}, meteredProxy, nil
 }
 
 func (p *VHostProxy) ServeHTTP(w *meter.MeteredResponseWriter, r *meter.MeteredRequest) {
 	host := strings.Split(r.Host, ":")[0]
-	log.Debug().Str("host", r.Host).Str("uri", r.RequestURI).Uint64("bytes", r.TotalSize()).Msg("VHost: got request")
 	if p.port == p.manager.acmePort && p.manager.acmeManager != nil && strings.HasPrefix(r.URL.Path, "/.well-known/acme-challenge/") {
-		// Log that the ACME HTTP-01 challenge handler is being invoked for visibility.
-		log.Debug().Str("host", r.Host).Str("path", r.URL.Path).Msg("ACME: challenge handler start")
-		// Wrap the autocert handler to add logging when it serves a challenge.
 		handler := p.manager.acmeManager.HTTPHandler(nil)
-		// Use a small wrapper to log responses handled by the autocert handler.
 		h := meter.MeteredHandlerFunc(func(w2 *meter.MeteredResponseWriter, r2 *meter.MeteredRequest) {
-			start := time.Now()
 			handler.ServeHTTP(w2, r2.Request)
-			// After serving, log that the handler completed. We cannot inspect w2 status code
-			// directly without a ResponseWriter wrapper, but logging start/finish helps trace challenge flow.
-			log.Debug().
-				Str("host", r2.Host).
-				Str("path", r2.URL.Path).
-				Dur("duration", time.Since(start)).
-				Msg("ACME: challenge handler completed")
 		})
 		h.ServeHTTP(w, r)
 		return
 	}
 
 	p.mu.RLock()
-	proxy, ok := p.handlers[host]
-	httpsHandler, httpsOk := p.tlsHandlers[host]
+	routes := p.routes[host]
+	tlsRoutes := p.tlsRoutes[host]
 	p.mu.RUnlock()
 
-	if httpsOk {
-		log.Debug().Str("host", r.Host).Str("uri", r.RequestURI).Msg("VHost: handling request with HTTPS handler")
-		httpsHandler.ServeHTTP(w, r)
-		return
-	} else if ok {
-		log.Debug().Str("host", r.Host).Str("uri", r.RequestURI).Msg("VHost: handling request with HTTP handler")
-		proxy.ServeHTTP(w, r)
+	var candidateRoutes []*Route
+	if len(tlsRoutes) > 0 {
+		candidateRoutes = tlsRoutes
+	} else {
+		candidateRoutes = routes
+	}
+
+	if route := p.findRoute(r.Request, candidateRoutes); route != nil {
+		if route.Apply(w, r.Request) {
+			return
+		}
+		route.Handler.ServeHTTP(w, r)
 		return
 	}
-	log.Debug().Str("host", r.Host).Str("uri", r.RequestURI).Msg("VHost: handling request with missing (default) handler")
 	p.defaultHandler.ServeHTTP(w, r)
+}
+func (p *VHostProxy) findRoute(r *http.Request, routes []*Route) *Route {
+	for _, route := range routes {
+		if route.Matches(r) {
+			return route
+		}
+	}
+	return nil
 }
 
 func (p *VHostProxy) hasTLS() bool {
-	return len(p.tlsHandlers) > 0
+	return len(p.tlsRoutes) > 0
 }
 
 func keys(mymap map[string]*tls.Config) []string {
@@ -475,18 +575,42 @@ func (p *VHostProxy) Start() error {
 				return nil, fmt.Errorf("no certificate for server name %s", hello.ServerName)
 			},
 		}
-		l, err := tls.Listen("tcp", addr, tlsConfig)
+		
+		var l net.Listener
+		var err error
+		if strings.HasPrefix(addr, "10.1.") {
+			if p.device == nil {
+				return fmt.Errorf("cannot listen on WireGuard host %s without wireguard device", addr)
+			}
+			taddr, _ := net.ResolveTCPAddr("tcp", addr)
+			l, err = p.device.NetStack.ListenTCP(taddr)
+		} else {
+			l, err = net.Listen("tcp", addr)
+		}
 		if err != nil {
-			log.Error().Err(err).Int("port", p.port).Msg("VHost: tls.Listen failed")
+			log.Error().Err(err).Int("port", p.port).Msg("VHost: Listen failed")
 			return err
 		}
+		
+		l = tls.NewListener(l, tlsConfig)
 		log.Info().Str("addr", l.Addr().String()).Msg("VHost: listening tls")
 		go p.s.Serve(l)
 		return nil
 	}
 
 	log.Info().Int("port", p.port).Bool("has_tls", p.hasTLS()).Msg("Serving VHost")
-	l, err := net.Listen("tcp", addr)
+	
+	var l net.Listener
+	var err error
+	if strings.HasPrefix(addr, "10.1.") {
+		if p.device == nil {
+			return fmt.Errorf("cannot listen on WireGuard host %s without wireguard device", addr)
+		}
+		taddr, _ := net.ResolveTCPAddr("tcp", addr)
+		l, err = p.device.NetStack.ListenTCP(taddr)
+	} else {
+		l, err = net.Listen("tcp", addr)
+	}
 	if err != nil {
 		log.Error().Err(err).Int("port", p.port).Msg("VHost: net.Listen failed")
 		return err
@@ -500,11 +624,11 @@ func (p *VHostProxy) Start() error {
 func (p *VHostProxy) GetTLSHandler(host string) *meter.MeteredHTTPHandler {
 	p.mu.RLock()
 	defer p.mu.RUnlock()
-	handler, ok := p.tlsHandlers[host]
-	if !ok {
+	routes, ok := p.tlsRoutes[host]
+	if !ok || len(routes) == 0 {
 		return nil
 	}
-	return handler
+	return routes[0].Handler
 }
 
 // GetTLSConfig returns the registered tls.Config for a host, or nil if none.
@@ -601,7 +725,7 @@ func (p *VHostProxy) CanPassACMEChallenge(ctx context.Context, host string) bool
 
 	proxy := p.manager.Proxy(targetIPv4.String(), 80)
 	// Pass nil device for the dummy ACME host (no WG device needed here).
-	closer, _, err := proxy.AddHost("probe-acme", &url.URL{Scheme: "http", Host: "localhost:80"}, nil)
+	closer, _, err := proxy.AddHost("probe-acme", "", nil, nil, &url.URL{Scheme: "http", Host: "localhost:80"}, nil)
 	if err != nil {
 		log.Warn().AnErr("CanWebHost: AddHost error", err)
 		return false

@@ -35,7 +35,7 @@ import (
 //
 // Note: endpoint is currently set to the control API loopback (127.0.0.1:9092) as a
 // default placeholder to match the prior in-repo behaviour.
-func Tunnel(serverIP string, localUrl *url.URL, resp *types.ConnectResponse, privateKey wgtypes.Key, p *proxy.ProxyManager, tunnelName string, tlsCertPEM []byte, tlsKeyPEM []byte) (*wireguard.UserspaceDevice, error) {
+func Tunnel(serverIP string, localUrl *url.URL, hostname string, resp *types.ConnectResponse, privateKey wgtypes.Key, p *proxy.ProxyManager, tunnelName string, tlsCertPEM []byte, tlsKeyPEM []byte) (*wireguard.UserspaceDevice, error) {
 	// Build peer UAPI config using server-provided values.
 
 	// Parse and validate the client address assigned by the server.
@@ -88,19 +88,25 @@ func Tunnel(serverIP string, localUrl *url.URL, resp *types.ConnectResponse, pri
 		Scheme: localUrl.Scheme,
 		Host:   net.JoinHostPort(resp.ClientAddress, strconv.Itoa(resp.TunnelProxyPort)),
 	}
+	
 	if localUrl.Scheme == "http" && localUrl.Port() == "" {
 		localUrl.Host = localUrl.Host + ":80"
 	}
 	if localUrl.Scheme == "https" && localUrl.Port() == "" {
 		localUrl.Host = localUrl.Host + ":443"
 	}
+
 	switch strings.ToLower(localUrl.Scheme) {
-	case "tcp", "http", "https":
+	case "tcp":
 		remoteUrl.Scheme = "tcp"
-		localUrl.Scheme = "tcp"
+	case "http":
+		remoteUrl.Scheme = "http"
+		remoteUrl.Host = net.JoinHostPort(hostname, strconv.Itoa(resp.TunnelProxyPort))
+	case "https":
+		remoteUrl.Scheme = "http" // Tunnel internal remains http, local side is https
+		remoteUrl.Host = net.JoinHostPort(hostname, strconv.Itoa(resp.TunnelProxyPort))
 	case "udp":
 		remoteUrl.Scheme = "udp"
-		localUrl.Scheme = "udp"
 	default:
 		return nil, fmt.Errorf("unsupported protocol %q", strings.ToLower(localUrl.Scheme))
 	}
@@ -110,7 +116,7 @@ func Tunnel(serverIP string, localUrl *url.URL, resp *types.ConnectResponse, pri
 	// so the proxy manager can present the provided certificate on the remote
 	// HTTPS endpoint. The proxy.StartProxy signature accepts optional cert/key
 	// arguments via the last two parameters (pass nil when not used).
-	if _, err := p.StartProxy(localUrl, remoteUrl, tunnelName, device, tlsCertPEM, tlsKeyPEM, "0.0.0.0"); err != nil {
+	if _, err := p.StartProxy(localUrl, remoteUrl, tunnelName, device, tlsCertPEM, tlsKeyPEM, resp.ClientAddress); err != nil {
 		log.Fatal().Err(err).Msg("Failed to start proxy")
 	}
 

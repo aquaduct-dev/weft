@@ -49,6 +49,66 @@ Optional arguments:
 Example:
 `weft tunnel weft://secret@1.2.3.4 http://localhost:8080 https://my-app.example.com`
 
+#### Fancy URL Support (HTTP/HTTPS)
+
+The tunnel supports URL syntax for HTTP routes which add significant functionality.
+
+##### Path Rewriting
+
+The tunnel can rewrite HTTP paths.  For example, take this command:
+
+`weft tunnel weft://secret@1.2.3.4/test http://localhost:8080 https://my-app.example.com/api/v1`
+
+A request to 'https://my-app.example.com/api/v1/create` will be tunneled to `http://localhost:8080/test/create`.
+
+##### Match Query Parameters
+
+The tunnel can check query parameters and route based on them.  For example:
+
+`weft tunnel weft://secret@1.2.3.4 http://localhost:8080 https://my-app.example.com?token=[token-regex]`
+
+A request to 'https://my-app.example.com/api/v1/create` will be tunneled to `http://localhost:8080/api/v1/create` - but only if the query string contains a key named `token` with a value that matches `[token-regex]`.  Regexes are parsed using RE2 syntax.
+
+##### Match Headers
+
+The tunnel can check request headers and route based on them.  For example:
+
+`weft tunnel weft://secret@1.2.3.4 http://localhost:8080 https://my-app.example.com#Authorization=[authorization-regex]&Set-Cookie=.*`
+
+A request to 'https://my-app.example.com/api/v1/create` will be tunneled to `http://localhost:8080/api/v1/create` - but only if the request has an `Authorization` header matching `[authorization-regex]` AND a `Set-Cookie` header matching `.*` (i.e. any value).
+
+##### Match Method
+
+The tunnel can check request methods and route based on them.  For example:
+
+`weft tunnel weft://secret@1.2.3.4 http://localhost:8080 https://my-app.example.com#POST&Authorization=[authorization-regex]`
+
+A request to 'https://my-app.example.com/api/v1/create` will be tunneled to `http://localhost:8080/api/v1/create` - but only if the request has an `Authorization` header matching `[authorization-regex]` AND is a `POST` request.
+
+##### Modify headers
+
+The tunnel can modify incoming request headers.  For example:
+
+`weft tunnel weft://secret@1.2.3.4 http://localhost:8080/#Forwarded=true&X-Forwarded-For=!del&Authorization=+auth https://my-app.example.com`
+
+A request to 'https://my-app.example.com/api/v1/create` will be tunneled to `http://localhost:8080/api/v1/create`.  The request that is sent to `http://localhost:8080` will have header `Forwarded` set to `true`, `X-Forwarded-For` removed, and `Authorization` set to `auth` if it was not previously set.
+
+##### Redirects
+
+It is even possible to set up a tunnel which does not tunnel at all, but just configures an HTTP redirect.  For example:
+
+`weft tunnel weft://secret@1.2.3.4 http://localhost:8080/#redirect https://my-app.example.com`
+
+A request to 'https://my-app.example.com/api/v1/create` will get an `HTTP 302` redirect to `http://localhost:8080`.
+
+##### Combining multiple matchers
+
+The `weft` implementation will evaluate rules in order from most specific to least specific.  Route A is considered more specific than route B if route A has more matchers.
+
+Matchers can be easily combined just by including the URL components.  For example:
+
+`weft tunnel weft://secret@1.2.3.4 http://localhost:8080/api?query=true#X-Forwarded-For=!del&Authorization=+auth https://my-app.example.com/api/v1/`
+
 ### Other Commands
 
 **List Tunnels:**

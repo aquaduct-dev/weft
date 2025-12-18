@@ -248,6 +248,51 @@ func rewriteHost(u *url.URL, host string) {
 	u.Host = host + ":" + u.Port()
 }
 
+func parseMatchers(u *url.URL) map[string]string {
+	matchers := make(map[string]string)
+	for k, v := range u.Query() {
+		if len(v) > 0 {
+			matchers["query:"+k] = v[0]
+		}
+	}
+	if u.Fragment != "" {
+		parts := strings.Split(u.Fragment, "&")
+		for _, part := range parts {
+			if strings.Contains(part, "=") {
+				kv := strings.SplitN(part, "=", 2)
+				matchers["header:"+kv[0]] = kv[1]
+			} else {
+				matchers["method"] = part
+			}
+		}
+	}
+	return matchers
+}
+
+func parseModifiers(u *url.URL) map[string]string {
+	modifiers := make(map[string]string)
+	if u.Fragment != "" {
+		parts := strings.Split(u.Fragment, "&")
+		for _, part := range parts {
+			if strings.Contains(part, "=") {
+				kv := strings.SplitN(part, "=", 2)
+				modifiers[kv[0]] = kv[1]
+			} else if part == "redirect" {
+				modifiers["redirect"] = "true"
+			}
+		}
+	}
+	return modifiers
+}
+
+func parsePort(host string, defaultPort int) (int, error) {
+	split := strings.Split(host, ":")
+	if len(split) > 1 {
+		return strconv.Atoi(split[1])
+	}
+	return defaultPort, nil
+}
+
 func generateInstanceId() string {
 	b := make([]byte, 16)
 	_, err := rand.Read(b)
@@ -259,7 +304,7 @@ func generateInstanceId() string {
 }
 
 func (p *ProxyManager) StartProxy(srcURL *url.URL, dstURL *url.URL, proxyName string, device *wireguard.UserspaceDevice, certPEM, keyPEM []byte, bindIp string) (Proxy, error) {
-	log.Debug().Str("src", srcURL.String()).Str("dst", dstURL.String()).Str("proxy", proxyName).Msg("Proxy: starting proxy")
+	log.Debug().Str("src", srcURL.String()).Str("src_fragment", srcURL.Fragment).Str("dst", dstURL.String()).Str("dst_fragment", dstURL.Fragment).Str("proxy", proxyName).Msg("Proxy: starting proxy")
 	var err error
 	// Ensure ports are set in the URLs.
 	if err = ensurePort(srcURL); err != nil {
@@ -314,16 +359,27 @@ func (p *ProxyManager) StartProxy(srcURL *url.URL, dstURL *url.URL, proxyName st
 		p.proxies[proxyName] = newProxy
 		return newProxy, nil
 	case "tcp>http", "http>http":
-		dstSplit := strings.Split(dstURL.Host, ":")
-		dstPort := 80
-		if len(dstSplit) > 1 {
-			dstPort, err = strconv.Atoi(dstSplit[1])
-			if err != nil {
-				return nil, fmt.Errorf("invalid port %s: %w", dstSplit[1], err)
-			}
+		dstPort, err := parsePort(dstURL.Host, 80)
+		if err != nil {
+			return nil, err
 		}
 
-		newProxy := &VHostRouteProxy{Host: dstSplit[0], Port: dstPort, BindIp: bindIp, IsHTTPS: false, name: proxyName, instanceId: generateInstanceId()}
+		matchers := parseMatchers(dstURL)
+		modifiers := parseModifiers(srcURL)
+
+		log.Debug().Interface("matchers", matchers).Interface("modifiers", modifiers).Msg("Proxy: parsed http routes")
+
+		newProxy := &VHostRouteProxy{
+			Host:       strings.Split(dstURL.Host, ":")[0],
+			Port:       dstPort,
+			BindIp:     bindIp,
+			IsHTTPS:    false,
+			name:       proxyName,
+			instanceId: generateInstanceId(),
+			Rewrite:    dstURL.Path,
+			Matchers:   matchers,
+			Modifiers:  modifiers,
+		}
 		for name, existingProxy := range p.proxies {
 			if newProxy.Conflicts(existingProxy) {
 				return nil, fmt.Errorf("proxy conflicts with %s", name)
@@ -332,7 +388,7 @@ func (p *ProxyManager) StartProxy(srcURL *url.URL, dstURL *url.URL, proxyName st
 
 		vhostProxy := p.VHostProxyManager.Proxy(bindIp, dstPort)
 		// forward the provided wireguard device so upstream dialing can use its NetStack for WG IPs.
-		closer, handler, err := vhostProxy.AddHost(dstSplit[0], srcURL, device)
+		closer, handler, err := vhostProxy.AddHost(strings.Split(dstURL.Host, ":")[0], dstURL.Path, matchers, modifiers, srcURL, device)
 		if err != nil {
 			return nil, err
 		}
@@ -341,15 +397,28 @@ func (p *ProxyManager) StartProxy(srcURL *url.URL, dstURL *url.URL, proxyName st
 		p.proxies[proxyName] = newProxy
 		return newProxy, nil
 	case "tcp>https", "http>https":
-		split := strings.Split(dstURL.Host, ":")
-		port := 443
-		if len(split) > 1 {
-			port, err = strconv.Atoi(split[1])
-			if err != nil {
-				return nil, fmt.Errorf("invalid port %s: %w", split[1], err)
-			}
+		port, err := parsePort(dstURL.Host, 443)
+		if err != nil {
+			return nil, err
 		}
-		newProxy := &VHostRouteProxy{Host: split[0], Port: port, BindIp: bindIp, IsHTTPS: true, name: proxyName, instanceId: generateInstanceId()}
+
+		matchers := parseMatchers(dstURL)
+		modifiers := parseModifiers(srcURL)
+
+		log.Debug().Interface("matchers", matchers).Interface("modifiers", modifiers).Msg("Proxy: parsed https routes")
+
+		host := strings.Split(dstURL.Host, ":")[0]
+		newProxy := &VHostRouteProxy{
+			Host:       host,
+			Port:       port,
+			BindIp:     bindIp,
+			IsHTTPS:    true,
+			name:       proxyName,
+			instanceId: generateInstanceId(),
+			Rewrite:    dstURL.Path,
+			Matchers:   matchers,
+			Modifiers:  modifiers,
+		}
 		for name, existingProxy := range p.proxies {
 			if newProxy.Conflicts(existingProxy) {
 				return nil, fmt.Errorf("proxy conflicts with %s", name)
@@ -360,7 +429,7 @@ func (p *ProxyManager) StartProxy(srcURL *url.URL, dstURL *url.URL, proxyName st
 		// If certPEM/keyPEM not provided, configure automatic issuance via ACME HTTP-01.
 		if len(certPEM) == 0 || len(keyPEM) == 0 {
 			log.Debug().Str("proxy", proxyName).Msg("Proxy: calling AddHostWithACME")
-			closer, handler, err := vhostProxy.AddHostWithACME(split[0], srcURL, device, bindIp, proxyName)
+			closer, handler, err := vhostProxy.AddHostWithACME(host, dstURL.Path, matchers, modifiers, srcURL, device, bindIp, proxyName)
 			if err != nil {
 				return nil, err
 			}
@@ -370,7 +439,7 @@ func (p *ProxyManager) StartProxy(srcURL *url.URL, dstURL *url.URL, proxyName st
 			return newProxy, nil
 		} else {
 			log.Debug().Str("proxy", proxyName).Msg("Proxy: calling AddHostWithTLS")
-			closer, handler, err := vhostProxy.AddHostWithTLS(split[0], srcURL, device, string(certPEM), string(keyPEM))
+			closer, handler, err := vhostProxy.AddHostWithTLS(host, dstURL.Path, matchers, modifiers, srcURL, device, string(certPEM), string(keyPEM))
 			if err != nil {
 				return nil, err
 			}

@@ -1,29 +1,12 @@
 #!/usr/bin/env bash
 # test/test_probe.sh
 # Purpose: Test the `weft probe` command.
-# Since `weft probe` requires a public IP to succeed (by design of CanPassACMEChallenge),
-# this test primarily verifies that the command executes and correctly identifies
-# a non-public host (localhost) as a failure case.
 
-set -uo pipefail
-
-# --- Helpers ---
-log() {
-  echo "test_probe: $*" >&2
-}
-
-cleanup() {
-  if [[ "${RESULT:-1}" -ne 0 ]]; then
-    echo "Test failed."
-  else
-    echo "Test passed."
-  fi
-}
+# shellcheck disable=SC1091
+source "$(dirname "$0")/lib.sh"
 trap cleanup EXIT
 
-
-WEFT_BIN="${RUNFILES_DIR}/_main/weft"
-echo "Using weft binary at: $WEFT_BIN"
+log "Using weft binary at: $WEFT_BIN"
 
 # --- Test 1: Probe localhost (Expected Failure) ---
 # CanPassACMEChallenge rejects private IPs/loopback.

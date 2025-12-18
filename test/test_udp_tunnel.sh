@@ -5,45 +5,14 @@
 #  2) start the weft server on a free port
 #  3) start a weft tunnel that exposes the UDP echo server over the weft server
 #  4) verify UDP access works over the tunnel
-#
-# Notes:
-# - Mirrors test/test_tcp_tunnel.sh but uses UDP.
-# - Honor WEFT_BIN environment variable or rely on bazel runfiles as needed.
-# - Emits verbose logging to help debug failures.
-#
-set -uo pipefail
-IFS=$'\n\t'
 
-WEFT_BIN=$(find . | grep -e "/weft$")
-LOGDIR=$(mktemp -d /tmp/weft-test-XXXX)
-SHUTDOWN_WAIT=1
-RESULT=1
-pids=()
-
-cleanup() {
-    echo "Cleaning up..."
-    for pid in "${pids[@]}"; do
-        kill "$pid" >/dev/null 2>&1 || true
-    done
-    if [[ "$RESULT" -ne 0 ]]; then
-        echo "Test failed. Logs retained at $LOGDIR"
-    else
-        rm -rf "$LOGDIR"
-        echo "Test passed."
-    fi
-}
+# shellcheck disable=SC1091
+source "$(dirname "$0")/lib.sh"
 trap cleanup EXIT
 
-echo "Logs will be written to $LOGDIR"
+SHUTDOWN_WAIT=1
 
-find_free_port() {
-    python3 -c 'import socket; s=socket.socket(socket.AF_INET, socket.SOCK_DGRAM); s.bind(("",0)); print(s.getsockname()[1]); s.close()'
-}
-
-wait_for_udp_port() {
-    # For UDP there's no connect check; we just sleep briefly to allow bind.
-    sleep 0.5
-}
+log "Logs will be written to $LOGDIR"
 
 # 1) Start UDP echo server (python)
 PY_PORT=$(find_free_port)
@@ -66,14 +35,14 @@ chmod +x "$LOGDIR/udp_echo.py"
 python3 "$LOGDIR/udp_echo.py" "$PY_PORT" >"$PY_LOG" 2>&1 &
 pids+=($!)
 wait_for_udp_port
-echo "Python UDP echo server is ready on port $PY_PORT."
+log "Python UDP echo server is ready on port $PY_PORT."
 
 # 2) Start Weft Server
 SERVER_BIND_PORT=$(find_free_port)
 SERVER_LOG="$LOGDIR/server.log"
 SECRET_FILE="$LOGDIR/secret"
 
-echo "Starting weft server on port $SERVER_BIND_PORT..."
+log "Starting weft server on port $SERVER_BIND_PORT..."
 "$WEFT_BIN" server --verbose --port "$SERVER_BIND_PORT" --secret-file "$SECRET_FILE" >"$SERVER_LOG" 2>&1 &
 pids+=($!)
 
@@ -84,12 +53,12 @@ for i in $(seq 1 10); do
     sleep 0.5
 done
 if [ ! -f "$SECRET_FILE" ]; then
-    echo "Failed to find secret file."
+    log "Failed to find secret file."
     cat "$SERVER_LOG"
     exit 2
 fi
 CONN_SECRET=$(cat "$SECRET_FILE" | tr -d '\n')
-echo "Found connection secret: $CONN_SECRET"
+log "Found connection secret: $CONN_SECRET"
 
 # 3) Start Weft Tunnel (UDP)
 REMOTE_PORT=$(find_free_port)
@@ -99,7 +68,7 @@ LOCAL_URL="udp://127.0.0.1:${PY_PORT}"
 REMOTE_URL="udp://127.0.0.1:${REMOTE_PORT}"
 
 
-echo "Starting weft tunnel to expose $LOCAL_URL at remote $REMOTE_URL..."
+log "Starting weft tunnel to expose $LOCAL_URL at remote $REMOTE_URL..."
 "$WEFT_BIN" tunnel --verbose "$WEFT_URL" "$LOCAL_URL" "$REMOTE_URL" >"$TUNNEL_LOG" 2>&1 &
 pids+=($!)
 
@@ -107,7 +76,7 @@ pids+=($!)
 sleep 1
 
 # 4) Verify UDP access by sending a packet and expecting an echo
-echo "Attempting to send UDP packet to tunneled service at 127.0.0.1:$REMOTE_PORT..."
+log "Attempting to send UDP packet to tunneled service at 127.0.0.1:$REMOTE_PORT..."
 set +e
 PY_SEND_RECV="$LOGDIR/udp_test.py"
 cat > "$PY_SEND_RECV" <<'PY'
@@ -136,17 +105,17 @@ echo "udp test exit: $EXIT"
 echo "udp test output: $OUT"
 
 if echo "$OUT" | grep -q "hello-from-udp-server"; then
-    echo "SUCCESS: received expected UDP echo from server over tunnel."
+    log "SUCCESS: received expected UDP echo from server over tunnel."
     RESULT=0
 else
-    echo "FAIL: did not receive expected UDP response over tunnel."
-    echo "-----"
+    log "FAIL: did not receive expected UDP response over tunnel."
+    log "-----"
     echo "server log -----"
     cat "$SERVER_LOG"
-    echo "-----"
+    log "-----"
     echo "tunnel log -----"
     cat "$TUNNEL_LOG"
-    echo "-----"
+    log "-----"
     echo "python log -----"
     cat "$PY_LOG"
     RESULT=3

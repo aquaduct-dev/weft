@@ -3,55 +3,13 @@
 # Purpose: Verify that the weft server sends usage reports to the configured URL
 # when a tunnel shuts down.
 
-set -uo pipefail
-IFS=$'\n\t'
-
-# --- Configuration and Setup ---
-WEFT_BIN=$(find . | grep -e "/weft$")
-LOGDIR=$(mktemp -d /tmp/weft-billing-test-XXXX)
-SHUTDOWN_WAIT=1
-RESULT=1 # Default to failure
-
-pids=()
-
-cleanup() {
-    echo "Cleaning up..."
-    for pid in "${pids[@]}"; do
-        kill "$pid" >/dev/null 2>&1 || true
-    done
-    
-    if [[ "$RESULT" -ne 0 ]]; then
-        echo "Test failed. Logs retained at $LOGDIR"
-    else
-        rm -rf "$LOGDIR"
-        echo "Test passed."
-    fi
-}
-
+# shellcheck disable=SC1091
+source "$(dirname "$0")/lib.sh"
 trap cleanup EXIT
 
-echo "Logs will be written to $LOGDIR"
+SHUTDOWN_WAIT=1
 
-find_free_port() {
-    python3 -c 'import socket; s=socket.socket(); s.bind(("", 0)); print(s.getsockname()[1]); s.close()'
-}
-
-wait_for_port() {
-    local port=$1
-    local host=${2:-127.0.0.1}
-    local timeout=${3:-10}
-    echo "Waiting for $host:$port to be open..."
-    for i in $(seq 1 "$timeout"); do
-        if nc -z "$host" "$port" >/dev/null 2>&1;
-        then
-            echo "$host:$port is open."
-            return 0
-        fi
-        sleep 0.5
-    done
-    echo "Timed out waiting for $host:$port."
-    return 1
-}
+log "Logs will be written to $LOGDIR"
 
 # --- Test Steps ---
 
@@ -84,7 +42,7 @@ print(f"Starting mock reporting server on {port}")
 http.server.HTTPServer(("", port), Handler).serve_forever()
 EOF
 
-echo "Starting mock reporting server on port $REPORT_PORT..."
+log "Starting mock reporting server on port $REPORT_PORT..."
 python3 "$LOGDIR/mock_report_server.py" "$REPORT_PORT" "$REPORT_FILE" >"$REPORT_LOG" 2>&1 &
 pids+=($!)
 wait_for_port "$REPORT_PORT"
@@ -94,7 +52,7 @@ TARGET_PORT=$(find_free_port)
 TARGET_LOG="$LOGDIR/target.log"
 echo "hello-usage-tracking" > "$LOGDIR/index.html"
 
-echo "Starting target http.server on port $TARGET_PORT..."
+log "Starting target http.server on port $TARGET_PORT..."
 python3 -m http.server "$TARGET_PORT" --directory "$LOGDIR" >"$TARGET_LOG" 2>&1 &
 pids+=($!)
 wait_for_port "$TARGET_PORT"
@@ -105,7 +63,7 @@ SERVER_LOG="$LOGDIR/server.log"
 SECRET_FILE="$LOGDIR/secret"
 REPORT_URL="http://127.0.0.1:$REPORT_PORT/report"
 
-echo "Starting weft server on port $SERVER_PORT with usage reporting to $REPORT_URL..."
+log "Starting weft server on port $SERVER_PORT with usage reporting to $REPORT_URL..."
 "$WEFT_BIN" server --verbose --port "$SERVER_PORT" --secret-file "$SECRET_FILE" --usage-reporting-url "$REPORT_URL" >"$SERVER_LOG" 2>&1 &
 pids+=($!)
 
@@ -118,13 +76,13 @@ for i in $(seq 1 10); do
 done
 
 if [ ! -f "$SECRET_FILE" ]; then
-    echo "Failed to find secret file."
+    log "Failed to find secret file."
     cat "$SERVER_LOG"
     exit 2
 fi
 
 CONN_SECRET=$(cat "$SECRET_FILE" | tr -d '\n')
-echo "Found connection secret."
+log "Found connection secret."
 
 # 4) Start Weft Tunnel
 REMOTE_PORT=$(find_free_port)
@@ -134,7 +92,7 @@ WEFT_URL="weft://${CONN_SECRET}@127.0.0.1:${SERVER_PORT}"
 LOCAL_URL="http://127.0.0.1:${TARGET_PORT}"
 REMOTE_URL="http://127.0.0.1:${REMOTE_PORT}"
 
-echo "Starting weft tunnel..."
+log "Starting weft tunnel..."
 "$WEFT_BIN" tunnel --verbose --tunnel-name "$TUNNEL_NAME" "$WEFT_URL" "$LOCAL_URL" "$REMOTE_URL" >"$TUNNEL_LOG" 2>&1 &
 TUNNEL_PID=$!
 pids+=($TUNNEL_PID)
@@ -148,7 +106,7 @@ curl -s "http://127.0.0.1:$REMOTE_PORT" > /dev/null
 curl -s "http://127.0.0.1:$REMOTE_PORT" > /dev/null
 
 # 6) Gracefully Shutdown Tunnel
-echo "Stopping tunnel (sending SIGTERM to $TUNNEL_PID)..."
+log "Stopping tunnel (sending SIGTERM to $TUNNEL_PID)..."
 kill -TERM "$TUNNEL_PID"
 
 # Remove TUNNEL_PID from pids array so cleanup doesn't try to kill it again (though kill is safe)
@@ -159,18 +117,18 @@ wait "$TUNNEL_PID" || true
 sleep 2
 
 # 7) Verify Usage Report
-echo "Checking usage report..."
+log "Checking usage report..."
 if [ -f "$REPORT_FILE" ]; then
     cat "$REPORT_FILE"
     if grep -q "$TUNNEL_NAME" "$REPORT_FILE"; then
-        echo "SUCCESS: Usage report contained tunnel name '$TUNNEL_NAME'"
+        log "SUCCESS: Usage report contained tunnel name '$TUNNEL_NAME'"
         RESULT=0
     else
-        echo "FAIL: Usage report did not contain tunnel name '$TUNNEL_NAME'"
+        log "FAIL: Usage report did not contain tunnel name '$TUNNEL_NAME'"
         RESULT=3
     fi
 else
-    echo "FAIL: Report file not created."
+    log "FAIL: Report file not created."
     RESULT=4
 fi
 

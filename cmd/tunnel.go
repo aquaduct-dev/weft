@@ -127,6 +127,10 @@ var tunnelCmd = &cobra.Command{
 			RemotePort:      remotePort,
 			Protocol:        proto,
 			Hostname:        hostname,
+			RemotePath:      remoteURL.Path,
+			RemoteQuery:     remoteURL.RawQuery,
+			RemoteFragment:  remoteURL.Fragment,
+			RemoteModifiers: localURL.Fragment,
 			TunnelName:      tunnelNameFlag,
 			ProxiedUpstream: localURL.String(),
 		}
@@ -181,7 +185,7 @@ var tunnelCmd = &cobra.Command{
 
 		// Pass any already-loaded tlsCertPEM/tlsKeyPEM (read above) into the tunnel implementation
 		// so the remote proxy can present the provided certificate instead of using ACME.
-		_, err = tunnel.Tunnel(serverIP, localURL, &connectResp, privateKey, pm, tunnelNameFlag, tlsCertPEM, tlsKeyPEM)
+		_, err = tunnel.Tunnel(serverIP, localURL, hostname, &connectResp, privateKey, pm, tunnelNameFlag, tlsCertPEM, tlsKeyPEM)
 		if err != nil {
 			log.Fatal().Err(err).Msg("Failed to create tunnel")
 		}
