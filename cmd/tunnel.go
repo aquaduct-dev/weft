@@ -214,8 +214,15 @@ var tunnelCmd = &cobra.Command{
 
 					resp, err := client.Do(req)
 					if err != nil {
+						// Differentiate between retriable and non-retriable errors.
+						// If the certificate verification fails, it likely means the server's identity has changed
+						// (e.g., certificate rotation not handled, or MITM), which is a fatal security event.
+						if strings.Contains(err.Error(), "x509") || strings.Contains(err.Error(), "certificate") {
+							log.Fatal().Err(err).Msg("Healthcheck failed: server certificate changed or invalid")
+						}
+						// For other errors (timeouts, network unreachable), we log and retry.
 						log.Error().Err(err).Msg("Healthcheck request failed")
-						os.Exit(1)
+						continue
 					}
 					defer resp.Body.Close()
 
