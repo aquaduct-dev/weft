@@ -1,8 +1,6 @@
 module github.com/aquaduct-dev/weft
 
-go 1.24.1
-
-toolchain go1.24.9
+go 1.25
 
 require (
 	github.com/cloudflare/cloudflare-go v0.116.0

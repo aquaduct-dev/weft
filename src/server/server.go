@@ -70,7 +70,7 @@ type Server struct {
 
 // CreateDevice initializes a new userspace WireGuard device on the specified port.
 // It returns the device, the generated private key, and the actual port used.
-func CreateDevice(port int) (*wireguard.UserspaceDevice, wgtypes.Key, int, error) {
+func CreateDevice(port int, bindIP string) (*wireguard.UserspaceDevice, wgtypes.Key, int, error) {
 	privateKey, err := wgtypes.GeneratePrivateKey()
 	if err != nil {
 		return nil, wgtypes.Key{}, 0, fmt.Errorf("failed to generate private key: %w", err)
@@ -86,7 +86,7 @@ func CreateDevice(port int) (*wireguard.UserspaceDevice, wgtypes.Key, int, error
 	if err != nil {
 		return nil, wgtypes.Key{}, 0, fmt.Errorf("failed to marshal wireguard config: %w", err)
 	}
-	device, err := wireguard.NewUserspaceDevice(conf, []netip.Addr{subnet.Addr()})
+	device, err := wireguard.NewUserspaceDevice(conf, []netip.Addr{subnet.Addr()}, bindIP)
 	if err != nil {
 		return nil, wgtypes.Key{}, 0, fmt.Errorf("failed to create wireguard device: %w", err)
 	}

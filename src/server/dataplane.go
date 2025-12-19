@@ -29,7 +29,7 @@ type TunnelDataplane struct {
 }
 
 func NewTunnelDataplane(wgPort int, bindIP string, cleanup func(string), isClosing func() bool) (*TunnelDataplane, error) {
-	device, privateKey, actualPort, err := CreateDevice(wgPort)
+	device, privateKey, actualPort, err := CreateDevice(wgPort, bindIP)
 	if err != nil {
 		return nil, err
 	}

@@ -53,7 +53,7 @@ func Tunnel(serverIP string, localUrl *url.URL, hostname string, resp *types.Con
 	if err != nil {
 		return nil, err
 	}
-	device, err := wireguard.NewUserspaceDevice(peerConf, []netip.Addr{clientAddress})
+	device, err := wireguard.NewUserspaceDevice(peerConf, []netip.Addr{clientAddress}, "")
 	if err != nil {
 		return nil, fmt.Errorf("failed to create WireGuard device: %w", err)
 	}
