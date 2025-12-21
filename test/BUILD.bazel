@@ -137,3 +137,15 @@ sh_test(
     srcs = ["test_billing_reporting_source_dest.sh"],
     deps = [":lib"],
 )
+
+sh_test(
+    name = "test_multi_tunnel",
+    srcs = ["test_multi_tunnel.sh"],
+    deps = [":lib"],
+)
+
+sh_test(
+    name = "test_retries",
+    srcs = ["test_retries.sh"],
+    deps = [":lib"],
+)

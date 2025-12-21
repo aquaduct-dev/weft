@@ -84,6 +84,10 @@ func (p *TCPProxy) ProxyTCP(publicConn net.Conn, target string, device *wireguar
 	if err != nil {
 		log.Error().Err(err).Str("target", target).Msg("ProxyTCP: dial to target failed")
 		publicConn.Close()
+		if p.cleanup != nil {
+			log.Warn().Str("proxy", p.name).Msg("ProxyTCP: triggering cleanup due to dial failure")
+			go p.cleanup(p.name)
+		}
 		return
 	}
 
@@ -307,7 +311,7 @@ func (p *ProxyManager) StartProxy(srcURL *url.URL, dstURL *url.URL, proxyName st
 		if err != nil {
 			return nil, err
 		}
-		newProxy := &TCPProxy{Addr: addr, name: proxyName, instanceId: generateInstanceId()}
+		newProxy := &TCPProxy{Addr: addr, name: proxyName, instanceId: generateInstanceId(), cleanup: p.Cleanup}
 		for name, existingProxy := range p.proxies {
 			if newProxy.Conflicts(existingProxy) {
 				return nil, fmt.Errorf("proxy %s conflicts with %s", proxyName, name)

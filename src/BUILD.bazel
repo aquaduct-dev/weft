@@ -5,6 +5,7 @@ go_test(
     srcs = [
         "server_tunnel_suite_test.go",
         "server_tunnel_test.go",
+        "server_connectivity_test.go",
     ],
     deps = [
         "//src/auth",

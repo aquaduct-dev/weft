@@ -12,6 +12,7 @@ import (
 	"net/url"
 	"os"
 	"os/signal"
+	"sync"
 
 	"strconv"
 	"strings"
@@ -29,14 +30,20 @@ import (
 )
 
 var tunnelCmd = &cobra.Command{
-	Use:   "tunnel [weft://connection-secret@server-ip] [local url] [remote url]",
+	Use:   "tunnel [weft://connection-secret@server-ip] [local url] [remote url] ...",
 	Short: "Run the Weft tunnel",
-	Args:  cobra.ExactArgs(3),
+	Args:  cobra.MinimumNArgs(3),
 	Run: func(command *cobra.Command, args []string) {
+		// Validate arguments length
+		if (len(args)-1)%2 != 0 {
+			log.Fatal().Msg("Arguments must be: server src dst [src dst ...]")
+		}
+
 		// Add tunnel-name flag (can be empty; we compute default below)
 		tunnelNameFlag, _ := command.Flags().GetString("tunnel-name")
+		retriesFlag, _ := command.Flags().GetInt("retries")
 
-		// 1. Parse arguments
+		// 1. Parse server argument
 		weftURL, err := url.Parse(args[0])
 		if err != nil {
 			log.Fatal().Err(err).Msg("Invalid weft URL")
@@ -45,60 +52,8 @@ var tunnelCmd = &cobra.Command{
 			weftURL.Host = weftURL.Host + ":9092"
 		}
 		// Extract connection secret: prefer password (user:pass@host), fall back to username (user@host).
-		// Note: connection secret (if present in the URL) is no longer sent in the ConnectRequest.
-		// We still read it to perform the prior login flow to obtain a JWT.
 		connectionSecret := weftURL.User.Username()
 		serverIP := weftURL.Host
-
-		localURL, err := url.Parse(args[1])
-		if err != nil {
-			log.Fatal().Err(err).Msg("Invalid local URL")
-		}
-
-		remoteURL, err := url.Parse(args[2])
-		if err != nil {
-			log.Fatal().Err(err).Msg("Invalid remote URL")
-		}
-		remotePort := 0
-		switch strings.ToLower(remoteURL.Scheme) {
-		case "http":
-			remotePort = 80
-		case "https":
-			remotePort = 443
-		}
-		if remoteURL.Port() != "" {
-			remotePort, err = strconv.Atoi(remoteURL.Port())
-			if err != nil {
-				log.Fatal().Err(err).Msg("Invalid remote port")
-			}
-		}
-
-		// If tunnel-name was not supplied by flag, compute default sha256(src|dst)
-		if tunnelNameFlag == "" {
-			// args[1] is local url, args[2] is remote url
-			h := sha256.Sum256([]byte(args[1] + "|" + args[2]))
-			tunnelNameFlag = hex.EncodeToString(h[:10])
-		}
-
-		// Provide proxy_name (tunnel name) to login so server issues a JWT scoped to this tunnel.
-		client, err := auth.Login(weftURL.Host, connectionSecret, tunnelNameFlag)
-		if err != nil {
-			log.Fatal().Err(err).Msg("Login failed")
-		}
-
-		// Determine protocol and hostname to send to the control API.
-		proto := strings.ToLower(remoteURL.Scheme)
-		hostname := remoteURL.Hostname()
-		// If localURL doesn't have a hostname (e.g., "tcp://10.0.0.1:1234"), fall back to remoteURL.
-		if hostname == "" {
-			log.Fatal().Str("url", remoteURL.String()).Msg("URL missing hostname")
-		}
-
-		// Generate a new private key.
-		privateKey, err := wireguard.GeneratePrivateKey()
-		if err != nil {
-			log.Fatal().Err(err).Msg("Failed to generate private key")
-		}
 
 		// Read TLS cert/key flags (test-only) and load them into memory if provided.
 		tlsCertPath, _ := command.Flags().GetString("tls-cert")
@@ -121,157 +76,268 @@ var tunnelCmd = &cobra.Command{
 			tlsKeyPEM = keyBytes
 		}
 
-		// Build the ConnectRequest that will be sent to the server.
-		connectReq := types.ConnectRequest{
-			ClientPublicKey: privateKey.PublicKey().String(),
-			RemotePort:      remotePort,
-			Protocol:        proto,
-			Hostname:        hostname,
-			RemotePath:      remoteURL.Path,
-			RemoteQuery:     remoteURL.RawQuery,
-			RemoteFragment:  remoteURL.Fragment,
-			RemoteModifiers: localURL.Fragment,
-			TunnelName:      tunnelNameFlag,
-			ProxiedUpstream: localURL.String(),
-		}
-		// If the user supplied TLS cert/key via flags (test only), include them in the
-		// connect request so the server will configure the vhost with the provided certs
-		// instead of attempting ACME issuance.
-		if len(tlsCertPEM) > 0 && len(tlsKeyPEM) > 0 {
-			connectReq.CertificatePEM = string(tlsCertPEM)
-			connectReq.PrivateKeyPEM = string(tlsKeyPEM)
-		}
+		var cleanups []func()
+		var cleanupLock sync.Mutex
 
-		reqBody, err := json.Marshal(connectReq)
-		if err != nil {
-			log.Fatal().Err(err).Msg("Failed to marshal connect request")
-		}
+		// Loop through src/dst pairs
+		for i := 1; i < len(args); i += 2 {
+			localStr := args[i]
+			remoteStr := args[i+1]
 
-		connectURL := fmt.Sprintf("https://%s/connect", weftURL.Host)
-		log.Debug().Str("url", connectURL).Msg("Posting connect request")
-
-		httpReq, err := http.NewRequest(http.MethodPost, connectURL, bytes.NewBuffer(reqBody))
-		if err != nil {
-			log.Fatal().Err(err).Msg("Failed to create connect request")
-		}
-		httpReq.Header.Set("Content-Type", "application/json")
-
-		resp, err := client.Do(httpReq)
-		if err != nil {
-			log.Fatal().Err(err).Msg("Failed to connect to server")
-		}
-		defer resp.Body.Close()
-
-		// If the server returned a non-2xx status, read and print the raw response body so the
-		// client shows the exact error string returned by the server (not the JSON decoder error).
-		if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-			body, _ := io.ReadAll(resp.Body)
-			// Trim trailing newline for nicer output.
-			msg := string(bytes.TrimSpace(body))
-			if msg == "" {
-				log.Fatal().Int("status_code", resp.StatusCode).Msg("Server returned empty error")
-			}
-			log.Fatal().Int("status_code", resp.StatusCode).Str("error", msg).Msg("Server error")
-		}
-
-		var connectResp types.ConnectResponse
-		if err := json.NewDecoder(resp.Body).Decode(&connectResp); err != nil {
-			log.Fatal().Err(err).Msg("Failed to decode connect response")
-		}
-		log.Info().Str("ip", connectResp.ClientAddress).Int("port", connectResp.TunnelProxyPort).Msg("Assigned IP and proxy port")
-
-		// Create tunnel
-		pm := proxy.NewProxyManager()
-
-		// Pass any already-loaded tlsCertPEM/tlsKeyPEM (read above) into the tunnel implementation
-		// so the remote proxy can present the provided certificate instead of using ACME.
-		_, err = tunnel.Tunnel(serverIP, localURL, hostname, &connectResp, privateKey, pm, tunnelNameFlag, tlsCertPEM, tlsKeyPEM)
-		if err != nil {
-			log.Fatal().Err(err).Msg("Failed to create tunnel")
-		}
-
-		// Start background healthchecks to the control API to keep the server-side proxy alive.
-		// Send POST /healthcheck every 10s. Also register a shutdown handler to notify server on exit.
-		healthURL := fmt.Sprintf("https://%s/healthcheck", weftURL.Host)
-		done := make(chan struct{})
-		go func() {
-			ticker := time.NewTicker(5 * time.Second)
-			defer ticker.Stop()
-			for {
-				select {
-				case <-ticker.C:
-					healthReq := types.HealthcheckRequest{
-						Message: fmt.Sprintf("Healthcheck from tunnel %s at %s", tunnelNameFlag, time.Now().Format(time.RFC3339)),
-					}
-					reqBody, err := json.Marshal(healthReq)
-					if err != nil {
-						log.Error().Err(err).Msg("Failed to marshal healthcheck request")
-						continue
-					}
-
-					req, _ := http.NewRequest(http.MethodPost, healthURL, bytes.NewBuffer(reqBody))
-					req.Header.Set("Content-Type", "application/json")
-
-					resp, err := client.Do(req)
-					if err != nil {
-						// Differentiate between retriable and non-retriable errors.
-						// If the certificate verification fails, it likely means the server's identity has changed
-						// (e.g., certificate rotation not handled, or MITM), which is a fatal security event.
-						if strings.Contains(err.Error(), "x509") || strings.Contains(err.Error(), "certificate") {
-							log.Fatal().Err(err).Msg("Healthcheck failed: server certificate changed or invalid")
-						}
-						// For other errors (timeouts, network unreachable), we log and retry.
-						log.Error().Err(err).Msg("Healthcheck request failed")
-						continue
-					}
-					defer resp.Body.Close()
-
-					var healthResp types.HealthcheckResponse
-					if err := json.NewDecoder(resp.Body).Decode(&healthResp); err != nil {
-						log.Error().Err(err).Msg("Failed to decode healthcheck response")
-						os.Exit(1)
-					}
-
-					if resp.StatusCode != http.StatusOK {
-						log.Error().Int("status_code", resp.StatusCode).Str("status", healthResp.Status).Str("message", healthResp.Message).Msg("Healthcheck request failed")
-						os.Exit(1)
-					}
-					log.Debug().Str("status", healthResp.Status).Str("message", healthResp.Message).Msg("Healthcheck successful")
-
-				case <-done:
-					return
+			// Determine tunnel name
+			// If explicit flag provided AND only 1 tunnel (3 args total), use it.
+			// Else generate.
+			thisTunnelName := tunnelNameFlag
+			if len(args) > 3 {
+				if tunnelNameFlag != "" && i == 1 {
+					log.Warn().Msg("Ignoring --tunnel-name flag because multiple tunnels are being created")
 				}
+				h := sha256.Sum256([]byte(localStr + "|" + remoteStr))
+				thisTunnelName = hex.EncodeToString(h[:10])
+			} else if thisTunnelName == "" {
+				h := sha256.Sum256([]byte(localStr + "|" + remoteStr))
+				thisTunnelName = hex.EncodeToString(h[:10])
 			}
-		}()
-		// Capture interrupts to allow the client to tell server to close its proxy.
-		go func() {
-			c := make(chan os.Signal, 1)
-			signal.Notify(c, os.Interrupt, syscall.SIGINT, syscall.SIGTERM)
-			<-c
-			// Notify server to shutdown this tunnel
-			shutdownURL := func() string {
-				if _, _, perr := net.SplitHostPort(serverIP); perr == nil {
-					return fmt.Sprintf("https://%s/shutdown", serverIP)
-				}
-				return fmt.Sprintf("https://%s/shutdown", net.JoinHostPort(serverIP, "9092"))
-			}()
-			req, _ := http.NewRequest(http.MethodPost, shutdownURL, nil)
-			if resp, err := client.Do(req); err == nil && resp != nil {
-				io.Copy(io.Discard, resp.Body)
-				resp.Body.Close()
+
+			cleanup, err := startTunnel(serverIP, connectionSecret, localStr, remoteStr, thisTunnelName, retriesFlag, tlsCertPEM, tlsKeyPEM)
+			if err != nil {
+				log.Fatal().Err(err).Str("local", localStr).Str("remote", remoteStr).Msg("Failed to start tunnel")
 			}
-			close(done)
-			os.Exit(0)
-		}()
-		for {
-			time.Sleep(time.Minute)
+			
+			cleanupLock.Lock()
+			cleanups = append(cleanups, cleanup)
+			cleanupLock.Unlock()
 		}
+
+		// Wait for interrupt
+		c := make(chan os.Signal, 1)
+		signal.Notify(c, os.Interrupt, syscall.SIGINT, syscall.SIGTERM)
+		<-c
+
+		log.Info().Msg("Shutting down tunnels...")
+		cleanupLock.Lock()
+		defer cleanupLock.Unlock()
+		for _, f := range cleanups {
+			f()
+		}
+		os.Exit(0)
 	},
+}
+
+func startTunnel(serverIP, connectionSecret, localStr, remoteStr, tunnelName string, retries int, tlsCertPEM, tlsKeyPEM []byte) (func(), error) {
+	localURL, err := url.Parse(localStr)
+	if err != nil {
+		return nil, fmt.Errorf("invalid local URL: %w", err)
+	}
+
+	remoteURL, err := url.Parse(remoteStr)
+	if err != nil {
+		return nil, fmt.Errorf("invalid remote URL: %w", err)
+	}
+
+	remotePort := 0
+	switch strings.ToLower(remoteURL.Scheme) {
+	case "http":
+		remotePort = 80
+	case "https":
+		remotePort = 443
+	}
+	if remoteURL.Port() != "" {
+		remotePort, err = strconv.Atoi(remoteURL.Port())
+		if err != nil {
+			return nil, fmt.Errorf("invalid remote port: %w", err)
+		}
+	}
+
+	// Provide proxy_name (tunnel name) to login so server issues a JWT scoped to this tunnel.
+	// Note: serverIP here includes the port (e.g. host:9092) as processed in Run.
+	// auth.Login expects just host or host:port? It uses it in URLs.
+	client, err := auth.Login(serverIP, connectionSecret, tunnelName)
+	if err != nil {
+		return nil, fmt.Errorf("login failed: %w", err)
+	}
+
+	// Determine protocol and hostname to send to the control API.
+	proto := strings.ToLower(remoteURL.Scheme)
+	hostname := remoteURL.Hostname()
+	// If localURL doesn't have a hostname (e.g., "tcp://10.0.0.1:1234"), fall back to remoteURL.
+	if hostname == "" {
+		log.Warn().Str("url", remoteURL.String()).Msg("URL missing hostname, using default")
+	}
+
+	// Generate a new private key.
+	privateKey, err := wireguard.GeneratePrivateKey()
+	if err != nil {
+		return nil, fmt.Errorf("failed to generate private key: %w", err)
+	}
+
+	// Build the ConnectRequest that will be sent to the server.
+	connectReq := types.ConnectRequest{
+		ClientPublicKey: privateKey.PublicKey().String(),
+		RemotePort:      remotePort,
+		Protocol:        proto,
+		Hostname:        hostname,
+		RemotePath:      remoteURL.Path,
+		RemoteQuery:     remoteURL.RawQuery,
+		RemoteFragment:  remoteURL.Fragment,
+		RemoteModifiers: localURL.Fragment,
+		TunnelName:      tunnelName,
+		ProxiedUpstream: localURL.String(),
+	}
+	// If the user supplied TLS cert/key via flags (test only), include them in the
+	// connect request so the server will configure the vhost with the provided certs
+	// instead of attempting ACME issuance.
+	if len(tlsCertPEM) > 0 && len(tlsKeyPEM) > 0 {
+		connectReq.CertificatePEM = string(tlsCertPEM)
+		connectReq.PrivateKeyPEM = string(tlsKeyPEM)
+	}
+
+	reqBody, err := json.Marshal(connectReq)
+	if err != nil {
+		return nil, fmt.Errorf("failed to marshal connect request: %w", err)
+	}
+
+	connectURL := fmt.Sprintf("https://%s/connect", serverIP)
+	log.Debug().Str("url", connectURL).Msg("Posting connect request")
+
+	httpReq, err := http.NewRequest(http.MethodPost, connectURL, bytes.NewBuffer(reqBody))
+	if err != nil {
+		return nil, fmt.Errorf("failed to create connect request: %w", err)
+	}
+	httpReq.Header.Set("Content-Type", "application/json")
+
+	resp, err := client.Do(httpReq)
+	if err != nil {
+		return nil, fmt.Errorf("failed to connect to server: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		body, _ := io.ReadAll(resp.Body)
+		msg := string(bytes.TrimSpace(body))
+		if msg == "" {
+			return nil, fmt.Errorf("server returned empty error with status %d", resp.StatusCode)
+		}
+		return nil, fmt.Errorf("server error (status %d): %s", resp.StatusCode, msg)
+	}
+
+	var connectResp types.ConnectResponse
+	if err := json.NewDecoder(resp.Body).Decode(&connectResp); err != nil {
+		return nil, fmt.Errorf("failed to decode connect response: %w", err)
+	}
+	log.Info().Str("tunnel", tunnelName).Str("ip", connectResp.ClientAddress).Int("port", connectResp.TunnelProxyPort).Msg("Assigned IP and proxy port")
+
+	// Create tunnel
+	pm := proxy.NewProxyManager()
+
+	// Pass any already-loaded tlsCertPEM/tlsKeyPEM (read above) into the tunnel implementation
+	// so the remote proxy can present the provided certificate instead of using ACME.
+	device, err := tunnel.Tunnel(serverIP, localURL, hostname, &connectResp, privateKey, pm, tunnelName, tlsCertPEM, tlsKeyPEM)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create tunnel: %w", err)
+	}
+
+	// Start background healthchecks
+	healthURL := fmt.Sprintf("https://%s/healthcheck", serverIP)
+	done := make(chan struct{})
+	
+	// Start the healthcheck loop
+	go func() {
+		failCount := 0
+		ticker := time.NewTicker(5 * time.Second)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ticker.C:
+				healthReq := types.HealthcheckRequest{
+					Message: fmt.Sprintf("Healthcheck from tunnel %s at %s", tunnelName, time.Now().Format(time.RFC3339)),
+				}
+				reqBody, err := json.Marshal(healthReq)
+				if err != nil {
+					log.Error().Err(err).Msg("Failed to marshal healthcheck request")
+					continue
+				}
+
+				req, _ := http.NewRequest(http.MethodPost, healthURL, bytes.NewBuffer(reqBody))
+				req.Header.Set("Content-Type", "application/json")
+
+				resp, err := client.Do(req)
+				// Track failures
+				failed := false
+				if err != nil {
+					failed = true
+					if strings.Contains(err.Error(), "x509") || strings.Contains(err.Error(), "certificate") {
+						log.Fatal().Err(err).Str("tunnel", tunnelName).Msg("Healthcheck failed: server certificate changed or invalid")
+					}
+					log.Error().Err(err).Str("tunnel", tunnelName).Msg("Healthcheck request failed")
+				} else {
+					defer resp.Body.Close()
+					if resp.StatusCode != http.StatusOK {
+						failed = true
+						var healthResp types.HealthcheckResponse
+						if decodeErr := json.NewDecoder(resp.Body).Decode(&healthResp); decodeErr != nil {
+							log.Error().Err(decodeErr).Str("tunnel", tunnelName).Msg("Failed to decode healthcheck response")
+						}
+						log.Error().Int("status_code", resp.StatusCode).Str("status", healthResp.Status).Str("message", healthResp.Message).Str("tunnel", tunnelName).Msg("Healthcheck request failed")
+					} else {
+						// Success
+						var healthResp types.HealthcheckResponse
+						if err := json.NewDecoder(resp.Body).Decode(&healthResp); err == nil {
+							log.Debug().Str("status", healthResp.Status).Str("tunnel", tunnelName).Msg("Healthcheck successful")
+						}
+					}
+				}
+
+				if failed {
+					failCount++
+					log.Warn().Int("failures", failCount).Int("max_retries", retries).Str("tunnel", tunnelName).Msg("Healthcheck failed, incrementing failure count")
+					if failCount >= retries {
+						log.Fatal().Str("tunnel", tunnelName).Int("failures", failCount).Msg("Healthcheck failed too many times; shutting down config")
+					}
+				} else {
+					if failCount > 0 {
+						log.Info().Str("tunnel", tunnelName).Msg("Healthcheck recovered")
+					}
+					failCount = 0
+				}
+
+			case <-done:
+				return
+			}
+		}
+	}()
+
+	// Cleanup function
+	cleanup := func() {
+		log.Info().Str("tunnel", tunnelName).Msg("Stopping tunnel")
+		close(done)
+		
+		// Notify server to shutdown this tunnel
+		shutdownURL := func() string {
+			if _, _, perr := net.SplitHostPort(serverIP); perr == nil {
+				return fmt.Sprintf("https://%s/shutdown", serverIP)
+			}
+			return fmt.Sprintf("https://%s/shutdown", net.JoinHostPort(serverIP, "9092"))
+		}()
+		req, _ := http.NewRequest(http.MethodPost, shutdownURL, nil)
+		if resp, err := client.Do(req); err == nil && resp != nil {
+			io.Copy(io.Discard, resp.Body)
+			resp.Body.Close()
+		}
+		
+		if device != nil && device.Device != nil {
+			device.Device.Close()
+		}
+	}
+
+	return cleanup, nil
 }
 
 func init() {
 	// Register the tunnel-name flag so users can set a logical name for the tunnel.
 	tunnelCmd.Flags().String("tunnel-name", "", "Logical name for the tunnel (defaults to sha256(local|remote) if not set)")
+	// Register the retries flag
+	tunnelCmd.Flags().IntP("retries", "r", 1, "Maximum number of failed healthchecks before the tunnel shuts down")
 	// TLS certificate and key to present on the remote endpoint. These are intended
 	// for tests that want to present a custom certificate without relying on ACME.
 	tunnelCmd.Flags().String("tls-cert", "", "Path to TLS certificate file to present on remote HTTPS endpoint (test-only)")

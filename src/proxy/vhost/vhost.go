@@ -358,8 +358,10 @@ func NewVHostProxy(key VHostKey, manager *VHostProxyManager) *VHostProxy {
 
 type WGAwareRoundTripper struct {
 	http.RoundTripper
-	device *wireguard.UserspaceDevice
-	target *url.URL
+	device    *wireguard.UserspaceDevice
+	target    *url.URL
+	cleanup   func(tunnelName string)
+	proxyName string
 }
 
 // RoundTrip routes requests whose Host is an IP under 10.1.* through the userspace
@@ -378,6 +380,10 @@ func (w *WGAwareRoundTripper) RoundTrip(req *http.Request) (*http.Response, erro
 		// Use a DialContext that routes using the userspace device.
 		DialContext: func(ctx context.Context, network, addr string) (net.Conn, error) {
 			c, err := w.device.NetStack.Dial(network, addr)
+			if err != nil && w.cleanup != nil {
+				log.Warn().Str("proxy", w.proxyName).Err(err).Msg("WGAwareRoundTripper: dial failed, triggering cleanup")
+				go w.cleanup(w.proxyName)
+			}
 			return c, err
 		},
 	}
@@ -443,7 +449,7 @@ func (p *VHostProxy) newMeteredReverseProxy(cfg RouteConfig) (*meter.MeteredHTTP
 			}
 		}
 	}
-	proxy.Transport = &WGAwareRoundTripper{device: cfg.Device, target: cfg.Target}
+	proxy.Transport = &WGAwareRoundTripper{device: cfg.Device, target: cfg.Target, cleanup: p.manager.Cleanup, proxyName: cfg.ProxyName}
 	meteredProxy := meter.MakeMeteredHTTPHandler(proxy)
 	route.Handler = meteredProxy
 

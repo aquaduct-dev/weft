@@ -21,6 +21,8 @@ type Peer struct {
 	ProxiedUpstream string
 	// DstURL is the destination URL where the traffic is being forwarded.
 	DstURL string
+	// TunnelProxyPort is the port on the client's WireGuard interface that the server proxies to.
+	TunnelProxyPort int
 }
 
 // TunnelStore defines the interface for managing the state of tunnel peers and IP address allocation.

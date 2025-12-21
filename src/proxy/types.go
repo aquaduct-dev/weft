@@ -45,6 +45,8 @@ type TCPProxy struct {
 	bytesRx    atomic.Uint64
 	bytesTx    atomic.Uint64
 	instanceId string
+	// cleanup is called when the tunnel destination becomes unreachable.
+	cleanup    func(tunnelName string)
 }
 
 // Close closes the TCPProxy listener.

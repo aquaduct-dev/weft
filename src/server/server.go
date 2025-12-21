@@ -291,6 +291,11 @@ func (s *Server) Serve(req *types.ConnectRequest) (*types.ConnectResponse, error
 	}
 
 	pubKey := s.Dataplane.GetPrivateKey().PublicKey()
+	
+	// Update Peer with the assigned TunnelProxyPort
+	p.TunnelProxyPort = tunnelProxyPort
+	s.Store.SetPeer(req.TunnelName, p)
+
 	return &types.ConnectResponse{
 		ServerPublicKey: pubKey.String(),
 		ClientAddress:   p.IP.String(),
