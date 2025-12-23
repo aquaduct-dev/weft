@@ -170,7 +170,7 @@ func NewServer(port int, bindIP string, connectionSecret string, usageReportingU
 	mux.HandleFunc("/login", s.LoginHandler)
 	mux.HandleFunc("/list", s.ListHandler)
 	mux.HandleFunc("/metrics", s.MetricsHandler)
-	go s.startJanitor(11 * time.Second)
+	go s.startJanitor(5 * time.Second)
 	go s.startUsageReporter(1 * time.Minute)
 
 	return s
@@ -411,7 +411,7 @@ func (s *Server) startJanitor(interval time.Duration) {
 			if s.isShuttingDown() {
 				return
 			}
-			cutoff := time.Now().Add(-2 * interval)
+			cutoff := time.Now().Add(-3 * interval) // 15s with 5s interval
 			lastSeen := s.Store.GetAllLastSeen()
 			var staleTunnels []string
 			for k, last := range lastSeen {

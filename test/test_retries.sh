@@ -44,8 +44,8 @@ REMOTE_URL="tcp://127.0.0.1:${REMOTE_PORT}"
 
 wait_for_port "$SERVER_BIND_PORT"
 
-log "Starting weft tunnel with --retries 2..."
-"$WEFT_BIN" tunnel --verbose --retries 2 "$WEFT_URL" "$LOCAL_URL" "$REMOTE_URL" >"$TUNNEL_LOG" 2>&1 &
+log "Starting weft tunnel with --retries 3..."
+"$WEFT_BIN" tunnel --verbose --retries 3 "$WEFT_URL" "$LOCAL_URL" "$REMOTE_URL" >"$TUNNEL_LOG" 2>&1 &
 TUNNEL_PID=$!
 pids+=($TUNNEL_PID)
 
@@ -67,12 +67,15 @@ kill $SERVER_PID
 pids=("${pids[@]/$SERVER_PID}")
 
 # --- 4) Wait for tunnel to detect failures and shut down ---
-# Healthcheck interval is 5s. With retries=2, we expect:
-# - Fail 1 at ~5s
-# - Fail 2 at ~10s -> shutdown
-# Give it 20 seconds to be safe.
-log "Waiting for tunnel to shut down after 2 failed healthchecks..."
-TIMEOUT=20
+# New adaptive healthcheck behavior:
+# - After first failure: interval drops to 3s for fast retry
+# - With retries=3, exits after either:
+#   - 6 consecutive failures (retries*2)
+#   - 3 failures in 60s window
+# With server down immediately, consecutive failures trigger first.
+# Expect exit within ~30-45 seconds.
+log "Waiting for tunnel to shut down after healthcheck failures..."
+TIMEOUT=45
 INTERVAL=1
 ELAPSED=0
 while ps -p $TUNNEL_PID > /dev/null 2>&1; do
@@ -89,18 +92,20 @@ done
 log "Tunnel shut down as expected."
 
 # --- 5) Verify log messages ---
-if grep -q "Healthcheck failed, incrementing failure count" "$TUNNEL_LOG"; then
-    log "Found failure increment log [OK]"
+# Check for the new "Healthcheck failed" warning log
+if grep -q "Healthcheck failed" "$TUNNEL_LOG"; then
+    log "Found healthcheck failure log [OK]"
 else
-    log "FAIL: Missing 'Healthcheck failed, incrementing failure count' in tunnel log."
+    log "FAIL: Missing 'Healthcheck failed' in tunnel log."
     cat "$TUNNEL_LOG"
     exit 5
 fi
 
-if grep -q "Healthcheck failed too many times" "$TUNNEL_LOG"; then
+# Check for the shutdown log (either consecutive or windowed failures)
+if grep -qE "(Too many consecutive healthcheck failures|Too many healthcheck failures in window)" "$TUNNEL_LOG"; then
     log "Found shutdown log [OK]"
 else
-    log "FAIL: Missing 'Healthcheck failed too many times' in tunnel log."
+    log "FAIL: Missing shutdown message in tunnel log."
     cat "$TUNNEL_LOG"
     exit 6
 fi
