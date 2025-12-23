@@ -3,9 +3,9 @@ load("@rules_go//go:def.bzl", "go_test")
 go_test(
     name = "src_test",
     srcs = [
+        "server_connectivity_test.go",
         "server_tunnel_suite_test.go",
         "server_tunnel_test.go",
-        "server_connectivity_test.go",
     ],
     deps = [
         "//src/auth",
