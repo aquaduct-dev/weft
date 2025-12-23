@@ -33,6 +33,27 @@ go_cross_binary(
     visibility = ["//visibility:public"],
 )
 
+go_cross_binary(
+    name = "weft_windows_amd64",
+    platform = "@rules_go//go/toolchain:windows_amd64",
+    target = ":weft_raw",
+    visibility = ["//visibility:public"],
+)
+
+go_cross_binary(
+    name = "weft_darwin_amd64",
+    platform = "@rules_go//go/toolchain:darwin_amd64",
+    target = ":weft_raw",
+    visibility = ["//visibility:public"],
+)
+
+go_cross_binary(
+    name = "weft_darwin_arm64",
+    platform = "@rules_go//go/toolchain:darwin_arm64",
+    target = ":weft_raw",
+    visibility = ["//visibility:public"],
+)
+
 gazelle_test(
     name = "gazelle_test",
     workspace = "//:BUILD.bazel",  # a file in the workspace root, where the gazelle will be run

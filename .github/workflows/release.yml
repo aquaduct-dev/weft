@@ -20,6 +20,9 @@ jobs:
     env:
       BAZEL_BUILD_TARGET_AMD64: //:weft
       BAZEL_BUILD_TARGET_ARM64: //:weft_arm64
+      BAZEL_BUILD_TARGET_WINDOWS_AMD64: //:weft_windows_amd64
+      BAZEL_BUILD_TARGET_DARWIN_AMD64: //:weft_darwin_amd64
+      BAZEL_BUILD_TARGET_DARWIN_ARM64: //:weft_darwin_arm64
     steps:
       - name: Calculate previous run number
         id: calc_prev_run
@@ -58,19 +61,33 @@ jobs:
           sudo chmod +x /usr/local/bin/bazelisk
           bazelisk --version
 
-      - name: Build Binaries (AMD64 & ARM64)
+      - name: Build Binaries (All Platforms)
         run: |
           mkdir -p release-artifacts
+          # Linux AMD64
           bazelisk build --platforms=@rules_go//go/toolchain:linux_amd64 "$BAZEL_BUILD_TARGET_AMD64"
           cp bazel-bin/weft release-artifacts/weft-linux-amd64
+          # Linux ARM64
           bazelisk build --platforms=@rules_go//go/toolchain:linux_amd64 "$BAZEL_BUILD_TARGET_ARM64"
           cp bazel-bin/weft_arm64 release-artifacts/weft-linux-arm64
+          # Windows AMD64
+          bazelisk build --platforms=@rules_go//go/toolchain:linux_amd64 "$BAZEL_BUILD_TARGET_WINDOWS_AMD64"
+          cp bazel-bin/weft_windows_amd64 release-artifacts/weft-windows-amd64.exe
+          # macOS AMD64
+          bazelisk build --platforms=@rules_go//go/toolchain:linux_amd64 "$BAZEL_BUILD_TARGET_DARWIN_AMD64"
+          cp bazel-bin/weft_darwin_amd64 release-artifacts/weft-darwin-amd64
+          # macOS ARM64
+          bazelisk build --platforms=@rules_go//go/toolchain:linux_amd64 "$BAZEL_BUILD_TARGET_DARWIN_ARM64"
+          cp bazel-bin/weft_darwin_arm64 release-artifacts/weft-darwin-arm64
           chmod +x release-artifacts/*
 
       - name: Sanity Check Binaries
         run: |
           file release-artifacts/weft-linux-amd64 | grep -q "x86-64"
           file release-artifacts/weft-linux-arm64 | grep -q "aarch64"
+          file release-artifacts/weft-windows-amd64.exe | grep -q "PE32+"
+          file release-artifacts/weft-darwin-amd64 | grep -q "Mach-O 64-bit x86_64"
+          file release-artifacts/weft-darwin-arm64 | grep -q "Mach-O 64-bit arm64"
           
 
 
