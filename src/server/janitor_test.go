@@ -2,6 +2,7 @@ package server
 
 import (
 	"context"
+	"net/netip"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -44,25 +45,32 @@ func (m *mockTunnelStore) GetAllLastSeen() map[string]time.Time {
 }
 
 // Unused but required by interface
-func (m *mockTunnelStore) GetPeer(name string) (Peer, bool)       { return Peer{}, false }
-func (m *mockTunnelStore) SetPeer(name string, p Peer)            {}
-func (m *mockTunnelStore) DeletePeer(name string)                 {}
-func (m *mockTunnelStore) GetAllPeers() map[string]Peer           { return nil }
-func (m *mockTunnelStore) DeleteLastSeen(name string)             {}
-func (m *mockTunnelStore) GetFreeIP() (netip.Addr, error)         { return netip.Addr{}, nil }
-func (m *mockTunnelStore) ReleaseIP(ip netip.Addr)                {}
+func (m *mockTunnelStore) GetPeer(name string) (Peer, bool) { return Peer{}, false }
+func (m *mockTunnelStore) SetPeer(name string, p Peer)      {}
+func (m *mockTunnelStore) DeletePeer(name string)           {}
+func (m *mockTunnelStore) GetAllPeers() map[string]Peer     { return nil }
+func (m *mockTunnelStore) DeleteLastSeen(name string)       { m.deleteLastSeen(name) }
+func (m *mockTunnelStore) GetFreeIP() (netip.Addr, error)   { return netip.Addr{}, nil }
+func (m *mockTunnelStore) ReleaseIP(ip netip.Addr)          {}
 
-import "net/netip"
+// Helper for tests
+func (m *mockTunnelStore) deleteLastSeen(name string) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	delete(m.lastSeen, name)
+}
 
 func TestJanitor_SweepsStaleTunnels(t *testing.T) {
 	store := newMockTunnelStore()
 
 	var cleanedUp []string
 	var cleanupMu sync.Mutex
+	// Cleanup that also removes from the store to prevent re-cleanup
 	cleanup := func(name string) {
 		cleanupMu.Lock()
 		cleanedUp = append(cleanedUp, name)
 		cleanupMu.Unlock()
+		store.deleteLastSeen(name)
 	}
 
 	var reported []string
@@ -74,8 +82,10 @@ func TestJanitor_SweepsStaleTunnels(t *testing.T) {
 	}
 
 	// Add one stale and one fresh tunnel
+	// Stale tunnel: 1 hour ago (well past any cutoff)
+	// Fresh tunnel: 1 hour in the future (will never become stale during test)
 	store.SetLastSeen("stale-tunnel", time.Now().Add(-1*time.Hour))
-	store.SetLastSeen("fresh-tunnel", time.Now())
+	store.SetLastSeen("fresh-tunnel", time.Now().Add(1*time.Hour))
 
 	janitor := NewJanitor(
 		10*time.Millisecond,
@@ -92,7 +102,7 @@ func TestJanitor_SweepsStaleTunnels(t *testing.T) {
 	// Verify stale tunnel was cleaned up
 	cleanupMu.Lock()
 	defer cleanupMu.Unlock()
-	
+
 	if len(cleanedUp) != 1 {
 		t.Errorf("expected 1 cleanup, got %d", len(cleanedUp))
 	}
@@ -131,7 +141,7 @@ func TestJanitor_StopsGracefully(t *testing.T) {
 	// After stopping, no more sweeps should occur
 	countAfterStop := sweepCount.Load()
 	time.Sleep(20 * time.Millisecond)
-	
+
 	if sweepCount.Load() != countAfterStop {
 		t.Errorf("janitor continued sweeping after Stop()")
 	}

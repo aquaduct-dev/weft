@@ -1,4 +1,4 @@
-load("@rules_go//go:def.bzl", "go_library")
+load("@rules_go//go:def.bzl", "go_library", "go_test")
 
 go_library(
     name = "server",
@@ -25,3 +25,13 @@ go_library(
         "@com_zx2c4_golang_wireguard_wgctrl//wgtypes",
     ],
 )
+
+go_test(
+    name = "server_test",
+    srcs = [
+        "janitor_test.go",
+        "usage_reporter_test.go",
+    ],
+    embed = [":server"],
+)
+
