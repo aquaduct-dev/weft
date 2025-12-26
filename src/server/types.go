@@ -1,7 +1,6 @@
 package server
 
 import (
-	"context"
 	"net/netip"
 	"time"
 
@@ -83,25 +82,4 @@ type ProxyCounters struct {
 	Rx uint64
 	// InstanceId is a unique identifier for the specific proxy instance.
 	InstanceId string
-}
-
-// TunnelUsage represents the usage statistics for a specific tunnel for reporting.
-type TunnelUsage struct {
-	TunnelName  string `json:"tunnel_name"`
-	InstanceId  string `json:"instance_id"`
-	BytesTx     uint64 `json:"bytes_tx"`
-	BytesRx     uint64 `json:"bytes_rx"`
-	Source      string `json:"source"`
-	Destination string `json:"destination"`
-}
-
-// UsageReport is a collection of usage statistics for multiple tunnels.
-type UsageReport struct {
-	Tunnels []TunnelUsage `json:"tunnels"`
-}
-
-// UsageReporter defines the interface for reporting tunnel usage statistics to an external service.
-type UsageReporter interface {
-	// ReportUsage sends the provided tunnel usage statistics.
-	ReportUsage(ctx context.Context, tunnels []TunnelUsage) error
 }

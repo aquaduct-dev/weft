@@ -9,6 +9,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/aquaduct-dev/weft/types"
 	"github.com/rs/zerolog/log"
 )
 
@@ -97,13 +98,13 @@ func (r *HTTPUsageReporter) ReportUsage(ctx context.Context, tunnels []string) {
 
 	proxies := r.getCounters()
 	peers := r.getPeers()
-	var report UsageReport
+	var report types.UsageReport
 
 	if tunnels == nil {
 		// Report all tunnels
 		for name, p := range peers {
 			if counters, ok := proxies[name]; ok {
-				report.Tunnels = append(report.Tunnels, TunnelUsage{
+				report.Tunnels = append(report.Tunnels, types.TunnelUsage{
 					TunnelName:  name,
 					InstanceId:  counters.InstanceId,
 					BytesTx:     counters.Tx,
@@ -118,7 +119,7 @@ func (r *HTTPUsageReporter) ReportUsage(ctx context.Context, tunnels []string) {
 		for _, name := range tunnels {
 			if counters, ok := proxies[name]; ok {
 				if p, ok := peers[name]; ok {
-					report.Tunnels = append(report.Tunnels, TunnelUsage{
+					report.Tunnels = append(report.Tunnels, types.TunnelUsage{
 						TunnelName:  name,
 						InstanceId:  counters.InstanceId,
 						BytesTx:     counters.Tx,

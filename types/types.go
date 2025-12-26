@@ -53,3 +53,17 @@ type HealthcheckResponse struct {
 	Message string `json:"message,omitempty"`
 }
 
+// TunnelUsage represents the usage statistics for a specific tunnel for reporting.
+type TunnelUsage struct {
+	TunnelName  string `json:"tunnel_name"`
+	InstanceId  string `json:"instance_id"`
+	BytesTx     uint64 `json:"bytes_tx"`
+	BytesRx     uint64 `json:"bytes_rx"`
+	Source      string `json:"source"`
+	Destination string `json:"destination"`
+}
+
+// UsageReport is a collection of usage statistics for multiple tunnels.
+type UsageReport struct {
+	Tunnels []TunnelUsage `json:"tunnels"`
+}

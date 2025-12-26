@@ -8,11 +8,13 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"github.com/aquaduct-dev/weft/types"
 )
 
 func TestHTTPUsageReporter_ReportsUsagePeriodically(t *testing.T) {
 	var reportCount atomic.Int32
-	var lastReport UsageReport
+	var lastReport types.UsageReport
 
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		reportCount.Add(1)
@@ -55,7 +57,7 @@ func TestHTTPUsageReporter_ReportsUsagePeriodically(t *testing.T) {
 }
 
 func TestHTTPUsageReporter_ReportsSpecificTunnels(t *testing.T) {
-	var lastReport UsageReport
+	var lastReport types.UsageReport
 
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if err := json.NewDecoder(r.Body).Decode(&lastReport); err != nil {
