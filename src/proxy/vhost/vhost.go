@@ -481,7 +481,6 @@ func (p *VHostProxy) AddHostWithTLS(cfg RouteConfig) (VHostCloser, *meter.Metere
 
 	meteredProxy, route := p.newMeteredReverseProxy(cfg)
 
-	// Create a tls.Config from the PEMs.
 	cert, err := tls.X509KeyPair([]byte(cfg.CertPEM), []byte(cfg.KeyPEM))
 	if err != nil {
 		return VHostCloser{}, meteredProxy, err
@@ -490,7 +489,6 @@ func (p *VHostProxy) AddHostWithTLS(cfg RouteConfig) (VHostCloser, *meter.Metere
 		Certificates: []tls.Certificate{cert},
 	}
 
-	// Store the HTTPS handler (mux) and its TLS config so the Server can mount it on a listener.
 	p.tlsRoutes[cfg.Host] = append(p.tlsRoutes[cfg.Host], route)
 
 	// lazily create tlsConfigs map if needed

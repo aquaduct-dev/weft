@@ -79,7 +79,6 @@ var tunnelCmd = &cobra.Command{
 		var cleanups []func()
 		var cleanupLock sync.Mutex
 
-		// Loop through src/dst pairs
 		for i := 1; i < len(args); i += 2 {
 			localStr := args[i]
 			remoteStr := args[i+1]
@@ -149,9 +148,6 @@ func startTunnel(serverIP, connectionSecret, localStr, remoteStr, tunnelName str
 		}
 	}
 
-	// Provide proxy_name (tunnel name) to login so server issues a JWT scoped to this tunnel.
-	// Note: serverIP here includes the port (e.g. host:9092) as processed in Run.
-	// auth.Login expects just host or host:port? It uses it in URLs.
 	httpClient, err := auth.Login(serverIP, connectionSecret, tunnelName)
 	if err != nil {
 		return nil, fmt.Errorf("login failed: %w", err)

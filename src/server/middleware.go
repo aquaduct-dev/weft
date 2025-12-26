@@ -38,7 +38,6 @@ func (s *Server) requireJWT(next http.HandlerFunc) http.HandlerFunc {
 			return
 		}
 
-		// Store the validated token in the request context
 		ctx := context.WithValue(r.Context(), jwtTokenKey, token)
 		next(w, r.WithContext(ctx))
 	}

@@ -81,7 +81,6 @@ var listCmd = &cobra.Command{
 			log.Fatal().Int("status", resp.StatusCode).Msg("server returned non-OK status for /list")
 		}
 
-		// Parse the JSON response
 		type tunnelInfo struct {
 			Tx     uint64 `json:"tx"`
 			Rx     uint64 `json:"rx"`

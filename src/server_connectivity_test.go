@@ -56,19 +56,8 @@ var _ = Describe("Server Connectivity Checks", func() {
 		var tunnelLn net.Listener
 		tunnelLn, controlPort = openPort()
 		tunnelLn.Close() // we only needed the free port number
-		// Use shorter check interval for testing (e.g. 100ms via modification or just rely on default 10s and wait?)
-		// The 10s default in server.go means we have to wait > 30s. That's too long for a unit test.
-		// However, I hardcoded 10s in server.go: `go s.startConnectivityChecker(10 * time.Second)`.
-		// I cannot easily change it from here without modifying NewServer signature or changing the code.
-		// Since I modified server.go, I can change it to be configurable or just accept the wait.
-		// Waiting 30s in a test is not ideal.
-		// Assuming I can't change it now, I will wait. Or I can use reflection/unsafe? No.
-		// I will just wait. Or maybe I should specificy a smaller interval in NewServer if I could.
 		
 		tunnelSrv = server.NewServer(controlPort, "127.0.0.1", "", "", "")
-		
-		// NOTE: In a real scenario we'd want to inject the interval.
-		// For now, testing 3 * 10s = 30s + buffer is acceptable but slow.
 		
 		go tunnelSrv.ListenAndServeTLS("", "")
 

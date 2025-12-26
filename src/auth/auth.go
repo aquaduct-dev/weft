@@ -125,7 +125,6 @@ func GetToken(serverAddr, connectionSecret, proxyName string) (string, []byte, e
 
 	log.Debug().Int("token_len", len(loginResp.Token)).Str("server", serverAddr).Msg("Login: obtained JWT")
 
-	// Decrypt the server certificate
 	encryptedCert, err := base64.StdEncoding.DecodeString(loginResp.Certificate)
 	if err != nil {
 		return "", nil, fmt.Errorf("failed to decode certificate: %w", err)
@@ -168,7 +167,6 @@ func Login(serverAddr, connectionSecret, proxyName string) (*http.Client, error)
 		return nil, err
 	}
 
-	// Parse the PEM-encoded certificate from the server
 	block, _ := pem.Decode(certPEM)
 	if block == nil {
 		return nil, errors.New("failed to decode server certificate PEM")

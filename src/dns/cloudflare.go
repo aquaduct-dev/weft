@@ -19,8 +19,6 @@ func UpdateRecord(token string, hostname string, targetIP string) error {
 		return fmt.Errorf("failed to create cloudflare client: %w", err)
 	}
 
-	// We need to find the zone ID. Since hostname can be a subdomain, we search for the zone
-	// that matches the hostname's domain.
 	ctx := context.Background()
 	zones, err := api.ListZones(ctx)
 	if err != nil {
