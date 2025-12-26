@@ -4,10 +4,12 @@ go_library(
     name = "server",
     srcs = [
         "dataplane.go",
+        "janitor.go",
         "middleware.go",
         "server.go",
         "store.go",
         "types.go",
+        "usage_reporter.go",
     ],
     importpath = "github.com/aquaduct-dev/weft/src/server",
     visibility = ["//visibility:public"],

@@ -4,7 +4,6 @@ This package implements the REST server for the Weft control plane.
 package server
 
 import (
-	"bytes"
 	"context"
 	"crypto/rand"
 	"crypto/tls"
@@ -70,6 +69,12 @@ type Server struct {
 
 	// challenges maps remote client addresses to their active login challenges.
 	challenges map[string]string
+
+	// janitor handles periodic cleanup of stale tunnels.
+	janitor *Janitor
+
+	// usageReporter handles periodic usage reporting to external services.
+	usageReporter *HTTPUsageReporter
 }
 
 // CreateDevice initializes a new userspace WireGuard device on the specified port.
@@ -175,8 +180,24 @@ func NewServer(port int, bindIP string, connectionSecret string, usageReportingU
 	mux.HandleFunc("/login", s.LoginHandler)
 	mux.HandleFunc("/list", s.requireJWT(s.ListHandler))
 	mux.HandleFunc("/metrics", s.MetricsHandler)
-	go s.startJanitor(5 * time.Second)
-	go s.startUsageReporter(1 * time.Minute)
+
+	s.usageReporter = NewHTTPUsageReporter(
+		usageReportingURL,
+		1*time.Minute,
+		s.Dataplane.GetProxyCounters,
+		s.Store.GetAllPeers,
+		s.isShuttingDown,
+	)
+	s.usageReporter.Start()
+
+	s.janitor = NewJanitor(
+		5*time.Second,
+		s.Store,
+		s.RemoveTunnel,
+		s.usageReporter.ReportUsage,
+		s.isShuttingDown,
+	)
+	s.janitor.Start()
 
 	return s
 }
@@ -364,122 +385,14 @@ func (s *Server) HealthcheckHandler(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(resp)
 }
 
-func (s *Server) startJanitor(interval time.Duration) {
-	go func() {
-		ticker := time.NewTicker(interval)
-		defer ticker.Stop()
-		for range ticker.C {
-			if s.isShuttingDown() {
-				return
-			}
-			cutoff := time.Now().Add(-3 * interval) // 15s with 5s interval
-			lastSeen := s.Store.GetAllLastSeen()
-			var staleTunnels []string
-			for k, last := range lastSeen {
-				if last.Before(cutoff) {
-					staleTunnels = append(staleTunnels, k)
-				}
-			}
-
-			if len(staleTunnels) > 0 {
-				s.reportUsage(context.Background(), staleTunnels)
-			}
-
-			for _, k := range staleTunnels {
-				if last, ok := s.Store.GetLastSeen(k); ok && last.Before(cutoff) {
-					s.RemoveTunnel(k)
-					log.Info().Str("peer", k).Msg("Janitor: removed stale tunnel")
-				}
-			}
-		}
-	}()
-}
-
-func (s *Server) startUsageReporter(interval time.Duration) {
-	if s.UsageReportingURL == "" {
-		return
-	}
-	go func() {
-		ticker := time.NewTicker(interval)
-		defer ticker.Stop()
-		for range ticker.C {
-			s.reportUsage(context.Background(), nil)
-		}
-	}()
-}
-
+// reportUsage delegates to the usage reporter for on-demand reporting.
 func (s *Server) reportUsage(ctx context.Context, tunnels []string) {
-	if s.UsageReportingURL == "" {
-		return
-	}
-	if s.isShuttingDown() {
-		return
-	}
-
-	proxies := s.Dataplane.GetProxyCounters()
-	peers := s.Store.GetAllPeers()
-	var report UsageReport
-
-	if tunnels == nil {
-		for name, p := range peers {
-			if counters, ok := proxies[name]; ok {
-				report.Tunnels = append(report.Tunnels, TunnelUsage{
-					TunnelName:  name,
-					InstanceId:  counters.InstanceId,
-					BytesTx:     counters.Tx,
-					BytesRx:     counters.Rx,
-					Source:      p.ProxiedUpstream,
-					Destination: p.DstURL,
-				})
-			}
-		}
-	} else {
-		for _, name := range tunnels {
-			if counters, ok := proxies[name]; ok {
-				if p, ok := s.Store.GetPeer(name); ok {
-					report.Tunnels = append(report.Tunnels, TunnelUsage{
-						TunnelName:  name,
-						InstanceId:  counters.InstanceId,
-						BytesTx:     counters.Tx,
-						BytesRx:     counters.Rx,
-						Source:      p.ProxiedUpstream,
-						Destination: p.DstURL,
-					})
-				}
-			}
-		}
-	}
-
-	if len(report.Tunnels) == 0 {
-		return
-	}
-
-	body, err := json.Marshal(report)
-	if err != nil {
-		log.Error().Err(err).Msg("failed to marshal usage report")
-		return
-	}
-
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, s.UsageReportingURL, bytes.NewReader(body))
-	if err != nil {
-		log.Error().Err(err).Msg("failed to create usage report request")
-		return
-	}
-	req.Header.Set("Content-Type", "application/json")
-
-	resp, err := http.DefaultClient.Do(req)
-	if err != nil {
-		log.Error().Err(err).Msg("failed to send usage report")
-		return
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode >= 400 {
-		bodyBytes, _ := io.ReadAll(resp.Body)
-		log.Warn().Int("status", resp.StatusCode).Str("body", string(bodyBytes)).Msg("usage report failed")
-	} else {
-		log.Debug().Int("count", len(report.Tunnels)).Msg("usage report sent")
+	if s.usageReporter != nil {
+		s.usageReporter.ReportUsage(ctx, tunnels)
 	}
 }
+
+
 
 func (s *Server) isShuttingDown() bool {
 	s.mu.Lock()
