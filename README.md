@@ -2,6 +2,72 @@
 
 [![Test](https://github.com/aquaduct-dev/weft/actions/workflows/test.yml/badge.svg)](https://github.com/aquaduct-dev/weft/actions/workflows/test.yml) [![Release](https://github.com/aquaduct-dev/weft/actions/workflows/release.yml/badge.svg)](https://github.com/aquaduct-dev/weft/actions/workflows/release.yml)
 
+## Installation
+
+### Homebrew (macOS and Linux)
+
+```bash
+brew tap aquaduct-dev/weft
+brew install weft
+```
+
+### Debian / Ubuntu (deb)
+
+```bash
+# Download the latest .deb package
+curl -LO https://github.com/aquaduct-dev/weft/releases/latest/download/weft_amd64.deb
+
+# Install
+sudo dpkg -i weft_amd64.deb
+```
+
+For ARM64 systems:
+```bash
+curl -LO https://github.com/aquaduct-dev/weft/releases/latest/download/weft_arm64.deb
+sudo dpkg -i weft_arm64.deb
+```
+
+### RHEL / Fedora / CentOS (rpm)
+
+```bash
+# Download the latest .rpm package
+curl -LO https://github.com/aquaduct-dev/weft/releases/latest/download/weft_amd64.rpm
+
+# Install
+sudo rpm -i weft_amd64.rpm
+```
+
+For ARM64 systems:
+```bash
+curl -LO https://github.com/aquaduct-dev/weft/releases/latest/download/weft_arm64.rpm
+sudo rpm -i weft_arm64.rpm
+```
+
+### Manual Download
+
+Download the appropriate binary for your platform from the [Releases page](https://github.com/aquaduct-dev/weft/releases):
+
+| Platform | Architecture | Download |
+|----------|--------------|----------|
+| Linux | x86_64 | `weft-linux-amd64` |
+| Linux | ARM64 | `weft-linux-arm64` |
+| macOS | Intel | `weft-darwin-amd64` |
+| macOS | Apple Silicon | `weft-darwin-arm64` |
+| Windows | x86_64 | `weft-windows-amd64.exe` |
+
+```bash
+# Example: Download and install on Linux x86_64
+curl -LO https://github.com/aquaduct-dev/weft/releases/latest/download/weft-linux-amd64
+chmod +x weft-linux-amd64
+sudo mv weft-linux-amd64 /usr/local/bin/weft
+```
+
+### Docker
+
+```bash
+docker pull ghcr.io/aquaduct-dev/weft:latest
+```
+
 ## What is this?
 
 Weft is a Layer 4/Layer 7 tunnelling proxy built around [wireguard-go](https://github.com/WireGuard/wireguard-go) and designed for scalable, secure hosting of internet-facing resources from environments which lack public internet access.
@@ -145,22 +211,31 @@ HTTP and HTTPS proxies are more complicated.  Each server-side `VHostProxy` must
 
 ### HTTPS Zero-Trust Secret Verification
 
-The Weft server does not have a signed TLS certificate.  Weft uses a short AES-based challenge to verify both the server and client possess the secret to prevent clients from connecting to fake servers.
+The Weft server uses a self-signed TLS certificate. To prevent man-in-the-middle attacks, Weft uses an encrypted challenge-response protocol that also securely delivers the server's certificate to the client.
 
-1. Client `GET`s `/login`.
-2. Server generates a random nonce and returns the string "server-<nonce>" encrypted with the common secret.
-3. Client decrypts and verifies that the "server-" prefix is present.
+**Authentication Flow:**
+
+1. Client `GET`s `/login` (using `InsecureSkipVerify` for this initial request only).
+2. Server generates a random nonce and returns the string "server-<nonce>" encrypted with the connection secret.
+3. Client decrypts and verifies that the "server-" prefix is present — proving the server has the secret.
 4. Client encrypts the nonce and `POST`s it to `/login`.
 5. Server decrypts the received ciphertext and verifies it matches the stored challenge.
-6. On success, Server issues a short-lived JWT (~30m).
-7. Client includes the JWT in the `Authorization` header for subsequent requests.
+6. On success, Server issues:
+   - A short-lived JWT (~30m)
+   - The server's TLS certificate PEM, **encrypted with the connection secret**
+7. Client decrypts the certificate and uses it as the trusted root CA for all subsequent TLS connections.
+8. Client includes the JWT in the `Authorization` header for subsequent requests.
 
-Subsequently, the token is used for healthchecks.  When it expires, the client must repeat the challenge to obtain a new token.
+**Why This Prevents MITM:**
 
-Notes:
-- All AES operations use the shared connection secret as the key.  The nonce is single-use.
+- A man-in-the-middle attacker cannot decrypt the certificate because they don't have the connection secret.
+- After the initial handshake, all connections are validated against the encrypted-and-delivered certificate.
+- Even if an attacker intercepts the initial TLS handshake, they cannot produce a valid encrypted certificate that the client will trust.
+
+**Notes:**
+- All AES operations use the shared connection secret as the key. The nonce is single-use.
 - The protocol allows both sides to prove they have the same secret without ever exchanging it.
-- The JWT is used for all subsequent requests.
+- The JWT is used for all subsequent requests. When it expires, the client repeats the challenge to obtain a new token.
 
 ## Development
 

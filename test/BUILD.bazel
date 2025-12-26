@@ -149,3 +149,9 @@ sh_test(
     srcs = ["test_retries.sh"],
     deps = [":lib"],
 )
+
+sh_test(
+    name = "test_mitm",
+    srcs = ["test_mitm.sh"],
+    deps = [":lib"],
+)

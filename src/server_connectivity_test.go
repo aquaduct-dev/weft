@@ -81,7 +81,7 @@ var _ = Describe("Server Connectivity Checks", func() {
 		By("logging in to the test server")
 		Eventually(func() error {
 			var e error
-			token, e = auth.GetToken(fmt.Sprintf("127.0.0.1:%d", controlPort), tunnelSrv.ConnectionSecret, "conn-test-tunnel")
+			token, _, e = auth.GetToken(fmt.Sprintf("127.0.0.1:%d", controlPort), tunnelSrv.ConnectionSecret, "conn-test-tunnel")
 			return e
 		}).Should(Succeed())
 	})

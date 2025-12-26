@@ -15,6 +15,7 @@ import (
 	"crypto/x509"
 	"encoding/base64"
 	"encoding/json"
+	"encoding/pem"
 	"errors"
 	"fmt"
 	"io"
@@ -26,21 +27,9 @@ import (
 	"github.com/rs/zerolog/log"
 )
 
-func getCertificates(serverAddr string) ([]*x509.Certificate, error) {
-	conn, err := tls.Dial("tcp", serverAddr, &tls.Config{
-		InsecureSkipVerify: true,
-	})
-	if err != nil {
-		log.Err(err).Msg("Login: Error in dial")
-		return nil, err
-	}
-	defer conn.Close()
-	return conn.ConnectionState().PeerCertificates, nil
-}
-
 // GetToken executes the challenge-response login flow with the specified Weft server
-// and returns a signed JWT if successful.
-func GetToken(serverAddr, connectionSecret, proxyName string) (string, error) {
+// and returns a signed JWT and the server's certificate PEM if successful.
+func GetToken(serverAddr, connectionSecret, proxyName string) (string, []byte, error) {
 	client := http.Client{
 		Transport: &http.Transport{
 			TLSClientConfig: &tls.Config{InsecureSkipVerify: true},
@@ -52,19 +41,19 @@ func GetToken(serverAddr, connectionSecret, proxyName string) (string, error) {
 	resp, err := client.Get(loginURL)
 	if err != nil {
 		log.Error().Err(err).Msg("Login: GET /login failed")
-		return "", fmt.Errorf("failed to get login challenge: %w", err)
+		return "", nil, fmt.Errorf("failed to get login challenge: %w", err)
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
 		body, _ := io.ReadAll(resp.Body)
-		return "", fmt.Errorf("login challenge failed with status %d: %s", resp.StatusCode, string(body))
+		return "", nil, fmt.Errorf("login challenge failed with status %d: %s", resp.StatusCode, string(body))
 	}
 
 	encryptedChallenge, err := io.ReadAll(resp.Body)
 	if err != nil {
 		log.Error().Err(err).Msg("Login: failed to read challenge body")
-		return "", fmt.Errorf("failed to read login challenge: %w", err)
+		return "", nil, fmt.Errorf("failed to read login challenge: %w", err)
 	}
 	log.Debug().Int("len", len(encryptedChallenge)).Str("server", serverAddr).Msg("Login: received encrypted challenge")
 
@@ -72,12 +61,12 @@ func GetToken(serverAddr, connectionSecret, proxyName string) (string, error) {
 	decrypted, err := Decrypt(connectionSecret, encryptedChallenge)
 	if err != nil {
 		log.Error().Err(err).Msg("Login: decrypt failed (maybe wrong connection secret)")
-		return "", fmt.Errorf("failed to decrypt login challenge - is the connection secret correct? %w", err)
+		return "", nil, fmt.Errorf("failed to decrypt login challenge - is the connection secret correct? %w", err)
 	}
 	log.Debug().Int("len", len(decrypted)).Msg("Login: decrypted challenge")
 
 	if !strings.HasPrefix(string(decrypted), "server-") {
-		return "", fmt.Errorf("invalid server challenge")
+		return "", nil, fmt.Errorf("invalid server challenge")
 	}
 
 	challenge := strings.TrimPrefix(string(decrypted), "server-")
@@ -86,7 +75,7 @@ func GetToken(serverAddr, connectionSecret, proxyName string) (string, error) {
 	encrypted, err := Encrypt(connectionSecret, challenge)
 	if err != nil {
 		log.Error().Err(err).Msg("Login: encryption of response failed")
-		return "", fmt.Errorf("failed to encrypt login challenge: %w", err)
+		return "", nil, fmt.Errorf("failed to encrypt login challenge: %w", err)
 	}
 	log.Debug().Str("url", loginURL).Int("len", len(encrypted)).Msg("Login: posting encrypted challenge response")
 
@@ -102,34 +91,58 @@ func GetToken(serverAddr, connectionSecret, proxyName string) (string, error) {
 	jsonBody, jerr := json.Marshal(reqBodyMap)
 	if jerr != nil {
 		log.Error().Err(jerr).Msg("Login: failed to marshal login JSON")
-		return "", fmt.Errorf("failed to marshal login request: %w", jerr)
+		return "", nil, fmt.Errorf("failed to marshal login request: %w", jerr)
 	}
 	resp, err = client.Post(loginURL, "application/json", bytes.NewBuffer(jsonBody))
 	if err != nil {
 		log.Error().Err(err).Msg("Login: POST /login failed")
-		return "", fmt.Errorf("failed to post login challenge: %w", err)
+		return "", nil, fmt.Errorf("failed to post login challenge: %w", err)
 	}
 	defer resp.Body.Close()
 	log.Debug().Int("status_code", resp.StatusCode).Msg("Login: POST /login completed")
 
 	if resp.StatusCode != http.StatusOK {
 		body, _ := io.ReadAll(resp.Body)
-		return "", fmt.Errorf("login failed with status %d: %s", resp.StatusCode, string(body))
+		return "", nil, fmt.Errorf("login failed with status %d: %s", resp.StatusCode, string(body))
 	}
 
-	jwt, err := io.ReadAll(resp.Body)
-	if err != nil {
-		log.Error().Err(err).Str("server", serverAddr).Msg("Login: failed to read JWT")
-		return "", fmt.Errorf("failed to read JWT: %w", err)
+	// Parse JSON response containing token and encrypted certificate
+	var loginResp struct {
+		Token       string `json:"token"`
+		Certificate string `json:"certificate"`
 	}
-	log.Debug().Int("len", len(jwt)).Str("server", serverAddr).Msg("Login: obtained JWT")
-	exp, err := jwtExpiry(string(jwt))
+	if err := json.NewDecoder(resp.Body).Decode(&loginResp); err != nil {
+		log.Error().Err(err).Str("server", serverAddr).Msg("Login: failed to parse login response")
+		return "", nil, fmt.Errorf("failed to parse login response: %w", err)
+	}
+
+	if loginResp.Token == "" {
+		return "", nil, fmt.Errorf("login response missing token")
+	}
+	if loginResp.Certificate == "" {
+		return "", nil, fmt.Errorf("login response missing certificate")
+	}
+
+	log.Debug().Int("token_len", len(loginResp.Token)).Str("server", serverAddr).Msg("Login: obtained JWT")
+
+	// Decrypt the server certificate
+	encryptedCert, err := base64.StdEncoding.DecodeString(loginResp.Certificate)
 	if err != nil {
-		return "", fmt.Errorf("failed to parse JWT expiry: %w", err)
+		return "", nil, fmt.Errorf("failed to decode certificate: %w", err)
+	}
+	certPEM, err := Decrypt(connectionSecret, encryptedCert)
+	if err != nil {
+		return "", nil, fmt.Errorf("failed to decrypt server certificate: %w", err)
+	}
+	log.Debug().Int("cert_len", len(certPEM)).Msg("Login: decrypted server certificate")
+
+	exp, err := jwtExpiry(loginResp.Token)
+	if err != nil {
+		return "", nil, fmt.Errorf("failed to parse JWT expiry: %w", err)
 	}
 	log.Info().Str("token_expiry", exp.Sub(time.Now()).String()).Msg("Logged in")
 
-	return string(jwt), nil
+	return loginResp.Token, certPEM, nil
 }
 
 func jwtExpiry(jwtString string) (time.Time, error) {
@@ -147,31 +160,35 @@ func jwtExpiry(jwtString string) (time.Time, error) {
 }
 
 // Login performs the full zero-trust authentication flow with the server, including
-// certificate discovery, and returns an http.Client configured with a JWT-refreshing transport.
+// certificate verification via encrypted certificate exchange, and returns an
+// http.Client configured with a JWT-refreshing transport.
 func Login(serverAddr, connectionSecret, proxyName string) (*http.Client, error) {
-	token, err := GetToken(serverAddr, connectionSecret, proxyName)
+	token, certPEM, err := GetToken(serverAddr, connectionSecret, proxyName)
 	if err != nil {
 		return nil, err
 	}
 
-	certs, err := getCertificates(serverAddr)
+	// Parse the PEM-encoded certificate from the server
+	block, _ := pem.Decode(certPEM)
+	if block == nil {
+		return nil, errors.New("failed to decode server certificate PEM")
+	}
+	cert, err := x509.ParseCertificate(block.Bytes)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("failed to parse server certificate: %w", err)
 	}
 
 	certPool := x509.NewCertPool()
-	for _, c := range certs {
-		certPool.AddCert(c)
-	}
-	certPool.AddCert(certs[0])
+	certPool.AddCert(cert)
 	tlsTransport := http.Transport{
 		TLSClientConfig: &tls.Config{
 			RootCAs:    certPool,
-			ServerName: certs[0].Subject.CommonName,
+			ServerName: cert.Subject.CommonName,
 		},
 	}
 	transport := WithJWT(&tlsTransport, token, func() (string, error) {
-		return GetToken(serverAddr, connectionSecret, proxyName)
+		newToken, _, err := GetToken(serverAddr, connectionSecret, proxyName)
+		return newToken, err
 	})
 	client := &http.Client{Timeout: 15 * time.Second, Transport: &transport}
 	return client, nil

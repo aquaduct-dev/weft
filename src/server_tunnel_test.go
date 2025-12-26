@@ -115,7 +115,7 @@ var _ = Describe("ServerTunnel integration (Ginkgo) - separate file", func() {
 		// the test attempts to contact /login before the server is listening.
 		Eventually(func() error {
 			var e error
-			token, e = auth.GetToken(fmt.Sprintf("127.0.0.1:%d", controlPort), tunnelSrv.ConnectionSecret, "test-tunnel")
+			token, _, e = auth.GetToken(fmt.Sprintf("127.0.0.1:%d", controlPort), tunnelSrv.ConnectionSecret, "test-tunnel")
 			return e
 		}).Should(Succeed(), "auth.Login should eventually succeed once server is accepting connections")
 	})
@@ -329,7 +329,7 @@ var _ = Describe("ServerTunnel integration (Ginkgo) - separate file", func() {
 		// Login again
 		Eventually(func() error {
 			var e error
-			token, e = auth.GetToken(fmt.Sprintf("127.0.0.1:%d", controlPort), tunnelSrv.ConnectionSecret, "test-tunnel-usage")
+			token, _, e = auth.GetToken(fmt.Sprintf("127.0.0.1:%d", controlPort), tunnelSrv.ConnectionSecret, "test-tunnel-usage")
 			return e
 		}).Should(Succeed())
 

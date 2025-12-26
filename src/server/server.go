@@ -64,6 +64,10 @@ type Server struct {
 	// apiTLSConfig is the TLS configuration for the server's control plane API.
 	apiTLSConfig *tls.Config
 
+	// certPEM is the PEM-encoded server certificate, sent encrypted during login
+	// to prevent MITM attacks.
+	certPEM []byte
+
 	// challenges maps remote client addresses to their active login challenges.
 	challenges map[string]string
 }
@@ -151,6 +155,7 @@ func NewServer(port int, bindIP string, connectionSecret string, usageReportingU
 		Store:             NewInMemoryTunnelStore(),
 		ConnectionSecret:  connectionSecret,
 		apiTLSConfig:      apiTLSCfg,
+		certPEM:           certPEM,
 		challenges:        make(map[string]string),
 		bindIP:            bindIP,
 		UsageReportingURL: usageReportingURL,
@@ -559,6 +564,10 @@ func (s *Server) RemoveTunnel(tunnelName string) {
 		s.Store.ReleaseIP(p.IP)
 		s.Store.DeletePeer(tunnelName)
 		s.Store.DeleteLastSeen(tunnelName)
+		// Sync WireGuard config to remove the stale peer
+		if err := s.Dataplane.UpdateWireGuardConfig(s.Store.GetAllPeers()); err != nil {
+			log.Warn().Err(err).Str("tunnel", tunnelName).Msg("Failed to update WireGuard config after tunnel removal")
+		}
 	}
 }
 
@@ -672,7 +681,24 @@ func (s *Server) verifyChallenge(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	w.Write([]byte(tokenString))
+	// Encrypt the server's TLS certificate with the connection secret.
+	// This allows the client to verify they're talking to the real server.
+	encryptedCert, err := crypto.Encrypt(s.ConnectionSecret, string(s.certPEM))
+	if err != nil {
+		http.Error(w, "Failed to encrypt certificate", http.StatusInternalServerError)
+		return
+	}
+
+	// Return JSON response with token and encrypted certificate
+	response := map[string]string{
+		"token":       tokenString,
+		"certificate": base64.StdEncoding.EncodeToString(encryptedCert),
+	}
+	w.Header().Set("Content-Type", "application/json")
+	if err := json.NewEncoder(w).Encode(response); err != nil {
+		http.Error(w, "Failed to encode response", http.StatusInternalServerError)
+		return
+	}
 	log.Debug().Str("client", r.RemoteAddr).Msg("verifyChallenge: Client passed challenge")
 }
 
