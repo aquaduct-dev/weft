@@ -1,0 +1,21 @@
+name: weft
+arch: amd64
+platform: linux
+version: ${VERSION}
+maintainer: Aquaduct <support@aquaduct.dev>
+description: Layer 4/Layer 7 tunnelling proxy built on WireGuard
+vendor: Aquaduct
+homepage: https://github.com/aquaduct-dev/weft
+license: Apache-2.0
+
+contents:
+  - src: ./release-artifacts/weft-linux-amd64
+    dst: /usr/bin/weft
+    file_info:
+      mode: 0755
+
+deb:
+  compression: gzip
+
+rpm:
+  compression: gzip

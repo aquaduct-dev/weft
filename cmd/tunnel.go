@@ -17,9 +17,9 @@ import (
 	"strconv"
 	"strings"
 	"syscall"
-	"time"
 
 	"github.com/aquaduct-dev/weft/src/auth"
+	"github.com/aquaduct-dev/weft/src/client"
 	"github.com/aquaduct-dev/weft/src/proxy"
 	"github.com/aquaduct-dev/weft/src/tunnel"
 	"github.com/aquaduct-dev/weft/wireguard"
@@ -152,7 +152,7 @@ func startTunnel(serverIP, connectionSecret, localStr, remoteStr, tunnelName str
 	// Provide proxy_name (tunnel name) to login so server issues a JWT scoped to this tunnel.
 	// Note: serverIP here includes the port (e.g. host:9092) as processed in Run.
 	// auth.Login expects just host or host:port? It uses it in URLs.
-	client, err := auth.Login(serverIP, connectionSecret, tunnelName)
+	httpClient, err := auth.Login(serverIP, connectionSecret, tunnelName)
 	if err != nil {
 		return nil, fmt.Errorf("login failed: %w", err)
 	}
@@ -206,7 +206,7 @@ func startTunnel(serverIP, connectionSecret, localStr, remoteStr, tunnelName str
 	}
 	httpReq.Header.Set("Content-Type", "application/json")
 
-	resp, err := client.Do(httpReq)
+	resp, err := httpClient.Do(httpReq)
 	if err != nil {
 		return nil, fmt.Errorf("failed to connect to server: %w", err)
 	}
@@ -239,164 +239,20 @@ func startTunnel(serverIP, connectionSecret, localStr, remoteStr, tunnelName str
 
 	// Start background healthchecks
 	healthURL := fmt.Sprintf("https://%s/healthcheck", serverIP)
-	done := make(chan struct{})
 
-	// Start the healthcheck loop with adaptive intervals and sliding window
-	go func() {
-		// Configuration for adaptive healthcheck
-		const (
-			baseInterval    = 5 * time.Second
-			retryInterval   = 3 * time.Second  // Faster retry on first failure
-			maxInterval     = 15 * time.Second // Max backoff
-			windowDuration  = 60 * time.Second // Sliding window for failure tracking
-			backoffMultiplier = 1.5
-		)
-
-		// Failure tracking
-		consecutiveFailures := 0
-		var recentFailures []time.Time // Timestamps of failures within window
-		currentInterval := baseInterval
-
-		ticker := time.NewTicker(currentInterval)
-		defer ticker.Stop()
-
-		// Helper to count failures within the sliding window
-		countRecentFailures := func() int {
-			cutoff := time.Now().Add(-windowDuration)
-			valid := recentFailures[:0]
-			for _, t := range recentFailures {
-				if t.After(cutoff) {
-					valid = append(valid, t)
-				}
-			}
-			recentFailures = valid
-			return len(recentFailures)
-		}
-
-		// Helper to update ticker interval
-		setInterval := func(d time.Duration) {
-			if d != currentInterval {
-				currentInterval = d
-				ticker.Reset(currentInterval)
-				log.Debug().Dur("interval", currentInterval).Str("tunnel", tunnelName).Msg("Healthcheck interval adjusted")
-			}
-		}
-
-		for {
-			select {
-			case <-ticker.C:
-				healthReq := types.HealthcheckRequest{
-					Message: fmt.Sprintf("Healthcheck from tunnel %s at %s", tunnelName, time.Now().Format(time.RFC3339)),
-				}
-				reqBody, err := json.Marshal(healthReq)
-				if err != nil {
-					log.Error().Err(err).Msg("Failed to marshal healthcheck request")
-					continue
-				}
-
-				req, _ := http.NewRequest(http.MethodPost, healthURL, bytes.NewBuffer(reqBody))
-				req.Header.Set("Content-Type", "application/json")
-
-				resp, err := client.Do(req)
-
-				// Classify the failure type
-				isPermanentFailure := false
-				isTransientFailure := false
-				var failureReason string
-
-				if err != nil {
-					// Check for permanent failures (cert issues)
-					if strings.Contains(err.Error(), "x509") || strings.Contains(err.Error(), "certificate") {
-						isPermanentFailure = true
-						failureReason = "certificate error"
-					} else {
-						isTransientFailure = true
-						failureReason = err.Error()
-					}
-				} else {
-					defer resp.Body.Close()
-					switch resp.StatusCode {
-					case http.StatusOK:
-						// Success - reset tracking
-						var healthResp types.HealthcheckResponse
-						if err := json.NewDecoder(resp.Body).Decode(&healthResp); err == nil {
-							log.Debug().Str("status", healthResp.Status).Str("tunnel", tunnelName).Msg("Healthcheck successful")
-						}
-						if consecutiveFailures > 0 {
-							log.Info().Str("tunnel", tunnelName).Int("recovered_after", consecutiveFailures).Msg("Healthcheck recovered")
-						}
-						consecutiveFailures = 0
-						setInterval(baseInterval)
-						continue // Skip failure handling
-
-					case http.StatusUnauthorized, http.StatusNotFound:
-						// Permanent failures - tunnel doesn't exist or auth invalid
-						isPermanentFailure = true
-						failureReason = fmt.Sprintf("server returned %d", resp.StatusCode)
-
-					default:
-						// Other errors are transient
-						isTransientFailure = true
-						var healthResp types.HealthcheckResponse
-						if decodeErr := json.NewDecoder(resp.Body).Decode(&healthResp); decodeErr == nil {
-							failureReason = fmt.Sprintf("status %d: %s", resp.StatusCode, healthResp.Message)
-						} else {
-							failureReason = fmt.Sprintf("status %d", resp.StatusCode)
-						}
-					}
-				}
-
-				// Handle permanent failures - exit immediately
-				if isPermanentFailure {
-					log.Fatal().Str("tunnel", tunnelName).Str("reason", failureReason).Msg("Healthcheck failed permanently; shutting down")
-				}
-
-				// Handle transient failures
-				if isTransientFailure {
-					consecutiveFailures++
-					recentFailures = append(recentFailures, time.Now())
-					recentCount := countRecentFailures()
-
-					log.Warn().
-						Int("consecutive", consecutiveFailures).
-						Int("recent", recentCount).
-						Int("max_retries", retries).
-						Str("tunnel", tunnelName).
-						Str("reason", failureReason).
-						Msg("Healthcheck failed")
-
-					// Adaptive interval: faster retry on first failure, then backoff
-					if consecutiveFailures == 1 {
-						setInterval(retryInterval)
-					} else if consecutiveFailures > 1 {
-						newInterval := time.Duration(float64(currentInterval) * backoffMultiplier)
-						if newInterval > maxInterval {
-							newInterval = maxInterval
-						}
-						setInterval(newInterval)
-					}
-
-					// Exit conditions:
-					// 1. Too many consecutive failures (hard failure)
-					// 2. Too many failures in the sliding window
-					if consecutiveFailures >= retries*2 {
-						log.Fatal().Str("tunnel", tunnelName).Int("consecutive", consecutiveFailures).Msg("Too many consecutive healthcheck failures; shutting down")
-					}
-					if recentCount >= retries {
-						log.Fatal().Str("tunnel", tunnelName).Int("failures_in_window", recentCount).Msg("Too many healthcheck failures in window; shutting down")
-					}
-				}
-
-			case <-done:
-				return
-			}
-		}
-	}()
+	// Create HealthMonitor for adaptive healthcheck with sliding window failure tracking
+	monitor := client.NewHealthMonitor(client.HealthMonitorConfig{
+		Client:     httpClient,
+		HealthURL:  healthURL,
+		TunnelName: tunnelName,
+		MaxRetries: retries,
+	})
+	go monitor.Start()
 
 	// Cleanup function
 	cleanup := func() {
 		log.Info().Str("tunnel", tunnelName).Msg("Stopping tunnel")
-		close(done)
+		monitor.Stop()
 		
 		// Notify server to shutdown this tunnel
 		shutdownURL := func() string {
@@ -406,7 +262,7 @@ func startTunnel(serverIP, connectionSecret, localStr, remoteStr, tunnelName str
 			return fmt.Sprintf("https://%s/shutdown", net.JoinHostPort(serverIP, "9092"))
 		}()
 		req, _ := http.NewRequest(http.MethodPost, shutdownURL, nil)
-		if resp, err := client.Do(req); err == nil && resp != nil {
+		if resp, err := httpClient.Do(req); err == nil && resp != nil {
 			io.Copy(io.Discard, resp.Body)
 			resp.Body.Close()
 		}
