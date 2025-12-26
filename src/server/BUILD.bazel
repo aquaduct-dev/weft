@@ -4,6 +4,7 @@ go_library(
     name = "server",
     srcs = [
         "dataplane.go",
+        "middleware.go",
         "server.go",
         "store.go",
         "types.go",

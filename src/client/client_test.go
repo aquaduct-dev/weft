@@ -1,17 +1,18 @@
 package client_test
 
 import (
-	"encoding/json"
-	"fmt"
-	"net/http"
-	"net/http/httptest"
-	"testing"
-	"time"
 	"crypto/rand"
 	"encoding/base64"
 	"encoding/hex"
+	"encoding/json"
+	"encoding/pem"
+	"fmt"
+	"net/http"
+	"net/http/httptest"
 	"strings"
 	"sync"
+	"testing"
+	"time"
 
 	"github.com/aquaduct-dev/weft/src/auth"
 	"github.com/aquaduct-dev/weft/src/client"
@@ -28,6 +29,8 @@ type mockServer struct {
 	challenges map[string]string
 	// tunnels to list
 	tunnels map[string]client.TunnelInfo
+	// certPEM is the PEM-encoded server certificate from httptest.
+	certPEM []byte
 }
 
 func newMockServer() *mockServer {
@@ -43,6 +46,11 @@ func newMockServer() *mockServer {
 	mux.HandleFunc("/shutdown", s.shutdownHandler)
 
 	s.server = httptest.NewTLSServer(mux)
+	// Extract the httptest server's certificate as PEM for use in login response
+	s.certPEM = pem.EncodeToMemory(&pem.Block{
+		Type:  "CERTIFICATE",
+		Bytes: s.server.Certificate().Raw,
+	})
 	return s
 }
 
@@ -124,7 +132,21 @@ func (m *mockServer) loginHandler(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, "Failed to sign token", http.StatusInternalServerError)
 			return
 		}
-		w.Write([]byte(tokenString))
+
+		// Use the httptest server's certificate
+		encryptedCert, err := auth.Encrypt(m.secret, string(m.certPEM))
+		if err != nil {
+			http.Error(w, "Failed to encrypt certificate", http.StatusInternalServerError)
+			return
+		}
+
+		// Return JSON response matching the actual server format
+		response := map[string]string{
+			"token":       tokenString,
+			"certificate": base64.StdEncoding.EncodeToString(encryptedCert),
+		}
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(response)
 	default:
 		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
 	}

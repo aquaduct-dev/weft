@@ -169,11 +169,11 @@ func NewServer(port int, bindIP string, connectionSecret string, usageReportingU
 	}
 	s.Dataplane = dp
 
-	mux.HandleFunc("/connect", s.ConnectHandler)
-	mux.HandleFunc("/healthcheck", s.HealthcheckHandler)
-	mux.HandleFunc("/shutdown", s.ShutdownHandler)
+	mux.HandleFunc("/connect", s.requireJWT(s.ConnectHandler))
+	mux.HandleFunc("/healthcheck", s.requireJWT(s.HealthcheckHandler))
+	mux.HandleFunc("/shutdown", s.requireJWT(s.ShutdownHandler))
 	mux.HandleFunc("/login", s.LoginHandler)
-	mux.HandleFunc("/list", s.ListHandler)
+	mux.HandleFunc("/list", s.requireJWT(s.ListHandler))
 	mux.HandleFunc("/metrics", s.MetricsHandler)
 	go s.startJanitor(5 * time.Second)
 	go s.startUsageReporter(1 * time.Minute)
@@ -216,25 +216,6 @@ func generateRandomSecret(length int) (string, error) {
 
 // ConnectHandler processes requests from clients to establish a new tunnel connection.
 func (s *Server) ConnectHandler(w http.ResponseWriter, r *http.Request) {
-	authHeader := r.Header.Get("Authorization")
-	if authHeader == "" {
-		http.Error(w, "Authorization header required", http.StatusUnauthorized)
-		return
-	}
-
-	parts := strings.Split(authHeader, " ")
-	if len(parts) != 2 || parts[0] != "Bearer" {
-		http.Error(w, "Invalid Authorization header", http.StatusUnauthorized)
-		return
-	}
-
-	tokenString := parts[1]
-	_, err := s.ValidateJWT(tokenString)
-	if err != nil {
-		http.Error(w, "Invalid token", http.StatusUnauthorized)
-		return
-	}
-
 	if r.Method != http.MethodPost {
 		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
 		return
@@ -359,33 +340,8 @@ func (s *Server) HealthcheckHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	authHeader := r.Header.Get("Authorization")
-	if authHeader == "" {
-		http.Error(w, "Authorization header required", http.StatusUnauthorized)
-		return
-	}
-
-	parts := strings.Split(authHeader, " ")
-	if len(parts) != 2 || parts[0] != "Bearer" {
-		http.Error(w, "Invalid Authorization header", http.StatusUnauthorized)
-		return
-	}
-
-	tokenString := parts[1]
-	token, err := s.ValidateJWT(tokenString)
-	if err != nil {
-		http.Error(w, "Invalid token", http.StatusUnauthorized)
-		return
-	}
-
-	claims, ok := token.Claims.(jwt.MapClaims)
-	if !ok {
-		http.Error(w, "Invalid token claims", http.StatusUnauthorized)
-		return
-	}
-
-	proxyName, ok := claims["sub"].(string)
-	if !ok || proxyName == "" {
+	proxyName := s.getJWTSubjectFromRequest(r)
+	if proxyName == "" {
 		http.Error(w, "Missing proxy name in token", http.StatusBadRequest)
 		return
 	}
@@ -532,26 +488,7 @@ func (s *Server) isShuttingDown() bool {
 }
 
 func (s *Server) ShutdownHandler(w http.ResponseWriter, r *http.Request) {
-	authHeader := r.Header.Get("Authorization")
-	if authHeader == "" {
-		http.Error(w, "Authorization header required", http.StatusUnauthorized)
-		return
-	}
-
-	parts := strings.Split(authHeader, " ")
-	if len(parts) != 2 || parts[0] != "Bearer" {
-		http.Error(w, "Invalid Authorization header", http.StatusUnauthorized)
-		return
-	}
-
-	tokenString := parts[1]
-	token, err := s.ValidateJWT(tokenString)
-	if err != nil {
-		http.Error(w, "Invalid token", http.StatusUnauthorized)
-		return
-	}
-
-	tunnelName := token.Claims.(jwt.MapClaims)["sub"].(string)
+	tunnelName := s.getJWTSubjectFromRequest(r)
 	s.reportUsage(r.Context(), []string{tunnelName})
 	s.RemoveTunnel(tunnelName)
 	w.WriteHeader(http.StatusOK)
@@ -724,24 +661,6 @@ func (s *Server) ValidateJWT(tokenString string) (*jwt.Token, error) {
 
 // ListHandler returns a list of all active tunnels and their current usage statistics.
 func (s *Server) ListHandler(w http.ResponseWriter, r *http.Request) {
-	authHeader := r.Header.Get("Authorization")
-	if authHeader == "" {
-		http.Error(w, "Authorization header required", http.StatusUnauthorized)
-		return
-	}
-
-	parts := strings.Split(authHeader, " ")
-	if len(parts) != 2 || parts[0] != "Bearer" {
-		http.Error(w, "Invalid Authorization header", http.StatusUnauthorized)
-		return
-	}
-
-	tokenString := parts[1]
-	_, err := s.ValidateJWT(tokenString)
-	if err != nil {
-		http.Error(w, "Invalid token", http.StatusUnauthorized)
-		return
-	}
 
 	proxies := s.Dataplane.GetProxyCounters()
 	peers := s.Store.GetAllPeers()
