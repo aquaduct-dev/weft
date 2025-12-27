@@ -4,45 +4,6 @@
 
 ## Installation
 
-### Homebrew (macOS and Linux)
-
-```bash
-brew tap aquaduct-dev/weft
-brew install weft
-```
-
-### Debian / Ubuntu (deb)
-
-```bash
-# Download the latest .deb package
-curl -LO https://github.com/aquaduct-dev/weft/releases/latest/download/weft_amd64.deb
-
-# Install
-sudo dpkg -i weft_amd64.deb
-```
-
-For ARM64 systems:
-```bash
-curl -LO https://github.com/aquaduct-dev/weft/releases/latest/download/weft_arm64.deb
-sudo dpkg -i weft_arm64.deb
-```
-
-### RHEL / Fedora / CentOS (rpm)
-
-```bash
-# Download the latest .rpm package
-curl -LO https://github.com/aquaduct-dev/weft/releases/latest/download/weft_amd64.rpm
-
-# Install
-sudo rpm -i weft_amd64.rpm
-```
-
-For ARM64 systems:
-```bash
-curl -LO https://github.com/aquaduct-dev/weft/releases/latest/download/weft_arm64.rpm
-sudo rpm -i weft_arm64.rpm
-```
-
 ### Manual Download
 
 Download the appropriate binary for your platform from the [Releases page](https://github.com/aquaduct-dev/weft/releases):
