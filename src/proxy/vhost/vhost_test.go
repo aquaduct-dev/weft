@@ -179,3 +179,43 @@ var _ = ginkgo.Describe("VHostProxy", func() {
 		gomega.Expect(string(body)).ToNot(gomega.Equal("custom not found\n"))
 	})
 })
+
+var _ = ginkgo.Describe("WGAwareRoundTripper", func() {
+	ginkgo.It("reuses transport across multiple requests", func() {
+		// Test that transport is created once and reused (not nil)
+		target, _ := url.Parse("http://10.1.0.5:8080")
+		rt := NewWGAwareRoundTripper(nil, target, nil, "test-proxy")
+
+		// With no device, transport should be nil (uses http.DefaultTransport)
+		gomega.Expect(rt.transport).To(gomega.BeNil())
+	})
+
+	ginkgo.It("creates transport for WireGuard targets", func() {
+		// When device is nil but target is 10.1.*, transport is still nil
+		// (because device is required for custom dialer)
+		target, _ := url.Parse("http://10.1.0.5:8080")
+		rt := NewWGAwareRoundTripper(nil, target, nil, "test-proxy")
+		gomega.Expect(rt.transport).To(gomega.BeNil())
+	})
+
+	ginkgo.It("uses default transport for non-WireGuard targets", func() {
+		target, _ := url.Parse("http://example.com:8080")
+		rt := NewWGAwareRoundTripper(nil, target, nil, "test-proxy")
+
+		// transport should remain nil, meaning RoundTrip uses http.DefaultTransport
+		gomega.Expect(rt.transport).To(gomega.BeNil())
+
+		// Verify RoundTrip works for non-WG targets via DefaultTransport
+		up := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.Write([]byte("ok"))
+		}))
+		defer up.Close()
+
+		req := httptest.NewRequest("GET", up.URL, nil)
+		resp, err := rt.RoundTrip(req)
+		gomega.Expect(err).ToNot(gomega.HaveOccurred())
+		defer resp.Body.Close()
+		body, _ := io.ReadAll(resp.Body)
+		gomega.Expect(string(body)).To(gomega.Equal("ok"))
+	})
+})

@@ -362,34 +362,45 @@ type WGAwareRoundTripper struct {
 	target    *url.URL
 	cleanup   func(tunnelName string)
 	proxyName string
+	transport *http.Transport
+}
+
+// NewWGAwareRoundTripper creates a WGAwareRoundTripper with a reusable transport.
+// The transport is created once and reused for all requests to avoid goroutine leaks.
+func NewWGAwareRoundTripper(device *wireguard.UserspaceDevice, target *url.URL, cleanup func(tunnelName string), proxyName string) *WGAwareRoundTripper {
+	w := &WGAwareRoundTripper{
+		device:    device,
+		target:    target,
+		cleanup:   cleanup,
+		proxyName: proxyName,
+	}
+	if device != nil && strings.HasPrefix(target.Host, "10.1") {
+		w.transport = &http.Transport{
+			DialContext: func(ctx context.Context, network, addr string) (net.Conn, error) {
+				c, err := device.NetStack.Dial(network, addr)
+				if err != nil && cleanup != nil {
+					log.Warn().Str("proxy", proxyName).Err(err).Msg("WGAwareRoundTripper: dial failed, triggering cleanup")
+					go cleanup(proxyName)
+				}
+				return c, err
+			},
+			MaxIdleConns:        100,
+			MaxIdleConnsPerHost: 10,
+			IdleConnTimeout:     90 * time.Second,
+		}
+	}
+	return w
 }
 
 // RoundTrip routes requests whose Host is an IP under 10.1.* through the userspace
-// WireGuard device if one is configured. It attempts to parse the request Host as
-// an IP:port (or plain IP); if the destination IP is only routable via the WG
-// device, the request's transport will use the device's DialContext to reach it.
-// Otherwise the default transport behavior is used.
+// WireGuard device if one is configured. Uses a shared transport to avoid leaking
+// goroutines and connections.
 func (w *WGAwareRoundTripper) RoundTrip(req *http.Request) (*http.Response, error) {
-	// Fast path: if no device provided or host isn't a 10.1.* address, use default.
-	if w.device == nil || !strings.HasPrefix(w.target.Host, "10.1") {
+	// Fast path: if no custom transport configured, use default.
+	if w.transport == nil {
 		return http.DefaultTransport.RoundTrip(req)
 	}
-	// If probe failed, attempt to route through the userspace device's DialContext.
-	// Build a transport that uses the device's dialer.
-	tr := &http.Transport{
-		// Use a DialContext that routes using the userspace device.
-		DialContext: func(ctx context.Context, network, addr string) (net.Conn, error) {
-			c, err := w.device.NetStack.Dial(network, addr)
-			if err != nil && w.cleanup != nil {
-				log.Warn().Str("proxy", w.proxyName).Err(err).Msg("WGAwareRoundTripper: dial failed, triggering cleanup")
-				go w.cleanup(w.proxyName)
-			}
-			return c, err
-		},
-	}
-
-	// Use the constructed transport to execute the request.
-	return tr.RoundTrip(req)
+	return w.transport.RoundTrip(req)
 }
 
 func (p *VHostProxy) parseRoute(cfg RouteConfig) *Route {
@@ -449,7 +460,7 @@ func (p *VHostProxy) newMeteredReverseProxy(cfg RouteConfig) (*meter.MeteredHTTP
 			}
 		}
 	}
-	proxy.Transport = &WGAwareRoundTripper{device: cfg.Device, target: cfg.Target, cleanup: p.manager.Cleanup, proxyName: cfg.ProxyName}
+	proxy.Transport = NewWGAwareRoundTripper(cfg.Device, cfg.Target, p.manager.Cleanup, cfg.ProxyName)
 	meteredProxy := meter.MakeMeteredHTTPHandler(proxy)
 	route.Handler = meteredProxy
 
