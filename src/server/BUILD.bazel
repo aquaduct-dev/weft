@@ -4,6 +4,10 @@ go_library(
     name = "server",
     srcs = [
         "dataplane.go",
+        "handlers_auth.go",
+        "handlers_health.go",
+        "handlers_metrics.go",
+        "handlers_tunnel.go",
         "janitor.go",
         "middleware.go",
         "server.go",
@@ -33,5 +37,5 @@ go_test(
         "usage_reporter_test.go",
     ],
     embed = [":server"],
+    deps = ["//types"],
 )
-

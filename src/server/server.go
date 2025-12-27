@@ -8,10 +8,8 @@ import (
 	"crypto/rand"
 	"crypto/tls"
 	"encoding/base64"
-	"encoding/hex"
-	"encoding/json"
 	"fmt"
-	"io"
+
 	"net/http"
 	"net/netip"
 	"strconv"
@@ -22,9 +20,7 @@ import (
 	"github.com/aquaduct-dev/weft/src/crypto"
 	"github.com/aquaduct-dev/weft/src/dns"
 	"github.com/aquaduct-dev/weft/src/internal/constants"
-	"github.com/aquaduct-dev/weft/types"
 	"github.com/aquaduct-dev/weft/wireguard"
-	"github.com/golang-jwt/jwt/v4"
 	"github.com/rs/zerolog/log"
 	"golang.zx2c4.com/wireguard/wgctrl/wgtypes"
 )
@@ -73,8 +69,8 @@ type Server struct {
 	// janitor handles periodic cleanup of stale tunnels.
 	janitor *Janitor
 
-	// usageReporter handles periodic usage reporting to external services.
-	usageReporter *HTTPUsageReporter
+	// UsageReporter handles periodic usage reporting to external services.
+	UsageReporter *HTTPUsageReporter
 }
 
 // CreateDevice initializes a new userspace WireGuard device on the specified port.
@@ -181,20 +177,20 @@ func NewServer(port int, bindIP string, connectionSecret string, usageReportingU
 	mux.HandleFunc("/list", s.requireJWT(s.ListHandler))
 	mux.HandleFunc("/metrics", s.MetricsHandler)
 
-	s.usageReporter = NewHTTPUsageReporter(
+	s.UsageReporter = NewHTTPUsageReporter(
 		usageReportingURL,
 		1*time.Minute,
 		s.Dataplane.GetProxyCounters,
 		s.Store.GetAllPeers,
 		s.isShuttingDown,
 	)
-	s.usageReporter.Start()
+	s.UsageReporter.Start()
 
 	s.janitor = NewJanitor(
 		5*time.Second,
 		s.Store,
 		s.RemoveTunnel,
-		s.usageReporter.ReportUsage,
+		s.UsageReporter.ReportUsage,
 		s.isShuttingDown,
 	)
 	s.janitor.Start()
@@ -203,28 +199,7 @@ func NewServer(port int, bindIP string, connectionSecret string, usageReportingU
 }
 
 // MetricsHandler serves Prometheus-formatted usage metrics for all active tunnels.
-func (s *Server) MetricsHandler(w http.ResponseWriter, r *http.Request) {
-	user, _, ok := r.BasicAuth()
-	if !ok || user != s.ConnectionSecret {
-		w.Header().Set("WWW-Authenticate", `Basic realm="restricted", charset="UTF-8"`)
-		http.Error(w, "Unauthorized", http.StatusUnauthorized)
-		return
-	}
 
-	proxies := s.Dataplane.GetProxyCounters()
-	tunnels := s.Store.GetAllPeers()
-
-	var b strings.Builder
-	for name, peer := range tunnels {
-		if counters, ok := proxies[name]; ok {
-			b.WriteString(fmt.Sprintf("weft_tunnel_bytes_transmitted_total{tunnel_id=\"%%s\",src=\"%%s\",dst=\"%%s\"} %%d\n", name, peer.ProxiedUpstream, peer.DstURL, counters.Tx))
-			b.WriteString(fmt.Sprintf("weft_tunnel_bytes_received_total{tunnel_id=\"%%s\",src=\"%%s\",dst=\"%%s\"} %%d\n", name, peer.ProxiedUpstream, peer.DstURL, counters.Rx))
-		}
-	}
-
-	w.Header().Set("Content-Type", "text/plain; version=0.0.4")
-	w.Write([]byte(b.String()))
-}
 
 func generateRandomSecret(length int) (string, error) {
 	b := make([]byte, length)
@@ -235,160 +210,15 @@ func generateRandomSecret(length int) (string, error) {
 	return base64.URLEncoding.EncodeToString(b), nil
 }
 
-// ConnectHandler processes requests from clients to establish a new tunnel connection.
-func (s *Server) ConnectHandler(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodPost {
-		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
-		return
-	}
 
-	var req types.ConnectRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		http.Error(w, fmt.Sprintf("Invalid request body: %%v", err), http.StatusBadRequest)
-		return
-	}
-
-	resp, err := s.Serve(&req)
-	if err != nil {
-		if err.Error() == "invalid connection secret" {
-			http.Error(w, fmt.Sprintf("Invalid connection secret: %%v", err), http.StatusUnauthorized)
-			return
-		}
-		if strings.Contains(err.Error(), "already exists") || strings.Contains(err.Error(), "conflict") {
-			http.Error(w, fmt.Sprintf("Conflict: %%v", err), http.StatusConflict)
-			return
-		}
-		http.Error(w, err.Error(), http.StatusInternalServerError)
-		return
-	}
-
-	log.Debug().Any("response", resp).Msg("ConnectHandler: sending response")
-	w.Header().Set("Content-Type", "application/json")
-	if err := json.NewEncoder(w).Encode(resp); err != nil {
-		http.Error(w, "Failed to encode response", http.StatusInternalServerError)
-		return
-	}
-}
-
-// Serve processes a connection request, allocates resources, and returns the tunnel configuration.
-func (s *Server) Serve(req *types.ConnectRequest) (*types.ConnectResponse, error) {
-	clientPublicKey, err := wgtypes.ParseKey(req.ClientPublicKey)
-	if err != nil {
-		return nil, fmt.Errorf("invalid client public key")
-	}
-
-	p, created, err := s.getOrCreateTunnelPeer(req, clientPublicKey)
-	if err != nil {
-		return nil, err
-	}
-
-	if err := s.Dataplane.UpdateWireGuardConfig(s.Store.GetAllPeers()); err != nil {
-		if created {
-			s.RemoveTunnel(req.TunnelName)
-		}
-		return nil, err
-	}
-
-	tunnelProxyPort, err := s.Dataplane.StartProxy(req, p.IP)
-	if err != nil {
-		if created {
-			s.RemoveTunnel(req.TunnelName)
-		}
-		return nil, err
-	}
-
-	pubKey := s.Dataplane.GetPrivateKey().PublicKey()
-	
-	// Update Peer with the assigned TunnelProxyPort
-	p.TunnelProxyPort = tunnelProxyPort
-	s.Store.SetPeer(req.TunnelName, p)
-
-	return &types.ConnectResponse{
-		ServerPublicKey: pubKey.String(),
-		ClientAddress:   p.IP.String(),
-		ServerWGPort:    s.Dataplane.GetWgListenPort(),
-		TunnelProxyPort: tunnelProxyPort,
-	}, nil
-}
-
-// getOrCreateTunnelPeer retrieves an existing peer or creates a new one, including IP allocation.
-func (s *Server) getOrCreateTunnelPeer(req *types.ConnectRequest, clientPublicKey wgtypes.Key) (Peer, bool, error) {
-	if p, ok := s.Store.GetPeer(req.TunnelName); ok {
-		s.Store.SetLastSeen(req.TunnelName, time.Now())
-		return p, false, nil
-	}
-
-	ip, err := s.Store.GetFreeIP()
-	if err != nil {
-		return Peer{}, false, err
-	}
-
-	p := Peer{
-		IP:              ip,
-		PublicKey:       clientPublicKey,
-		ProxiedUpstream: req.ProxiedUpstream,
-		DstURL:          fmt.Sprintf("%s://%s:%d", req.Protocol, req.Hostname, req.RemotePort),
-	}
-	s.Store.SetPeer(req.TunnelName, p)
-	s.Store.SetLastSeen(req.TunnelName, time.Now())
-
-	if s.CloudflareToken != "" && req.Hostname != "" && (req.Protocol == "http" || req.Protocol == "https") {
-		if s.bindIP != "" && s.bindIP != "0.0.0.0" {
-			updater := s.DNSUpdater
-			go func(hostname, ip string) {
-				if err := updater(s.CloudflareToken, hostname, ip); err != nil {
-					log.Error().Err(err).Str("hostname", hostname).Msg("Failed to update Cloudflare DNS")
-				}
-			}(req.Hostname, s.bindIP)
-		} else {
-			log.Warn().Str("hostname", req.Hostname).Msg("Cloudflare token set but bindIP is invalid/empty, skipping DNS update")
-		}
-	}
-
-	return p, true, nil
-}
 
 // HealthcheckHandler provides an endpoint for clients to report their health status.
-func (s *Server) HealthcheckHandler(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodPost {
-		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
-		return
-	}
 
-	var req types.HealthcheckRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil && err != io.EOF {
-		http.Error(w, fmt.Sprintf("Invalid request body: %%v", err), http.StatusBadRequest)
-		return
-	}
-
-	proxyName := s.getJWTSubjectFromRequest(r)
-	if proxyName == "" {
-		http.Error(w, "Missing proxy name in token", http.StatusBadRequest)
-		return
-	}
-
-	p, exists := s.Store.GetPeer(proxyName)
-	if !exists {
-		http.Error(w, fmt.Sprintf("Proxy '%%s' not found", proxyName), http.StatusNotFound)
-		return
-	}
-
-	s.Store.SetLastSeen(proxyName, time.Now())
-
-	resp := types.HealthcheckResponse{
-		Status:  "healthy",
-		Message: fmt.Sprintf("Proxy '%%s' is healthy. IP: %%s. Request message: '%%s'", proxyName, p.IP.String(), req.Message),
-	}
-
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(http.StatusOK)
-	json.NewEncoder(w).Encode(resp)
-}
 
 // reportUsage delegates to the usage reporter for on-demand reporting.
 func (s *Server) reportUsage(ctx context.Context, tunnels []string) {
-	if s.usageReporter != nil {
-		s.usageReporter.ReportUsage(ctx, tunnels)
+	if s.UsageReporter != nil {
+		s.UsageReporter.ReportUsage(ctx, tunnels)
 	}
 }
 
@@ -400,204 +230,4 @@ func (s *Server) isShuttingDown() bool {
 	return s.closing
 }
 
-func (s *Server) ShutdownHandler(w http.ResponseWriter, r *http.Request) {
-	tunnelName := s.getJWTSubjectFromRequest(r)
-	s.reportUsage(r.Context(), []string{tunnelName})
-	s.RemoveTunnel(tunnelName)
-	w.WriteHeader(http.StatusOK)
-}
 
-// RemoveTunnel cleans up all resources associated with a tunnel name.
-func (s *Server) RemoveTunnel(tunnelName string) {
-	if p, ok := s.Store.GetPeer(tunnelName); ok {
-		s.Dataplane.CloseProxy(tunnelName)
-		s.Store.ReleaseIP(p.IP)
-		s.Store.DeletePeer(tunnelName)
-		s.Store.DeleteLastSeen(tunnelName)
-		// Sync WireGuard config to remove the stale peer
-		if err := s.Dataplane.UpdateWireGuardConfig(s.Store.GetAllPeers()); err != nil {
-			log.Warn().Err(err).Str("tunnel", tunnelName).Msg("Failed to update WireGuard config after tunnel removal")
-		}
-	}
-}
-
-// LoginHandler manages the multi-step challenge-response authentication for proxies.
-func (s *Server) LoginHandler(w http.ResponseWriter, r *http.Request) {
-	switch r.Method {
-	case http.MethodGet:
-		s.getChallenge(w, r)
-	case http.MethodPost:
-		s.verifyChallenge(w, r)
-	default:
-		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
-	}
-}
-
-func (s *Server) getChallenge(w http.ResponseWriter, r *http.Request) {
-	b := make([]byte, 16)
-	_, err := rand.Read(b)
-	if err != nil {
-		http.Error(w, "Failed to generate challenge", http.StatusInternalServerError)
-		return
-	}
-	challenge := hex.EncodeToString(b)
-	s.mu.Lock()
-	s.challenges[r.RemoteAddr] = challenge
-	s.mu.Unlock()
-
-	encrypted, err := crypto.Encrypt(s.ConnectionSecret, "server-"+challenge)
-	if err != nil {
-		http.Error(w, "Failed to encrypt challenge", http.StatusInternalServerError)
-		return
-	}
-	w.Write(encrypted)
-	log.Debug().Str("client", r.RemoteAddr).Msg("getChallenge: Generated login challenge")
-}
-
-func (s *Server) verifyChallenge(w http.ResponseWriter, r *http.Request) {
-	body, err := io.ReadAll(r.Body)
-	if err != nil {
-		http.Error(w, "Failed to read body", http.StatusInternalServerError)
-		return
-	}
-
-	var encrypted []byte
-	var proxyName string
-
-	if r.Header.Get("Content-Type") == "application/json" {
-		var loginReq map[string]any
-		if err := json.Unmarshal(body, &loginReq); err != nil {
-			http.Error(w, "Failed to parse JSON body", http.StatusBadRequest)
-			return
-		}
-
-		challengeData, ok := loginReq["challenge"]
-		if !ok {
-			http.Error(w, "Missing challenge in JSON body", http.StatusBadRequest)
-			return
-		}
-
-		proxyData, ok := loginReq["proxy_name"]
-		proxyName, _ = proxyData.(string)
-		if proxyName == "" {
-			http.Error(w, "Missing proxy_name in JSON body", http.StatusBadRequest)
-			return
-		}
-
-		if challengeStr, ok := challengeData.(string); ok {
-			var err error
-			encrypted, err = base64.StdEncoding.DecodeString(challengeStr)
-			if err != nil {
-				http.Error(w, "Invalid challenge format", http.StatusBadRequest)
-				return
-			}
-		} else {
-			http.Error(w, "Invalid challenge format", http.StatusBadRequest)
-			return
-		}
-	}
-
-	decrypted, err := crypto.Decrypt(s.ConnectionSecret, encrypted)
-	if err != nil {
-		http.Error(w, "Failed to decrypt challenge", http.StatusUnauthorized)
-		return
-	}
-
-	s.mu.Lock()
-	challenge, ok := s.challenges[r.RemoteAddr]
-	delete(s.challenges, r.RemoteAddr)
-	s.mu.Unlock()
-
-	if !ok {
-		http.Error(w, "No challenge found for this address", http.StatusUnauthorized)
-		return
-	}
-
-	if string(decrypted) != challenge {
-		http.Error(w, "Invalid challenge", http.StatusUnauthorized)
-		return
-	}
-
-	claims := jwt.MapClaims{
-		"nbf": time.Now().Unix(),
-		"exp": time.Now().Add(30 * time.Minute).Unix(),
-		"aud": r.RemoteAddr,
-		"sub": proxyName,
-	}
-	token := jwt.NewWithClaims(jwt.SigningMethodHS256, claims)
-	tokenString, err := token.SignedString([]byte(s.ConnectionSecret))
-	if err != nil {
-		http.Error(w, "Failed to sign token", http.StatusInternalServerError)
-		return
-	}
-
-	// Encrypt the server's TLS certificate with the connection secret.
-	// This allows the client to verify they're talking to the real server.
-	encryptedCert, err := crypto.Encrypt(s.ConnectionSecret, string(s.certPEM))
-	if err != nil {
-		http.Error(w, "Failed to encrypt certificate", http.StatusInternalServerError)
-		return
-	}
-
-	// Return JSON response with token and encrypted certificate
-	response := map[string]string{
-		"token":       tokenString,
-		"certificate": base64.StdEncoding.EncodeToString(encryptedCert),
-	}
-	w.Header().Set("Content-Type", "application/json")
-	if err := json.NewEncoder(w).Encode(response); err != nil {
-		http.Error(w, "Failed to encode response", http.StatusInternalServerError)
-		return
-	}
-	log.Debug().Str("client", r.RemoteAddr).Msg("verifyChallenge: Client passed challenge")
-}
-
-// ValidateJWT parses and validates a JSON Web Token against the server's connection secret.
-func (s *Server) ValidateJWT(tokenString string) (*jwt.Token, error) {
-	token, err := jwt.Parse(tokenString, func(token *jwt.Token) (any, error) {
-		if _, ok := token.Method.(*jwt.SigningMethodHMAC); !ok {
-			return nil, fmt.Errorf("unexpected signing method: %%v", token.Header["alg"])
-		}
-		return []byte(s.ConnectionSecret), nil
-	})
-
-	if err != nil {
-		return nil, fmt.Errorf("invalid token: %w", err)
-	}
-
-	if !token.Valid {
-		return nil, fmt.Errorf("token is not valid")
-	}
-
-	return token, nil
-}
-
-// ListHandler returns a list of all active tunnels and their current usage statistics.
-func (s *Server) ListHandler(w http.ResponseWriter, r *http.Request) {
-
-	proxies := s.Dataplane.GetProxyCounters()
-	peers := s.Store.GetAllPeers()
-
-	type tunnelInfo struct {
-		Tx     uint64 `json:"tx"`
-		Rx     uint64 `json:"rx"`
-		SrcURL string `json:"src"`
-		DstURL string `json:"dst"`
-	}
-
-	response := make(map[string]tunnelInfo)
-	for name, peer := range peers {
-		info := tunnelInfo{
-			SrcURL: peer.ProxiedUpstream,
-			DstURL: peer.DstURL,
-		}
-		if counters, ok := proxies[name]; ok {
-			info.Tx = counters.Tx
-			info.Rx = counters.Rx
-		}
-		response[name] = info
-	}
-
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(response)
-}

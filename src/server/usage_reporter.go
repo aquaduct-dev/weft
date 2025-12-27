@@ -22,6 +22,7 @@ type HTTPUsageReporter struct {
 	getCounters func() map[string]ProxyCounters
 	getPeers    func() map[string]Peer
 	closing     func() bool
+	Client      *http.Client
 
 	stopCh chan struct{}
 	wg     sync.WaitGroup
@@ -48,6 +49,7 @@ func NewHTTPUsageReporter(
 		getPeers:    getPeers,
 		closing:     closing,
 		stopCh:      make(chan struct{}),
+		Client:      &http.Client{Timeout: 10 * time.Second},
 	}
 }
 
@@ -149,7 +151,12 @@ func (r *HTTPUsageReporter) ReportUsage(ctx context.Context, tunnels []string) {
 	}
 	req.Header.Set("Content-Type", "application/json")
 
-	resp, err := http.DefaultClient.Do(req)
+	req.Header.Set("Content-Type", "application/json")
+
+	if r.Client == nil {
+		r.Client = http.DefaultClient
+	}
+	resp, err := r.Client.Do(req)
 	if err != nil {
 		log.Error().Err(err).Msg("failed to send usage report")
 		return

@@ -34,6 +34,12 @@ import (
 	"github.com/aquaduct-dev/weft/wireguard"
 )
 
+type roundTripFunc func(*http.Request) (*http.Response, error)
+
+func (f roundTripFunc) RoundTrip(req *http.Request) (*http.Response, error) {
+	return f(req)
+}
+
 func openPort() (net.Listener, int) {
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
 	Expect(err).NotTo(HaveOccurred())
@@ -311,19 +317,29 @@ var _ = Describe("ServerTunnel integration (Ginkgo) - separate file", func() {
 	})
 
 	It("reports usage on tunnel shutdown", func() {
-		usageChan := make(chan string, 1)
-		usageServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			body, _ := io.ReadAll(r.Body)
-			usageChan <- string(body)
-			w.WriteHeader(200)
-		}))
-		defer usageServer.Close()
+		usageChan := make(chan string, 100)
 
 		// Close the existing server from BeforeEach
 		tunnelSrv.Close()
 
 		// Start new server with usage reporting
-		tunnelSrv = server.NewServer(controlPort, "127.0.0.1", "", usageServer.URL, "")
+		tunnelSrv = server.NewServer(controlPort, "127.0.0.1", "", "http://mock.usage", "")
+		
+		// Inject mock client
+		tunnelSrv.UsageReporter.Client = &http.Client{
+			Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+				body, _ := io.ReadAll(req.Body)
+				bodyStr := string(body)
+				if strings.Contains(bodyStr, "test-tunnel-usage") {
+					usageChan <- bodyStr
+				}
+				return &http.Response{
+					StatusCode: 200,
+					Body:       io.NopCloser(bytes.NewReader(nil)),
+				}, nil
+			}),
+		}
+		
 		go tunnelSrv.ListenAndServeTLS("", "")
 
 		// Login again
@@ -364,12 +380,12 @@ var _ = Describe("ServerTunnel integration (Ginkgo) - separate file", func() {
 		req := httptest.NewRequest("POST", "http://127.0.0.1/shutdown", nil)
 		req.Header.Set("Authorization", "Bearer "+token)
 		wShutdown := httptest.NewRecorder()
-		tunnelSrv.ShutdownHandler(wShutdown, req)
+		tunnelSrv.Handler.ServeHTTP(wShutdown, req)
 
 		Expect(wShutdown.Result().StatusCode).To(Equal(200))
 
 		// Verify usage report
-		Eventually(usageChan).Should(Receive(ContainSubstring("test-tunnel-usage")))
+		Eventually(usageChan, "5s").Should(Receive(ContainSubstring("test-tunnel-usage")))
 	})
 
 	It("triggers DNS update when cloudflare token is set", func() {

@@ -66,31 +66,7 @@ func getJWTSubject(ctx context.Context) string {
 }
 
 // getJWTSubjectFromRequest extracts the "sub" claim from the JWT token.
-// It first checks the request context (set by middleware), then falls back
-// to parsing the Authorization header directly (for direct handler calls in tests).
+// It assumes the request has passed through requireJWT middleware.
 func (s *Server) getJWTSubjectFromRequest(r *http.Request) string {
-	// Try context first (set by middleware)
-	if sub := getJWTSubject(r.Context()); sub != "" {
-		return sub
-	}
-
-	// Fallback: parse directly from Authorization header (for tests that call handlers directly)
-	authHeader := r.Header.Get("Authorization")
-	if authHeader == "" {
-		return ""
-	}
-	parts := strings.Split(authHeader, " ")
-	if len(parts) != 2 || parts[0] != "Bearer" {
-		return ""
-	}
-	token, err := s.ValidateJWT(parts[1])
-	if err != nil {
-		return ""
-	}
-	claims, ok := token.Claims.(jwt.MapClaims)
-	if !ok {
-		return ""
-	}
-	sub, _ := claims["sub"].(string)
-	return sub
+	return getJWTSubject(r.Context())
 }
