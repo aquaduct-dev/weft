@@ -139,6 +139,12 @@ sh_test(
 )
 
 sh_test(
+    name = "test_billing_reporting_multi_tunnel",
+    srcs = ["test_billing_reporting_multi_tunnel.sh"],
+    deps = [":lib"],
+)
+
+sh_test(
     name = "test_multi_tunnel",
     srcs = ["test_multi_tunnel.sh"],
     deps = [":lib"],
