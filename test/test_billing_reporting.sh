@@ -1,135 +1,75 @@
 #!/usr/bin/env bash
-# test/test-billing-reporting.sh
-# Purpose: Verify that the weft server sends usage reports to the configured URL
-# when a tunnel shuts down.
+# test/test_billing_reporting.sh
+# Purpose: Verify that the weft server sends usage reports containing
+# tunnel name, source, and destination fields when a tunnel shuts down.
 
 # shellcheck disable=SC1091
 source "$(dirname "$0")/lib.sh"
 trap cleanup EXIT
-
-SHUTDOWN_WAIT=1
 
 log "Logs will be written to $LOGDIR"
 
 # --- Test Steps ---
 
 # 1) Start Mock Usage Reporting Server
-REPORT_PORT=$(find_free_port)
-REPORT_FILE="$LOGDIR/usage.json"
-REPORT_LOG="$LOGDIR/report_server.log"
+start_mock_report_server
 
-cat <<EOF > "$LOGDIR/mock_report_server.py"
-import http.server
-import sys
-
-port = int(sys.argv[1])
-outfile = sys.argv[2]
-
-class Handler(http.server.BaseHTTPRequestHandler):
-    def do_POST(self):
-        content_length = int(self.headers.get('Content-Length', 0))
-        body = self.rfile.read(content_length)
-        with open(outfile, "ab") as f:
-            f.write(body)
-            f.write(b"\n")
-        self.send_response(200)
-        self.end_headers()
-
-    def log_message(self, format, *args):
-        pass
-
-print(f"Starting mock reporting server on {port}")
-http.server.HTTPServer(("", port), Handler).serve_forever()
-EOF
-
-log "Starting mock reporting server on port $REPORT_PORT..."
-python3 "$LOGDIR/mock_report_server.py" "$REPORT_PORT" "$REPORT_FILE" >"$REPORT_LOG" 2>&1 &
-pids+=($!)
-wait_for_port "$REPORT_PORT"
-
-# 2) Start Python HTTP Server (Target)
-TARGET_PORT=$(find_free_port)
-TARGET_LOG="$LOGDIR/target.log"
-echo "hello-usage-tracking" > "$LOGDIR/index.html"
-
-log "Starting target http.server on port $TARGET_PORT..."
-python3 -m http.server "$TARGET_PORT" --directory "$LOGDIR" >"$TARGET_LOG" 2>&1 &
-pids+=($!)
-wait_for_port "$TARGET_PORT"
+# 2) Start Target HTTP Server
+start_target_http_server "hello-usage-tracking"
 
 # 3) Start Weft Server with usage reporting enabled
-SERVER_PORT=$(find_free_port)
-SERVER_LOG="$LOGDIR/server.log"
-SECRET_FILE="$LOGDIR/secret"
-REPORT_URL="http://127.0.0.1:$REPORT_PORT/report"
-
-log "Starting weft server on port $SERVER_PORT with usage reporting to $REPORT_URL..."
-"$WEFT_BIN" server --verbose --port "$SERVER_PORT" --secret-file "$SECRET_FILE" --usage-reporting-url "$REPORT_URL" >"$SERVER_LOG" 2>&1 &
-pids+=($!)
-
-# Wait for secret file
-for i in $(seq 1 10); do
-    if [ -f "$SECRET_FILE" ]; then
-        break
-    fi
-    sleep 0.5
-done
-
-if [ ! -f "$SECRET_FILE" ]; then
-    log "Failed to find secret file."
-    cat "$SERVER_LOG"
-    exit 2
-fi
-
-CONN_SECRET=$(cat "$SECRET_FILE" | tr -d '\n')
-log "Found connection secret."
+start_weft_server_with_reporting
 
 # 4) Start Weft Tunnel
 REMOTE_PORT=$(find_free_port)
-TUNNEL_LOG="$LOGDIR/tunnel.log"
 TUNNEL_NAME="billing-test-tunnel"
-WEFT_URL="weft://${CONN_SECRET}@127.0.0.1:${SERVER_PORT}"
 LOCAL_URL="http://127.0.0.1:${TARGET_PORT}"
 REMOTE_URL="http://127.0.0.1:${REMOTE_PORT}"
 
-log "Starting weft tunnel..."
-"$WEFT_BIN" tunnel --verbose --tunnel-name "$TUNNEL_NAME" "$WEFT_URL" "$LOCAL_URL" "$REMOTE_URL" >"$TUNNEL_LOG" 2>&1 &
-TUNNEL_PID=$!
-pids+=($TUNNEL_PID)
-
-wait_for_port "$REMOTE_PORT"
+start_weft_tunnel "$TUNNEL_NAME" "$LOCAL_URL" "$REMOTE_URL"
 
 # 5) Generate Traffic
-echo "Generating traffic..."
+log "Generating traffic..."
 curl -s "http://127.0.0.1:$REMOTE_PORT" > /dev/null
 curl -s "http://127.0.0.1:$REMOTE_PORT" > /dev/null
 curl -s "http://127.0.0.1:$REMOTE_PORT" > /dev/null
 
 # 6) Gracefully Shutdown Tunnel
-log "Stopping tunnel (sending SIGTERM to $TUNNEL_PID)..."
-kill -TERM "$TUNNEL_PID"
-
-# Remove TUNNEL_PID from pids array so cleanup doesn't try to kill it again (though kill is safe)
-# But wait for it to exit to ensure it had time to send the shutdown request
-wait "$TUNNEL_PID" || true
-
-# Wait a moment for the server to process the shutdown and send the report
-sleep 2
+stop_tunnel_gracefully "$TUNNEL_PID"
 
 # 7) Verify Usage Report
 log "Checking usage report..."
 if [ -f "$REPORT_FILE" ]; then
     cat "$REPORT_FILE"
+    
+    # Check tunnel name
     if grep -q "$TUNNEL_NAME" "$REPORT_FILE"; then
         log "SUCCESS: Usage report contained tunnel name '$TUNNEL_NAME'"
-        RESULT=0
     else
         log "FAIL: Usage report did not contain tunnel name '$TUNNEL_NAME'"
-        RESULT=3
+        exit 3
     fi
+
+    # Check source field
+    if grep -qF "\"source\":\"$LOCAL_URL\"" "$REPORT_FILE"; then
+        log "SUCCESS: Usage report contained correct source '$LOCAL_URL'"
+    else
+        log "FAIL: Usage report did NOT contain correct source '$LOCAL_URL'"
+        exit 3
+    fi
+
+    # Check destination field
+    if grep -qF "\"destination\":\"$REMOTE_URL\"" "$REPORT_FILE"; then
+        log "SUCCESS: Usage report contained correct destination '$REMOTE_URL'"
+    else
+        log "FAIL: Usage report did NOT contain correct destination '$REMOTE_URL'"
+        exit 3
+    fi
+    
+    RESULT=0
 else
     log "FAIL: Report file not created."
-    RESULT=4
+    exit 4
 fi
 
 exit "$RESULT"
