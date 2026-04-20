@@ -237,4 +237,5 @@ func init() {
 	serverCmd.Flags().String("connection-secret", "", "Connection secret to use")
 	serverCmd.Flags().String("usage-reporting-url", "", "URL to post usage reports to")
 	serverCmd.Flags().String("cloudflare-token", "", "Cloudflare API Token for DNS updates")
+	serverCmd.Flags().Bool("use-strict-bind-ip", false, "Require --bind-ip to be an explicit non-wildcard IP. Prevents TCP/UDP tunnels from choosing their own listen host.")
 }
