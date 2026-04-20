@@ -87,7 +87,12 @@ func (s *InMemoryTunnelStore) GetAllLastSeen() map[string]time.Time {
 func (s *InMemoryTunnelStore) GetFreeIP() (netip.Addr, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	return s.allocateIPLocked()
+}
 
+// allocateIPLocked reserves and returns the next free IP in the subnet.
+// Caller must hold s.mu (write lock).
+func (s *InMemoryTunnelStore) allocateIPLocked() (netip.Addr, error) {
 	hostAddr := constants.DefaultServerIP
 	if _, used := s.usedIPs[hostAddr]; !used {
 		s.usedIPs[hostAddr] = true
@@ -109,6 +114,30 @@ func (s *InMemoryTunnelStore) GetFreeIP() (netip.Addr, error) {
 			return addr, nil
 		}
 	}
+}
+
+// CreatePeer atomically registers a new peer under name, allocating an IP
+// via the supplied factory. If a peer with the same name already exists, the
+// existing record is returned and created=false; no IP is allocated and the
+// factory is not invoked. On (created=true), last-seen is also bumped.
+func (s *InMemoryTunnelStore) CreatePeer(name string, factory func(ip netip.Addr) Peer) (Peer, bool, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	if p, ok := s.peers[name]; ok {
+		s.peerLastSeen[name] = time.Now()
+		return p, false, nil
+	}
+
+	ip, err := s.allocateIPLocked()
+	if err != nil {
+		return Peer{}, false, err
+	}
+
+	p := factory(ip)
+	s.peers[name] = p
+	s.peerLastSeen[name] = time.Now()
+	return p, true, nil
 }
 
 func (s *InMemoryTunnelStore) ReleaseIP(ip netip.Addr) {

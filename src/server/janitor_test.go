@@ -52,6 +52,9 @@ func (m *mockTunnelStore) GetAllPeers() map[string]Peer     { return nil }
 func (m *mockTunnelStore) DeleteLastSeen(name string)       { m.deleteLastSeen(name) }
 func (m *mockTunnelStore) GetFreeIP() (netip.Addr, error)   { return netip.Addr{}, nil }
 func (m *mockTunnelStore) ReleaseIP(ip netip.Addr)          {}
+func (m *mockTunnelStore) CreatePeer(name string, factory func(ip netip.Addr) Peer) (Peer, bool, error) {
+	return Peer{}, false, nil
+}
 
 // Helper for tests
 func (m *mockTunnelStore) deleteLastSeen(name string) {

@@ -4,8 +4,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"net/netip"
 	"strings"
-	"time"
 
 	"github.com/aquaduct-dev/weft/types"
 	"github.com/rs/zerolog/log"
@@ -90,26 +90,19 @@ func (s *Server) Serve(req *types.ConnectRequest) (*types.ConnectResponse, error
 
 // getOrCreateTunnelPeer retrieves an existing peer or creates a new one, including IP allocation.
 func (s *Server) getOrCreateTunnelPeer(req *types.ConnectRequest, clientPublicKey wgtypes.Key) (Peer, bool, error) {
-	if p, ok := s.Store.GetPeer(req.TunnelName); ok {
-		s.Store.SetLastSeen(req.TunnelName, time.Now())
-		return p, false, nil
-	}
-
-	ip, err := s.Store.GetFreeIP()
+	p, created, err := s.Store.CreatePeer(req.TunnelName, func(ip netip.Addr) Peer {
+		return Peer{
+			IP:              ip,
+			PublicKey:       clientPublicKey,
+			ProxiedUpstream: req.ProxiedUpstream,
+			DstURL:          fmt.Sprintf("%s://%s:%d", req.Protocol, req.Hostname, req.RemotePort),
+		}
+	})
 	if err != nil {
 		return Peer{}, false, err
 	}
 
-	p := Peer{
-		IP:              ip,
-		PublicKey:       clientPublicKey,
-		ProxiedUpstream: req.ProxiedUpstream,
-		DstURL:          fmt.Sprintf("%s://%s:%d", req.Protocol, req.Hostname, req.RemotePort),
-	}
-	s.Store.SetPeer(req.TunnelName, p)
-	s.Store.SetLastSeen(req.TunnelName, time.Now())
-
-	if s.CloudflareToken != "" && req.Hostname != "" && (req.Protocol == "http" || req.Protocol == "https") {
+	if created && s.CloudflareToken != "" && req.Hostname != "" && (req.Protocol == "http" || req.Protocol == "https") {
 		if s.bindIP != "" && s.bindIP != "0.0.0.0" {
 			updater := s.DNSUpdater
 			go func(hostname, ip string) {
@@ -122,7 +115,7 @@ func (s *Server) getOrCreateTunnelPeer(req *types.ConnectRequest, clientPublicKe
 		}
 	}
 
-	return p, true, nil
+	return p, created, nil
 }
 
 func (s *Server) ShutdownHandler(w http.ResponseWriter, r *http.Request) {

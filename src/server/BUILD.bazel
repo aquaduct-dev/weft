@@ -34,8 +34,12 @@ go_test(
     name = "server_test",
     srcs = [
         "janitor_test.go",
+        "store_test.go",
         "usage_reporter_test.go",
     ],
     embed = [":server"],
-    deps = ["//types"],
+    deps = [
+        "//types",
+        "@com_zx2c4_golang_wireguard_wgctrl//wgtypes",
+    ],
 )

@@ -49,6 +49,12 @@ type TunnelStore interface {
 	GetFreeIP() (netip.Addr, error)
 	// ReleaseIP returns an IP address to the pool.
 	ReleaseIP(ip netip.Addr)
+
+	// CreatePeer atomically returns an existing peer or, if none exists under
+	// the given name, allocates a fresh IP, builds the peer via factory, and
+	// stores it. created=true only on first insert. This exists so concurrent
+	// /connect calls with the same tunnel_name can't leak IPs.
+	CreatePeer(name string, factory func(ip netip.Addr) Peer) (Peer, bool, error)
 }
 
 // Dataplane defines the interface for managing the underlying networking components,
