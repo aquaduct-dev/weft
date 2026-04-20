@@ -670,7 +670,21 @@ func (p *VHostProxy) Start() error {
 
 	if p.hasTLS() {
 		tlsConfig := &tls.Config{
+			// acme-tls/1 must be advertised so Let's Encrypt can perform TLS-ALPN-01 challenges
+			// against this listener — that's the only renewal path once the transient port-80
+			// listener from AddHostWithACME has closed.
+			NextProtos: []string{"acme-tls/1", "http/1.1"},
 			GetCertificate: func(hello *tls.ClientHelloInfo) (*tls.Certificate, error) {
+				if p.manager.acmeManager != nil {
+					if p.manager.acmeHosts[hello.ServerName] {
+						return p.manager.acmeManager.GetCertificate(hello)
+					}
+					for _, proto := range hello.SupportedProtos {
+						if proto == "acme-tls/1" {
+							return p.manager.acmeManager.GetCertificate(hello)
+						}
+					}
+				}
 				if cfg, ok := p.tlsConfigs[hello.ServerName]; ok {
 					// Assuming one certificate per config
 					if len(cfg.Certificates) > 0 {
