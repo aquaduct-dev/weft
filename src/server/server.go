@@ -6,8 +6,10 @@ package server
 import (
 	"context"
 	"crypto/rand"
+	"crypto/sha256"
 	"crypto/tls"
 	"encoding/base64"
+	"encoding/hex"
 	"fmt"
 
 	"net/http"
@@ -62,6 +64,10 @@ type Server struct {
 	// certPEM is the PEM-encoded server certificate, sent encrypted during login
 	// to prevent MITM attacks.
 	certPEM []byte
+
+	// certFingerprintHex is the lowercase hex sha256 of the leaf certificate
+	// DER bytes, suitable for out-of-band pinning by clients (F-10).
+	certFingerprintHex string
 
 	// challenges maps remote client addresses to their active login challenges.
 	// Entries expire after challengeTTL; the map is bounded by
@@ -132,6 +138,13 @@ func NewServer(port int, bindIP string, connectionSecret string, usageReportingU
 		log.Fatal().Err(certPairErr).Msg("failed to load generated certificate")
 	}
 
+	// Compute the leaf cert sha256 fingerprint for operator-side pinning (F-10).
+	var fingerprintHex string
+	if len(cert.Certificate) > 0 {
+		sum := sha256.Sum256(cert.Certificate[0])
+		fingerprintHex = hex.EncodeToString(sum[:])
+	}
+
 	apiTLSCfg := &tls.Config{
 		Certificates: []tls.Certificate{cert},
 		MinVersion:   tls.VersionTLS12,
@@ -155,11 +168,12 @@ func NewServer(port int, bindIP string, connectionSecret string, usageReportingU
 			Handler:   mux,
 			TLSConfig: apiTLSCfg,
 		},
-		Store:             NewInMemoryTunnelStore(),
-		ConnectionSecret:  connectionSecret,
-		apiTLSConfig:      apiTLSCfg,
-		certPEM:           certPEM,
-		challenges:        make(map[string]challengeEntry),
+		Store:              NewInMemoryTunnelStore(),
+		ConnectionSecret:   connectionSecret,
+		apiTLSConfig:       apiTLSCfg,
+		certPEM:            certPEM,
+		certFingerprintHex: fingerprintHex,
+		challenges:         make(map[string]challengeEntry),
 		bindIP:            bindIP,
 		UsageReportingURL: usageReportingURL,
 		CloudflareToken:   cloudflareToken,
@@ -231,6 +245,13 @@ func (s *Server) isShuttingDown() bool {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return s.closing
+}
+
+// CertFingerprint returns the lowercase hex sha256 fingerprint of the server's
+// TLS leaf certificate. It's intended for operator-side display so clients can
+// pin against it via the auth.PinnedFingerprint mechanism (F-10).
+func (s *Server) CertFingerprint() string {
+	return s.certFingerprintHex
 }
 
 

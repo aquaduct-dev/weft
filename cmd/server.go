@@ -192,6 +192,11 @@ var serverCmd = &cobra.Command{
 		}
 
 		log.Info().Str("connection_secret", srv.ConnectionSecret).Msg("Connection Secret")
+		// F-10: print the server's TLS leaf-cert fingerprint so operators can
+		// pin it on clients via `weft tunnel --server-fingerprint=...`.
+		if fp := srv.CertFingerprint(); fp != "" {
+			log.Info().Str("sha256", fp).Msg("Server TLS fingerprint (for --server-fingerprint pinning)")
+		}
 		// Optionally write the connection secret to a file for automation.
 		if secretFile != "" {
 			if err := os.WriteFile(secretFile, []byte(srv.ConnectionSecret+"\n"), 0600); err != nil {

@@ -14,6 +14,7 @@ import (
 	"crypto/tls"
 	"crypto/x509"
 	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
 	"encoding/pem"
 	"errors"
@@ -28,12 +29,49 @@ import (
 	"github.com/rs/zerolog/log"
 )
 
+// PinnedFingerprint is an optional out-of-band-verified sha256 hex fingerprint
+// of the server's TLS leaf certificate (F-10). When set (e.g. via the
+// --server-fingerprint CLI flag), the initial /login HTTPS handshake is
+// validated against it instead of skipping verification entirely. Empty
+// preserves the legacy behaviour: trust the connection-secret-encrypted cert
+// returned by the server as the pinning anchor.
+var PinnedFingerprint string
+
+// fingerprintVerifier returns a TLS VerifyPeerCertificate function that fails
+// the handshake unless the leaf certificate's sha256 fingerprint (lowercase
+// hex, accepting an optional "sha256:" prefix) matches expectedHex.
+func fingerprintVerifier(expectedHex string) func([][]byte, [][]*x509.Certificate) error {
+	expected := strings.ToLower(strings.TrimPrefix(expectedHex, "sha256:"))
+	return func(rawCerts [][]byte, _ [][]*x509.Certificate) error {
+		if len(rawCerts) == 0 {
+			return errors.New("no peer certificate")
+		}
+		got := sha256.Sum256(rawCerts[0])
+		gotHex := hex.EncodeToString(got[:])
+		if gotHex != expected {
+			return fmt.Errorf("server certificate fingerprint mismatch: got sha256:%s, want sha256:%s", gotHex, expected)
+		}
+		return nil
+	}
+}
+
+// loginTLSConfig builds the TLS config used by the /login HTTPS client. If a
+// fingerprint is configured, normal CA verification is still skipped (the
+// server uses a self-signed cert) but the leaf certificate is pinned by hash.
+func loginTLSConfig() *tls.Config {
+	cfg := &tls.Config{InsecureSkipVerify: true}
+	if PinnedFingerprint != "" {
+		cfg.VerifyPeerCertificate = fingerprintVerifier(PinnedFingerprint)
+	}
+	return cfg
+}
+
 // GetToken executes the challenge-response login flow with the specified Weft server
 // and returns a signed JWT and the server's certificate PEM if successful.
 func GetToken(serverAddr, connectionSecret, proxyName string) (string, []byte, error) {
 	client := http.Client{
 		Transport: &http.Transport{
-			TLSClientConfig: &tls.Config{InsecureSkipVerify: true},
+			TLSClientConfig: loginTLSConfig(),
 		},
 	}
 	// GET /login to get the challenge

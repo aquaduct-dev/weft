@@ -42,6 +42,11 @@ var tunnelCmd = &cobra.Command{
 		// Add tunnel-name flag (can be empty; we compute default below)
 		tunnelNameFlag, _ := command.Flags().GetString("tunnel-name")
 		retriesFlag, _ := command.Flags().GetInt("retries")
+		// F-10: propagate the optional pinned fingerprint to the auth pkg
+		// before any login attempt so the /login TLS handshake uses it.
+		if fp, _ := command.Flags().GetString("server-fingerprint"); fp != "" {
+			auth.PinnedFingerprint = fp
+		}
 
 		// 1. Parse server argument
 		weftURL, err := url.Parse(args[0])
@@ -280,5 +285,9 @@ func init() {
 	// for tests that want to present a custom certificate without relying on ACME.
 	tunnelCmd.Flags().String("tls-cert", "", "Path to TLS certificate file to present on remote HTTPS endpoint (test-only)")
 	tunnelCmd.Flags().String("tls-key", "", "Path to TLS private key file to present on remote HTTPS endpoint (test-only)")
+	// F-10: optional out-of-band-verified server cert fingerprint. When set,
+	// the initial /login HTTPS handshake is pinned against this hash instead
+	// of skipping verification entirely.
+	tunnelCmd.Flags().String("server-fingerprint", "", "sha256 hex fingerprint of the server's TLS certificate; if set, the initial /login handshake is pinned against this value")
 	rootCmd.AddCommand(tunnelCmd)
 }
