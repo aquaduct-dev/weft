@@ -227,7 +227,13 @@ func NewVHostProxyManager() *VHostProxyManager {
 	m.acmeManager = &autocert.Manager{
 		Prompt: autocert.AcceptTOS,
 		HostPolicy: func(ctx context.Context, host string) error {
-			if !m.acmeHosts[host] {
+			// Read acmeHosts under m.mu (F-6): the map is mutated by
+			// AddACMEHost concurrently with TLS handshakes/HTTP-01
+			// challenges that invoke this policy.
+			m.mu.Lock()
+			ok := m.acmeHosts[host]
+			m.mu.Unlock()
+			if !ok {
 				return fmt.Errorf("acme: host %s not configured for acme", host)
 			}
 			return nil
@@ -269,7 +275,9 @@ func (v *VHostProxyManager) ACMEPort() int {
 
 func (v *VHostProxyManager) AddACMEHost(host string, bindIp string) (io.Closer, error) {
 	proxy := v.Proxy(bindIp, 80)
+	v.mu.Lock()
 	v.acmeHosts[host] = true
+	v.mu.Unlock()
 	err := proxy.Start()
 	if err != nil {
 		return VHostCloser{}, err
@@ -675,8 +683,15 @@ func (p *VHostProxy) Start() error {
 			// listener from AddHostWithACME has closed.
 			NextProtos: []string{"acme-tls/1", "http/1.1"},
 			GetCertificate: func(hello *tls.ClientHelloInfo) (*tls.Certificate, error) {
+				// All map reads here happen on TLS handshake goroutines and
+				// can race with AddACMEHost / AddHostWithTLS / AddHostWithACME
+				// which mutate p.tlsConfigs and manager.acmeHosts (F-6).
+				// Snapshot under the appropriate locks before deciding.
 				if p.manager.acmeManager != nil {
-					if p.manager.acmeHosts[hello.ServerName] {
+					p.manager.mu.Lock()
+					isAcmeHost := p.manager.acmeHosts[hello.ServerName]
+					p.manager.mu.Unlock()
+					if isAcmeHost {
 						return p.manager.acmeManager.GetCertificate(hello)
 					}
 					for _, proto := range hello.SupportedProtos {
@@ -685,13 +700,17 @@ func (p *VHostProxy) Start() error {
 						}
 					}
 				}
-				if cfg, ok := p.tlsConfigs[hello.ServerName]; ok {
+				p.mu.RLock()
+				cfg, ok := p.tlsConfigs[hello.ServerName]
+				cfgKeys := keys(p.tlsConfigs)
+				p.mu.RUnlock()
+				if ok {
 					// Assuming one certificate per config
 					if len(cfg.Certificates) > 0 {
 						return &cfg.Certificates[0], nil
 					}
 				}
-				log.Warn().Any("tls_config", keys(p.tlsConfigs)).Str("requested", hello.ServerName).Msg("VHost: no certificate found (may still be acquiring)")
+				log.Warn().Any("tls_config", cfgKeys).Str("requested", hello.ServerName).Msg("VHost: no certificate found (may still be acquiring)")
 				return nil, fmt.Errorf("no certificate for server name %s", hello.ServerName)
 			},
 		}
