@@ -8,6 +8,7 @@ go_library(
         "handlers_health.go",
         "handlers_metrics.go",
         "handlers_tunnel.go",
+        "handlers_version.go",
         "janitor.go",
         "middleware.go",
         "server.go",
@@ -22,6 +23,7 @@ go_library(
         "//src/dns",
         "//src/internal/constants",
         "//src/proxy",
+        "//src/version",
         "//types",
         "//wireguard",
         "@com_github_golang_jwt_jwt_v4//:jwt",
@@ -33,12 +35,14 @@ go_library(
 go_test(
     name = "server_test",
     srcs = [
+        "handlers_version_test.go",
         "janitor_test.go",
         "store_test.go",
         "usage_reporter_test.go",
     ],
     embed = [":server"],
     deps = [
+        "//src/version",
         "//types",
         "@com_zx2c4_golang_wireguard_wgctrl//wgtypes",
     ],

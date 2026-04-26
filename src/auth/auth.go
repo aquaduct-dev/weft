@@ -23,6 +23,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/aquaduct-dev/weft/src/version"
 	"github.com/golang-jwt/jwt/v4"
 	"github.com/rs/zerolog/log"
 )
@@ -164,7 +165,7 @@ func jwtExpiry(jwtString string) (time.Time, error) {
 func Login(serverAddr, connectionSecret, proxyName string) (*http.Client, error) {
 	token, certPEM, err := GetToken(serverAddr, connectionSecret, proxyName)
 	if err != nil {
-		return nil, err
+		return nil, annotateWithVersions(serverAddr, err)
 	}
 
 	block, _ := pem.Decode(certPEM)
@@ -243,6 +244,54 @@ func (h *withJwt) RoundTrip(req *http.Request) (*http.Response, error) {
 func encodeBase64(b []byte) string {
 	return base64.StdEncoding.EncodeToString(b)
 }
+
+// serverVersion is the JSON shape returned by the server's /version endpoint.
+type serverVersion struct {
+	Commit string `json:"commit"`
+	Date   string `json:"date"`
+}
+
+// fetchServerVersion calls the unauthenticated /version endpoint. TLS verification
+// is skipped because at handshake-failure time we have no trusted server cert yet,
+// and the response carries no secrets.
+func fetchServerVersion(serverAddr string) (serverVersion, error) {
+	client := http.Client{
+		Timeout: 5 * time.Second,
+		Transport: &http.Transport{
+			TLSClientConfig: &tls.Config{InsecureSkipVerify: true},
+		},
+	}
+	resp, err := client.Get(fmt.Sprintf("https://%s/version", serverAddr))
+	if err != nil {
+		return serverVersion{}, err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return serverVersion{}, fmt.Errorf("status %d", resp.StatusCode)
+	}
+	var v serverVersion
+	if err := json.NewDecoder(resp.Body).Decode(&v); err != nil {
+		return serverVersion{}, err
+	}
+	return v, nil
+}
+
+// annotateWithVersions wraps a login error with the client's compiled-in
+// version and (best-effort) the server's reported version, so a version
+// mismatch is obvious from the error message.
+func annotateWithVersions(serverAddr string, loginErr error) error {
+	clientStr := fmt.Sprintf("%s (%s)", version.Commit, version.CommitDate)
+	srv, err := fetchServerVersion(serverAddr)
+	if err != nil {
+		return fmt.Errorf("%w (client version %s; could not fetch server version: %v)", loginErr, clientStr, err)
+	}
+	serverStr := fmt.Sprintf("%s (%s)", srv.Commit, srv.Date)
+	if srv.Commit == version.Commit && srv.Date == version.CommitDate {
+		return fmt.Errorf("%w (client and server both at version %s)", loginErr, clientStr)
+	}
+	return fmt.Errorf("%w (version mismatch: client %s vs server %s)", loginErr, clientStr, serverStr)
+}
+
 // Encrypt encrypts plaintext using an AES-GCM key derived from the provided secret.
 func Encrypt(key, text string) ([]byte, error) {
 	hasher := sha256.New()

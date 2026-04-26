@@ -176,6 +176,7 @@ func NewServer(port int, bindIP string, connectionSecret string, usageReportingU
 	mux.HandleFunc("/login", s.LoginHandler)
 	mux.HandleFunc("/list", s.requireJWT(s.ListHandler))
 	mux.HandleFunc("/metrics", s.MetricsHandler)
+	mux.HandleFunc("/version", s.VersionHandler)
 
 	s.UsageReporter = NewHTTPUsageReporter(
 		usageReportingURL,
