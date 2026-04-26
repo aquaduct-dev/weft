@@ -16,6 +16,23 @@ import (
 	"github.com/rs/zerolog/log"
 )
 
+// challengeEntry tracks a single outstanding login challenge and when it
+// expires. Pre-auth callers can otherwise grow Server.challenges without
+// bound (F-1) by repeatedly issuing GET /login from fresh source ports.
+type challengeEntry struct {
+	value     string
+	expiresAt time.Time
+}
+
+const (
+	// challengeTTL caps how long an unused challenge is held before being swept.
+	challengeTTL = 60 * time.Second
+	// maxOutstandingChallenges caps the size of the unauthenticated challenge
+	// table; once full, new GET /login requests are rejected with 503 until
+	// existing entries expire.
+	maxOutstandingChallenges = 1024
+)
+
 // LoginHandler manages the multi-step challenge-response authentication for proxies.
 func (s *Server) LoginHandler(w http.ResponseWriter, r *http.Request) {
 	switch r.Method {
@@ -28,6 +45,15 @@ func (s *Server) LoginHandler(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
+// sweepChallengesLocked drops expired challenge entries. Caller must hold s.mu.
+func (s *Server) sweepChallengesLocked(now time.Time) {
+	for k, v := range s.challenges {
+		if !now.Before(v.expiresAt) {
+			delete(s.challenges, k)
+		}
+	}
+}
+
 func (s *Server) getChallenge(w http.ResponseWriter, r *http.Request) {
 	b := make([]byte, 16)
 	_, err := rand.Read(b)
@@ -36,8 +62,16 @@ func (s *Server) getChallenge(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	challenge := hex.EncodeToString(b)
+
+	now := time.Now()
 	s.mu.Lock()
-	s.challenges[r.RemoteAddr] = challenge
+	s.sweepChallengesLocked(now)
+	if _, exists := s.challenges[r.RemoteAddr]; !exists && len(s.challenges) >= maxOutstandingChallenges {
+		s.mu.Unlock()
+		http.Error(w, "Too many outstanding challenges", http.StatusServiceUnavailable)
+		return
+	}
+	s.challenges[r.RemoteAddr] = challengeEntry{value: challenge, expiresAt: now.Add(challengeTTL)}
 	s.mu.Unlock()
 
 	encrypted, err := crypto.Encrypt(s.ConnectionSecret, "server-"+challenge)
@@ -50,6 +84,14 @@ func (s *Server) getChallenge(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) verifyChallenge(w http.ResponseWriter, r *http.Request) {
+	// Always consume the outstanding challenge for this RemoteAddr, regardless
+	// of which exit path verifyChallenge takes (F-1). Otherwise an attacker can
+	// flood GET /login and never POST, leaving entries in place forever.
+	s.mu.Lock()
+	entry, hadChallenge := s.challenges[r.RemoteAddr]
+	delete(s.challenges, r.RemoteAddr)
+	s.mu.Unlock()
+
 	body, err := io.ReadAll(r.Body)
 	if err != nil {
 		http.Error(w, "Failed to read body", http.StatusInternalServerError)
@@ -98,17 +140,12 @@ func (s *Server) verifyChallenge(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	s.mu.Lock()
-	challenge, ok := s.challenges[r.RemoteAddr]
-	delete(s.challenges, r.RemoteAddr)
-	s.mu.Unlock()
-
-	if !ok {
+	if !hadChallenge || time.Now().After(entry.expiresAt) {
 		http.Error(w, "No challenge found for this address", http.StatusUnauthorized)
 		return
 	}
 
-	if subtle.ConstantTimeCompare(decrypted, []byte(challenge)) != 1 {
+	if subtle.ConstantTimeCompare(decrypted, []byte(entry.value)) != 1 {
 		http.Error(w, "Invalid challenge", http.StatusUnauthorized)
 		return
 	}

@@ -35,6 +35,7 @@ go_library(
 go_test(
     name = "server_test",
     srcs = [
+        "handlers_auth_test.go",
         "handlers_metrics_test.go",
         "handlers_version_test.go",
         "janitor_test.go",
@@ -44,6 +45,7 @@ go_test(
     ],
     embed = [":server"],
     deps = [
+        "//src/crypto",
         "//src/internal/constants",
         "//src/version",
         "//types",

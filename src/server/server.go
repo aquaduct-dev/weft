@@ -64,7 +64,9 @@ type Server struct {
 	certPEM []byte
 
 	// challenges maps remote client addresses to their active login challenges.
-	challenges map[string]string
+	// Entries expire after challengeTTL; the map is bounded by
+	// maxOutstandingChallenges to prevent unauthenticated memory exhaustion.
+	challenges map[string]challengeEntry
 
 	// janitor handles periodic cleanup of stale tunnels.
 	janitor *Janitor
@@ -157,7 +159,7 @@ func NewServer(port int, bindIP string, connectionSecret string, usageReportingU
 		ConnectionSecret:  connectionSecret,
 		apiTLSConfig:      apiTLSCfg,
 		certPEM:           certPEM,
-		challenges:        make(map[string]string),
+		challenges:        make(map[string]challengeEntry),
 		bindIP:            bindIP,
 		UsageReportingURL: usageReportingURL,
 		CloudflareToken:   cloudflareToken,
