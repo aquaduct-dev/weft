@@ -2,11 +2,14 @@ package proxy
 
 import (
 	"context"
+	"fmt"
 	"io"
 	"net"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"strings"
+	"sync"
 	"time"
 
 	. "github.com/onsi/ginkgo/v2"
@@ -104,6 +107,83 @@ var _ = Describe("Proxy Tests", func() {
 			}
 			return string(buf[:n])
 		}).Should(Equal(message))
+	})
+
+	It("survives concurrent UDP traffic from many source ports without map-race panic (F-2)", func() {
+		// Echo server.
+		mockAddr, err := net.ResolveUDPAddr("udp", "127.0.0.1:13050")
+		Expect(err).ToNot(HaveOccurred())
+		mockServer, err := net.ListenUDP("udp", mockAddr)
+		Expect(err).ToNot(HaveOccurred())
+		defer mockServer.Close()
+		go func() {
+			buf := make([]byte, 1024)
+			for {
+				n, addr, err := mockServer.ReadFromUDP(buf)
+				if err != nil {
+					return
+				}
+				_, _ = mockServer.WriteToUDP(buf[:n], addr)
+			}
+		}()
+
+		localURL, err := url.Parse("udp://127.0.0.1:13050")
+		Expect(err).ToNot(HaveOccurred())
+		remoteURL, err := url.Parse("udp://127.0.0.1:13051")
+		Expect(err).ToNot(HaveOccurred())
+		pm := NewProxyManager()
+		_, err = pm.StartProxy(localURL, remoteURL, "udp-stress", nil, nil, nil, "")
+		Expect(err).ToNot(HaveOccurred())
+		defer pm.Close("udp-stress")
+
+		// Fan out many concurrent clients from distinct ephemeral source
+		// ports, each firing a few packets. The pre-fix code would panic
+		// here under `-race` (and frequently even without it) due to
+		// concurrent writes to the sessions map. Each client writes/reads
+		// in its own goroutine, then closes — exercising both the
+		// session-create path and the per-session goroutine teardown
+		// (which deletes from the same map).
+		const clients = 30
+		const perClient = 3
+		var wg sync.WaitGroup
+		errs := make(chan error, clients*perClient)
+		for i := 0; i < clients; i++ {
+			wg.Add(1)
+			go func(i int) {
+				defer wg.Done()
+				conn, err := net.Dial("udp", remoteURL.Host)
+				if err != nil {
+					errs <- fmt.Errorf("client %d dial: %w", i, err)
+					return
+				}
+				defer conn.Close()
+				for j := 0; j < perClient; j++ {
+					msg := fmt.Sprintf("c%d-p%d", i, j)
+					if _, err := conn.Write([]byte(msg)); err != nil {
+						errs <- fmt.Errorf("client %d write: %w", i, err)
+						return
+					}
+					_ = conn.SetReadDeadline(time.Now().Add(500 * time.Millisecond))
+					buf := make([]byte, 64)
+					n, err := conn.Read(buf)
+					if err != nil {
+						// Read errors are tolerated under load — the
+						// purpose of this test is to ensure no panic.
+						continue
+					}
+					_ = n
+				}
+			}(i)
+		}
+		wg.Wait()
+		close(errs)
+		// We don't fail on transient read errors — only on dial failures
+		// (which would indicate the proxy died).
+		for e := range errs {
+			if e != nil && strings.Contains(e.Error(), "dial") {
+				Fail(e.Error())
+			}
+		}
 	})
 
 	It("should proxy http>http traffic", func() {

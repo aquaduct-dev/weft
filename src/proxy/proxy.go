@@ -8,6 +8,7 @@ import (
 	"net"
 	"net/url"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/aquaduct-dev/weft/src/internal/util"
@@ -176,58 +177,74 @@ func (p *UDPProxy) StartProxy(srcURL *url.URL, dstURL *url.URL, device *wireguar
 	p.Conn = l // Set the connection for the UDPProxy
 
 	log.Info().Str("src", srcURL.Host).Str("dst", dstURL.Host).Str("addr", l.LocalAddr().String()).Msg("UDPProxy: listening udp")
-	go func() {
-		sessions := make(map[string]WGAwareUDPConn)
-		buf := make([]byte, 65535)
-		for {
-			n, publicAddr, err := l.ReadFromUDP(buf)
+	go p.acceptUDP(l, srcAddr, srcURL, dstURL, device)
+	return nil
+}
 
-			if err != nil {
-				log.Error().Err(err).Str("dst", dstURL.Host).Msg("UDPProxy: udp read error")
-				return
+// acceptUDP runs the UDPProxy accept loop. It maintains a session-per-source-addr
+// map under a mutex (F-2: previously this map was mutated concurrently by the
+// accept loop and per-session response goroutines, causing fatal "concurrent
+// map writes" panics). A return-path goroutine is spawned exactly once per
+// session, on the first packet from a new source address.
+func (p *UDPProxy) acceptUDP(l WGAwareUDPConn, srcAddr *net.UDPAddr, srcURL, dstURL *url.URL, device *wireguard.UserspaceDevice) {
+	var smu sync.Mutex
+	sessions := make(map[string]WGAwareUDPConn)
+	buf := make([]byte, 65535)
+	for {
+		n, publicAddr, err := l.ReadFromUDP(buf)
+		if err != nil {
+			log.Debug().Err(err).Str("dst", dstURL.Host).Msg("UDPProxy: udp read error; accept loop exiting")
+			return
+		}
+
+		key := publicAddr.String()
+		smu.Lock()
+		tconn, ok := sessions[key]
+		if !ok {
+			dialed, derr := WGAwareUDPDial(srcAddr, device)
+			if derr != nil {
+				smu.Unlock()
+				log.Error().Err(derr).Str("src", srcURL.Host).Msg("UDPProxy: dial to upstream failed")
+				continue
 			}
+			sessions[key] = dialed
+			tconn = dialed
+			smu.Unlock()
 
-			key := publicAddr.String()
-			targetConn, ok := sessions[key]
-			if !ok {
-				if err != nil {
-					log.Error().Err(err).Str("src", srcURL.Host).Msg("UDPProxy: udp resolve local error")
-					continue
-				}
-				targetConn, err = WGAwareUDPDial(srcAddr, device)
-				sessions[key] = targetConn
-			}
-
-			targetConn.Write(buf[:n])
-			p.bytesRx.Add(uint64(n))
-			// goroutine to copy from target to public
-			go func(pubAddr net.Addr, tconn WGAwareUDPConn) {
+			// Spawn the response-path goroutine exactly once per session.
+			// Use the parameter (tconn), never the outer-scope variable, so
+			// closing the right conn is guaranteed.
+			go func(pubAddr *net.UDPAddr, tconn WGAwareUDPConn) {
 				defer func() {
-					targetConn.Close()
+					tconn.Close()
+					smu.Lock()
 					delete(sessions, pubAddr.String())
+					smu.Unlock()
 				}()
 				respBuf := make([]byte, 65535)
-				if err != nil {
-					return
-				}
 				for {
-					n, _, err := tconn.ReadFromUDP(respBuf)
-					if err != nil {
-						log.Error().Err(err).Str("src", publicAddr.String()).Msg("UDPProxy: failed to read from UDP")
+					rn, _, rerr := tconn.ReadFromUDP(respBuf)
+					if rerr != nil {
+						log.Debug().Err(rerr).Str("src", pubAddr.String()).Msg("UDPProxy: target read error; closing session")
 						return
 					}
-					_, err = l.WriteToUDP(respBuf[:n], publicAddr)
-					if err != nil {
-						log.Error().Err(err).Str("target", srcAddr.String()).Msg("UDPProxy: failed to write")
+					if _, werr := l.WriteToUDP(respBuf[:rn], pubAddr); werr != nil {
+						log.Debug().Err(werr).Str("target", srcAddr.String()).Msg("UDPProxy: failed to write to public; closing session")
 						return
 					}
-					p.bytesTx.Add(uint64(n))
+					p.bytesTx.Add(uint64(rn))
 				}
-			}(publicAddr, targetConn)
-
+			}(publicAddr, tconn)
+		} else {
+			smu.Unlock()
 		}
-	}()
-	return nil
+
+		if _, err := tconn.Write(buf[:n]); err != nil {
+			log.Debug().Err(err).Str("target", srcAddr.String()).Msg("UDPProxy: target write error")
+			continue
+		}
+		p.bytesRx.Add(uint64(n))
+	}
 }
 
 func (p *ProxyManager) Close(proxyName string) {
