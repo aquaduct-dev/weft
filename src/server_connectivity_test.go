@@ -96,7 +96,7 @@ var _ = Describe("Server Connectivity Checks", func() {
 			TunnelName:      "conn-test-tunnel",
 		}, token)
 
-		tunnelSrv.ConnectHandler(w, r)
+		tunnelSrv.Handler.ServeHTTP(w, r)
 		connectResp := decodeResponse(w.Body)
 
 		device, err := tunnel.Tunnel("127.0.0.1", &url.URL{Scheme: "http", Host: fmt.Sprintf("127.0.0.1:%d", backendPort)}, "conn-test.com", &connectResp, privateKey, proxy.NewProxyManager(), "conn-test-tunnel", nil, nil)

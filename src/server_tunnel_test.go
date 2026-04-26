@@ -146,7 +146,7 @@ var _ = Describe("ServerTunnel integration (Ginkgo) - separate file", func() {
 			TunnelName:      "test-tunnel",
 		}, token)
 
-		tunnelSrv.ConnectHandler(w, r)
+		tunnelSrv.Handler.ServeHTTP(w, r)
 		connectResp := decodeResponse(w.Body)
 
 		// TODO: Remove extra args
@@ -207,7 +207,7 @@ var _ = Describe("ServerTunnel integration (Ginkgo) - separate file", func() {
 			PrivateKeyPEM:   string(keyPem),
 		}, token)
 
-		tunnelSrv.ConnectHandler(w, r)
+		tunnelSrv.Handler.ServeHTTP(w, r)
 		connectResp := decodeResponse(w.Body)
 
 		// Create tunnel device; pass upstream URL so the tunnel knows it's https.
@@ -288,7 +288,7 @@ var _ = Describe("ServerTunnel integration (Ginkgo) - separate file", func() {
 			TunnelName:      "test-tunnel",
 		}, token)
 
-		tunnelSrv.ConnectHandler(w, r)
+		tunnelSrv.Handler.ServeHTTP(w, r)
 		connectResp := decodeResponse(w.Body)
 
 		device, err := tunnel.Tunnel("127.0.0.1", &url.URL{Scheme: "tcp", Host: fmt.Sprintf("127.0.0.1:%d", echoPort)}, "test.com", &connectResp, privateKey, proxy.NewProxyManager(), "test-tunnel", nil, nil)
@@ -358,7 +358,7 @@ var _ = Describe("ServerTunnel integration (Ginkgo) - separate file", func() {
 			Hostname:        "127.0.0.1",
 			TunnelName:      "test-tunnel-usage",
 		}, token)
-		tunnelSrv.ConnectHandler(w, r)
+		tunnelSrv.Handler.ServeHTTP(w, r)
 		connectResp := decodeResponse(w.Body)
 
 		device, err := tunnel.Tunnel("127.0.0.1", &url.URL{Scheme: "tcp", Host: fmt.Sprintf("127.0.0.1:%d", backendPort)}, "test.com", &connectResp, privateKey, proxy.NewProxyManager(), "test-tunnel-usage", nil, nil)
@@ -402,19 +402,20 @@ var _ = Describe("ServerTunnel integration (Ginkgo) - separate file", func() {
 			return nil
 		}
 
-		// Connect tunnel
+		// Connect tunnel — TunnelName must match the JWT subject ("test-tunnel")
+		// from BeforeEach per F-3 enforcement.
 		w := httptest.NewRecorder()
 		r := encodeRequest(types.ConnectRequest{
 			ClientPublicKey: privateKey.PublicKey().String(),
 			RemotePort:      remotePort,
 			Protocol:        "http",
 			Hostname:        "dns-test.com",
-			TunnelName:      "dns-test-tunnel",
+			TunnelName:      "test-tunnel",
 		}, token)
-		tunnelSrv.ConnectHandler(w, r)
+		tunnelSrv.Handler.ServeHTTP(w, r)
 		connectResp := decodeResponse(w.Body)
 
-		device, err := tunnel.Tunnel("127.0.0.1", &url.URL{Scheme: "http", Host: fmt.Sprintf("127.0.0.1:%d", backendPort)}, "dns.test.com", &connectResp, privateKey, proxy.NewProxyManager(), "dns-test-tunnel", nil, nil)
+		device, err := tunnel.Tunnel("127.0.0.1", &url.URL{Scheme: "http", Host: fmt.Sprintf("127.0.0.1:%d", backendPort)}, "dns.test.com", &connectResp, privateKey, proxy.NewProxyManager(), "test-tunnel", nil, nil)
 		Expect(err).ToNot(HaveOccurred())
 		defer device.Device.Close()
 
@@ -423,19 +424,20 @@ var _ = Describe("ServerTunnel integration (Ginkgo) - separate file", func() {
 	})
 
 	It("resolves domain name server address to IP", func() {
+		// TunnelName must match the JWT subject ("test-tunnel") per F-3.
 		w := httptest.NewRecorder()
 		r := encodeRequest(types.ConnectRequest{
 			ClientPublicKey: privateKey.PublicKey().String(),
 			RemotePort:      remotePort,
 			Protocol:        "http",
 			Hostname:        "test-domain-res.com",
-			TunnelName:      "test-tunnel-domain",
+			TunnelName:      "test-tunnel",
 		}, token)
 
-		tunnelSrv.ConnectHandler(w, r)
+		tunnelSrv.Handler.ServeHTTP(w, r)
 		connectResp := decodeResponse(w.Body)
 
-		device, err := tunnel.Tunnel("localhost", &url.URL{Scheme: "http", Host: fmt.Sprintf("127.0.0.1:%d", backendPort)}, "domain.test.com", &connectResp, privateKey, proxy.NewProxyManager(), "test-tunnel-domain", nil, nil)
+		device, err := tunnel.Tunnel("localhost", &url.URL{Scheme: "http", Host: fmt.Sprintf("127.0.0.1:%d", backendPort)}, "domain.test.com", &connectResp, privateKey, proxy.NewProxyManager(), "test-tunnel", nil, nil)
 		Expect(err).ToNot(HaveOccurred())
 		device.Device.Close()
 	})

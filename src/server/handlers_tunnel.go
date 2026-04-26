@@ -25,6 +25,21 @@ func (s *Server) ConnectHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Enforce that the JWT subject (set at /login from the client-supplied
+	// proxy_name) matches the tunnel_name being acted on (F-3). Otherwise any
+	// holder of any JWT could create or mutate any tunnel by name.
+	sub := s.getJWTSubjectFromRequest(r)
+	if sub == "" {
+		http.Error(w, "Missing subject in token", http.StatusUnauthorized)
+		return
+	}
+	if req.TunnelName == "" {
+		req.TunnelName = sub
+	} else if req.TunnelName != sub {
+		http.Error(w, "tunnel_name does not match token subject", http.StatusForbidden)
+		return
+	}
+
 	resp, err := s.Serve(&req)
 	if err != nil {
 		if err.Error() == "invalid connection secret" {

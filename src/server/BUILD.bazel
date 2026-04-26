@@ -37,6 +37,7 @@ go_test(
     srcs = [
         "handlers_auth_test.go",
         "handlers_metrics_test.go",
+        "handlers_tunnel_test.go",
         "handlers_version_test.go",
         "janitor_test.go",
         "store_test.go",
@@ -50,6 +51,7 @@ go_test(
         "//src/version",
         "//types",
         "//wireguard",
+        "@com_github_golang_jwt_jwt_v4//:jwt",
         "@com_zx2c4_golang_wireguard_wgctrl//wgtypes",
     ],
 )
