@@ -11,6 +11,7 @@ import (
 	"net/netip"
 	"net/url"
 	"os"
+	"path"
 	"path/filepath"
 	"regexp"
 	"strings"
@@ -41,12 +42,22 @@ type Modifier interface {
 }
 
 // PathMatcher matches requests based on a path prefix.
+//
+// Matching is segment-aware (F-7): a prefix of "/api" matches "/api" and
+// "/api/anything" but does NOT match "/apiabc". The request path is also
+// path.Clean'd before comparison so traversal sequences (e.g. "/api/../x")
+// can't slip through as a successful match on the literal prefix.
 type PathMatcher struct {
 	Prefix string
 }
 
 func (m *PathMatcher) Matches(r *http.Request) bool {
-	return m.Prefix == "" || strings.HasPrefix(r.URL.Path, m.Prefix)
+	if m.Prefix == "" {
+		return true
+	}
+	cleaned := path.Clean(r.URL.Path)
+	prefix := strings.TrimRight(m.Prefix, "/")
+	return cleaned == prefix || strings.HasPrefix(cleaned, prefix+"/")
 }
 
 // HeaderMatcher matches requests based on a header value regex.
@@ -109,17 +120,44 @@ func (m *RedirectModifier) Apply(w http.ResponseWriter, r *http.Request) bool {
 	return true
 }
 
-// PathPrefixModifier strips a path prefix from the request.
+// PathPrefixModifier strips a path prefix from the request, segment-aware.
+//
+// F-7: the previous implementation used strings.TrimPrefix on the raw path,
+// so "/apifoo/x" with prefix "/api" became "foo/x" → "/foo/x", and
+// "/api/../admin" was forwarded verbatim with the leading "/api" stripped.
+// We now path.Clean the request path before stripping and only strip on
+// segment boundaries, ensuring "/api" matches "/api" or "/api/...", never
+// "/apifoo".
 type PathPrefixModifier struct {
 	Prefix string
 }
 
 func (m *PathPrefixModifier) Apply(w http.ResponseWriter, r *http.Request) bool {
-	if m.Prefix != "" {
-		r.URL.Path = strings.TrimPrefix(r.URL.Path, m.Prefix)
-		if !strings.HasPrefix(r.URL.Path, "/") {
-			r.URL.Path = "/" + r.URL.Path
-		}
+	if m.Prefix == "" {
+		return false
+	}
+	// Normalise the request path before any decision, so traversal sequences
+	// in the request can't reach upstream verbatim regardless of whether the
+	// prefix actually matches. path.Clean collapses "." and "..", removes
+	// duplicate slashes, and strips trailing slashes (we re-add a leading "/"
+	// below).
+	cleaned := path.Clean(r.URL.Path)
+	r.URL.Path = cleaned
+
+	prefix := strings.TrimRight(m.Prefix, "/")
+	switch {
+	case cleaned == prefix:
+		r.URL.Path = "/"
+	case strings.HasPrefix(cleaned, prefix+"/"):
+		r.URL.Path = strings.TrimPrefix(cleaned, prefix)
+	default:
+		// Prefix doesn't match cleanly — keep the cleaned path. (PathMatcher
+		// gates entry to this modifier in normal routing; this branch is the
+		// belt-and-braces fallback.)
+		return false
+	}
+	if !strings.HasPrefix(r.URL.Path, "/") {
+		r.URL.Path = "/" + r.URL.Path
 	}
 	return false
 }
