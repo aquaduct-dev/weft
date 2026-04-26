@@ -44,6 +44,7 @@ go_test(
     ],
     embed = [":server"],
     deps = [
+        "//src/internal/constants",
         "//src/version",
         "//types",
         "//wireguard",

@@ -8,6 +8,17 @@ import (
 	"strings"
 )
 
+// promQuote escapes a string for use as a Prometheus label value (F-13).
+// Per the exposition format, backslash, double-quote, and newline must be
+// backslash-escaped; without this, tunnel-controlled fields like
+// proxied_upstream can break the scrape or inject synthetic series.
+func promQuote(s string) string {
+	s = strings.ReplaceAll(s, `\`, `\\`)
+	s = strings.ReplaceAll(s, `"`, `\"`)
+	s = strings.ReplaceAll(s, "\n", `\n`)
+	return s
+}
+
 // MetricsHandler serves Prometheus-formatted usage metrics for all active tunnels.
 func (s *Server) MetricsHandler(w http.ResponseWriter, r *http.Request) {
 	user, _, ok := r.BasicAuth()
@@ -23,8 +34,11 @@ func (s *Server) MetricsHandler(w http.ResponseWriter, r *http.Request) {
 	var b strings.Builder
 	for name, peer := range tunnels {
 		if counters, ok := proxies[name]; ok {
-			b.WriteString(fmt.Sprintf("weft_tunnel_bytes_transmitted_total{tunnel_id=\"%s\",src=\"%s\",dst=\"%s\"} %d\n", name, peer.ProxiedUpstream, peer.DstURL, counters.Tx))
-			b.WriteString(fmt.Sprintf("weft_tunnel_bytes_received_total{tunnel_id=\"%s\",src=\"%s\",dst=\"%s\"} %d\n", name, peer.ProxiedUpstream, peer.DstURL, counters.Rx))
+			id := promQuote(name)
+			src := promQuote(peer.ProxiedUpstream)
+			dst := promQuote(peer.DstURL)
+			fmt.Fprintf(&b, "weft_tunnel_bytes_transmitted_total{tunnel_id=\"%s\",src=\"%s\",dst=\"%s\"} %d\n", id, src, dst, counters.Tx)
+			fmt.Fprintf(&b, "weft_tunnel_bytes_received_total{tunnel_id=\"%s\",src=\"%s\",dst=\"%s\"} %d\n", id, src, dst, counters.Rx)
 		}
 	}
 
