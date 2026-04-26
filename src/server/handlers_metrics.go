@@ -1,6 +1,7 @@
 package server
 
 import (
+	"crypto/subtle"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -10,7 +11,7 @@ import (
 // MetricsHandler serves Prometheus-formatted usage metrics for all active tunnels.
 func (s *Server) MetricsHandler(w http.ResponseWriter, r *http.Request) {
 	user, _, ok := r.BasicAuth()
-	if !ok || user != s.ConnectionSecret {
+	if !ok || subtle.ConstantTimeCompare([]byte(user), []byte(s.ConnectionSecret)) != 1 {
 		w.Header().Set("WWW-Authenticate", `Basic realm="restricted", charset="UTF-8"`)
 		http.Error(w, "Unauthorized", http.StatusUnauthorized)
 		return

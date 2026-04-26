@@ -35,15 +35,18 @@ go_library(
 go_test(
     name = "server_test",
     srcs = [
+        "handlers_metrics_test.go",
         "handlers_version_test.go",
         "janitor_test.go",
         "store_test.go",
+        "test_helpers_test.go",
         "usage_reporter_test.go",
     ],
     embed = [":server"],
     deps = [
         "//src/version",
         "//types",
+        "//wireguard",
         "@com_zx2c4_golang_wireguard_wgctrl//wgtypes",
     ],
 )

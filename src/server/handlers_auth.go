@@ -2,6 +2,7 @@ package server
 
 import (
 	"crypto/rand"
+	"crypto/subtle"
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
@@ -107,7 +108,7 @@ func (s *Server) verifyChallenge(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if string(decrypted) != challenge {
+	if subtle.ConstantTimeCompare(decrypted, []byte(challenge)) != 1 {
 		http.Error(w, "Invalid challenge", http.StatusUnauthorized)
 		return
 	}
