@@ -150,10 +150,16 @@ func (s *Server) verifyChallenge(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// F-8: previously included an "aud" claim set to r.RemoteAddr but never
+	// validated it, which could mislead reviewers into assuming audience
+	// binding existed. Drop the unverified aud entirely; add iss/iat so the
+	// token's origin and freshness are explicit.
+	now := time.Now()
 	claims := jwt.MapClaims{
-		"nbf": time.Now().Unix(),
-		"exp": time.Now().Add(30 * time.Minute).Unix(),
-		"aud": r.RemoteAddr,
+		"iss": "weft",
+		"iat": now.Unix(),
+		"nbf": now.Unix(),
+		"exp": now.Add(30 * time.Minute).Unix(),
 		"sub": proxyName,
 	}
 	token := jwt.NewWithClaims(jwt.SigningMethodHS256, claims)
@@ -201,5 +207,23 @@ func (s *Server) ValidateJWT(tokenString string) (*jwt.Token, error) {
 		return nil, fmt.Errorf("token is not valid")
 	}
 
+	// F-8: defensive checks on iss/iat so a token signed with the same secret
+	// for some unrelated purpose can't be replayed against the control plane.
+	claims, ok := token.Claims.(jwt.MapClaims)
+	if !ok {
+		return nil, fmt.Errorf("token claims are not a map")
+	}
+	if iss, _ := claims["iss"].(string); iss != "" && iss != "weft" {
+		return nil, fmt.Errorf("unexpected token issuer %q", iss)
+	}
+	if iatRaw, ok := claims["iat"]; ok {
+		if iatF, ok := iatRaw.(float64); ok {
+			// Reject tokens whose iat is more than 5 minutes in the future
+			// (skew protection; bounded to reduce burn-window).
+			if time.Unix(int64(iatF), 0).After(time.Now().Add(5 * time.Minute)) {
+				return nil, fmt.Errorf("token iat is in the future")
+			}
+		}
+	}
 	return token, nil
 }

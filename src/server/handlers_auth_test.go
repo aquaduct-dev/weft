@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/aquaduct-dev/weft/src/crypto"
+	"github.com/golang-jwt/jwt/v4"
 )
 
 func newAuthTestServer(secret string) *Server {
@@ -145,6 +146,113 @@ func TestVerifyChallenge_DeletesOnDecryptFailure(t *testing.T) {
 	}
 	if _, exists := s.challenges[req.RemoteAddr]; exists {
 		t.Errorf("challenge entry leaked across failed POST")
+	}
+}
+
+// TestVerifyChallenge_NoAudClaim is the F-8 regression: ensure the JWT issued
+// on a successful login does NOT carry an aud claim (which the server never
+// enforced and was misleading to readers), and DOES carry iss/iat.
+func TestVerifyChallenge_NoAudClaim(t *testing.T) {
+	s := newAuthTestServer("secret")
+	s.certPEM = []byte("-----BEGIN CERTIFICATE-----\nfake\n-----END CERTIFICATE-----\n")
+
+	get := httptest.NewRequest(http.MethodGet, "/login", nil)
+	get.RemoteAddr = "10.0.0.2:5001"
+	rrGet := httptest.NewRecorder()
+	s.getChallenge(rrGet, get)
+	plaintext, err := crypto.Decrypt(s.ConnectionSecret, rrGet.Body.Bytes())
+	if err != nil {
+		t.Fatalf("decrypt: %v", err)
+	}
+	suffix := strings.TrimPrefix(string(plaintext), "server-")
+	answer, err := crypto.Encrypt(s.ConnectionSecret, suffix)
+	if err != nil {
+		t.Fatalf("encrypt: %v", err)
+	}
+	body, _ := json.Marshal(map[string]any{
+		"challenge":  base64.StdEncoding.EncodeToString(answer),
+		"proxy_name": "alice",
+	})
+	post := httptest.NewRequest(http.MethodPost, "/login", bytes.NewReader(body))
+	post.RemoteAddr = get.RemoteAddr
+	post.Header.Set("Content-Type", "application/json")
+	rr := httptest.NewRecorder()
+	s.verifyChallenge(rr, post)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("verify status = %d (body=%s)", rr.Code, rr.Body.String())
+	}
+	var resp struct {
+		Token string `json:"token"`
+	}
+	if err := json.Unmarshal(rr.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+
+	// Validate the JWT and check claims.
+	tok, err := s.ValidateJWT(resp.Token)
+	if err != nil {
+		t.Fatalf("ValidateJWT: %v", err)
+	}
+	mclaims, ok := tok.Claims.(jwt.MapClaims)
+	if !ok {
+		t.Fatalf("claims are not MapClaims, got %T", tok.Claims)
+	}
+	if _, hasAud := mclaims["aud"]; hasAud {
+		t.Errorf("aud claim must not be present (was unverified) — F-8")
+	}
+	if iss, _ := mclaims["iss"].(string); iss != "weft" {
+		t.Errorf("iss = %q, want \"weft\"", iss)
+	}
+	if _, hasIat := mclaims["iat"]; !hasIat {
+		t.Errorf("iat claim must be set")
+	}
+	if sub, _ := mclaims["sub"].(string); sub != "alice" {
+		t.Errorf("sub = %q, want \"alice\"", sub)
+	}
+}
+
+// TestValidateJWT_RejectsForeignIssuer covers the F-8 hardening of
+// ValidateJWT: a token signed with the same connection secret but issued
+// by something other than weft (e.g. an unrelated app reusing the secret)
+// must not validate.
+func TestValidateJWT_RejectsForeignIssuer(t *testing.T) {
+	s := newAuthTestServer("secret")
+
+	tok := jwt.NewWithClaims(jwt.SigningMethodHS256, jwt.MapClaims{
+		"iss": "other-service",
+		"sub": "alice",
+		"iat": time.Now().Unix(),
+		"nbf": time.Now().Unix(),
+		"exp": time.Now().Add(time.Hour).Unix(),
+	})
+	signed, err := tok.SignedString([]byte("secret"))
+	if err != nil {
+		t.Fatalf("sign: %v", err)
+	}
+	if _, err := s.ValidateJWT(signed); err == nil {
+		t.Errorf("expected validation error for foreign issuer")
+	}
+}
+
+// TestValidateJWT_RejectsFutureIat covers F-8 skew protection: a token whose
+// iat is far in the future must be rejected (clamps the replay burn-window).
+func TestValidateJWT_RejectsFutureIat(t *testing.T) {
+	s := newAuthTestServer("secret")
+
+	future := time.Now().Add(time.Hour)
+	tok := jwt.NewWithClaims(jwt.SigningMethodHS256, jwt.MapClaims{
+		"iss": "weft",
+		"sub": "alice",
+		"iat": future.Unix(),
+		"nbf": future.Add(-time.Minute).Unix(),
+		"exp": future.Add(time.Hour).Unix(),
+	})
+	signed, err := tok.SignedString([]byte("secret"))
+	if err != nil {
+		t.Fatalf("sign: %v", err)
+	}
+	if _, err := s.ValidateJWT(signed); err == nil {
+		t.Errorf("expected validation error for far-future iat")
 	}
 }
 
