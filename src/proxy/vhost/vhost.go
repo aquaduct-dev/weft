@@ -914,27 +914,25 @@ func (p *VHostProxy) CanPassACMEChallenge(ctx context.Context, host string) bool
 	// for hosts that point to the public IP but are blocked by firewall or NAT.
 	checkURL := fmt.Sprintf("http://%s/.well-known/acme-challenge/", host)
 
-	proxy := p.manager.Proxy(targetIPv4.String(), 80)
-	// Pass nil device for the dummy ACME host (no WG device needed here).
-	closer, _, err := proxy.AddHost(RouteConfig{
-		Host:   "probe-acme",
-		Target: &url.URL{Scheme: "http", Host: "localhost:80"},
-	})
-	if err != nil {
-		log.Warn().AnErr("CanWebHost: AddHost error", err)
+	// F-11: pin the HTTP dial to the IP we resolved above so a malicious DNS
+	// record can't switch to a loopback/private address between this code's
+	// LookupIP and the http.Client's dial (DNS rebinding -> SSRF). We also
+	// hard-fail the probe if the pinned address is non-public.
+	pinned := net.JoinHostPort(targetIPv4.String(), "80")
+	if !targetIPv4.Is4() || targetIPv4.IsLoopback() || targetIPv4.IsPrivate() || targetIPv4.IsLinkLocalUnicast() || targetIPv4.IsUnspecified() {
+		log.Warn().Str("host_ip", targetIPv4.String()).Msg("CanWebHost: refusing to probe non-public IP")
 		return false
 	}
-	err = proxy.Start()
-	if err != nil {
-		log.Warn().AnErr("CanWebHost: Start error", err)
-		return false
-	}
-	defer closer.Close()
 
 	// Try a HEAD first; some handlers may not accept HEAD so fall back to GET.
 	req, err := http.NewRequestWithContext(ctx, http.MethodHead, checkURL, nil)
 	client := &http.Client{
 		Timeout: 5 * time.Second,
+		Transport: &http.Transport{
+			DialContext: func(ctx context.Context, network, _ string) (net.Conn, error) {
+				return (&net.Dialer{Timeout: 3 * time.Second}).DialContext(ctx, network, pinned)
+			},
+		},
 	}
 	if err != nil {
 		log.Debug().Err(err).Str("check_url", checkURL).Msg("CanWebHost: failed to create HEAD request for HTTP-01 probe")
