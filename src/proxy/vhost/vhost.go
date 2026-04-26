@@ -21,6 +21,8 @@ import (
 
 	"github.com/aquaduct-dev/weft/src/acme"
 
+	"github.com/aquaduct-dev/weft/src/internal/util"
+
 	"github.com/aquaduct-dev/weft/src/proxy/vhost/meter"
 
 	"github.com/aquaduct-dev/weft/wireguard"
@@ -411,6 +413,14 @@ type WGAwareRoundTripper struct {
 	transport *http.Transport
 }
 
+// HTTPDialFailureThreshold and HTTPDialFailureWindow control when a series of
+// upstream-dial failures triggers tunnel cleanup (F-9). A single failure no
+// longer tears the tunnel down — only sustained failures within the window do.
+var (
+	HTTPDialFailureThreshold = 3
+	HTTPDialFailureWindow    = 30 * time.Second
+)
+
 // NewWGAwareRoundTripper creates a WGAwareRoundTripper with a reusable transport.
 // The transport is created once and reused for all requests to avoid goroutine leaks.
 func NewWGAwareRoundTripper(device *wireguard.UserspaceDevice, target *url.URL, cleanup func(tunnelName string), proxyName string) *WGAwareRoundTripper {
@@ -421,12 +431,19 @@ func NewWGAwareRoundTripper(device *wireguard.UserspaceDevice, target *url.URL, 
 		proxyName: proxyName,
 	}
 	if device != nil && strings.HasPrefix(target.Host, "10.1") {
+		failures := util.NewFailureTracker(HTTPDialFailureThreshold, HTTPDialFailureWindow)
 		w.transport = &http.Transport{
 			DialContext: func(ctx context.Context, network, addr string) (net.Conn, error) {
 				c, err := device.NetStack.Dial(network, addr)
-				if err != nil && cleanup != nil {
-					log.Warn().Str("proxy", proxyName).Err(err).Msg("WGAwareRoundTripper: dial failed, triggering cleanup")
+				if err == nil {
+					failures.Reset()
+					return c, nil
+				}
+				if cleanup != nil && failures.Record(time.Now()) {
+					log.Warn().Str("proxy", proxyName).Err(err).Msg("WGAwareRoundTripper: dial failure threshold reached, triggering cleanup")
 					go cleanup(proxyName)
+				} else {
+					log.Debug().Str("proxy", proxyName).Err(err).Msg("WGAwareRoundTripper: dial failed (under threshold)")
 				}
 				return c, err
 			},

@@ -8,6 +8,7 @@ import (
 	"sync/atomic"
 
 	"github.com/aquaduct-dev/weft/src/internal/constants"
+	"github.com/aquaduct-dev/weft/src/internal/util"
 	"github.com/aquaduct-dev/weft/src/proxy/vhost/meter"
 	"github.com/aquaduct-dev/weft/wireguard"
 	"github.com/rs/zerolog/log"
@@ -47,6 +48,10 @@ type TCPProxy struct {
 	instanceId string
 	// cleanup is called when the tunnel destination becomes unreachable.
 	cleanup    func(tunnelName string)
+	// dialFailures tracks consecutive upstream-dial failures so a transient
+	// outage doesn't tear the tunnel down (F-9). Lazy-initialised by
+	// constructProxy via newTCPProxy / inferred default in StartProxy.
+	dialFailures *util.FailureTracker
 }
 
 // Close closes the TCPProxy listener.

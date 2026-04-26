@@ -72,6 +72,14 @@ func (p *ProxyManager) GetProxyCounters() map[string]struct {
 	return result
 }
 
+// TCPDialFailureThreshold and TCPDialFailureWindow control when a series of
+// upstream-dial failures triggers tunnel cleanup (F-9). A single failure no
+// longer tears the tunnel down — only sustained failures within the window do.
+var (
+	TCPDialFailureThreshold = 3
+	TCPDialFailureWindow    = 30 * time.Second
+)
+
 // ProxyTCP is a generic TCP proxy that forwards connections.
 func (p *TCPProxy) ProxyTCP(publicConn net.Conn, target string, device *wireguard.UserspaceDevice) {
 	log.Debug().Str("target", target).Msg("ProxyTCP: accepted public connection")
@@ -85,12 +93,13 @@ func (p *TCPProxy) ProxyTCP(publicConn net.Conn, target string, device *wireguar
 	if err != nil {
 		log.Error().Err(err).Str("target", target).Msg("ProxyTCP: dial to target failed")
 		publicConn.Close()
-		if p.cleanup != nil {
-			log.Warn().Str("proxy", p.name).Msg("ProxyTCP: triggering cleanup due to dial failure")
+		if p.cleanup != nil && p.dialFailures.Record(time.Now()) {
+			log.Warn().Str("proxy", p.name).Msg("ProxyTCP: dial failure threshold reached, triggering cleanup")
 			go p.cleanup(p.name)
 		}
 		return
 	}
+	p.dialFailures.Reset()
 
 	// copy target->public
 	go func() {
@@ -328,7 +337,13 @@ func (p *ProxyManager) StartProxy(srcURL *url.URL, dstURL *url.URL, proxyName st
 		if err != nil {
 			return nil, err
 		}
-		newProxy := &TCPProxy{Addr: addr, name: proxyName, instanceId: generateInstanceId(), cleanup: p.Cleanup}
+		newProxy := &TCPProxy{
+			Addr:         addr,
+			name:         proxyName,
+			instanceId:   generateInstanceId(),
+			cleanup:      p.Cleanup,
+			dialFailures: util.NewFailureTracker(TCPDialFailureThreshold, TCPDialFailureWindow),
+		}
 		for name, existingProxy := range p.proxies {
 			if newProxy.Conflicts(existingProxy) {
 				return nil, fmt.Errorf("proxy %s conflicts with %s", proxyName, name)

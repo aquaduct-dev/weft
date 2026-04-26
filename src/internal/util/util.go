@@ -6,7 +6,62 @@ import (
 	"net/url"
 	"strconv"
 	"strings"
+	"sync"
+	"time"
 )
+
+// FailureTracker counts upstream-dial failures in a sliding window. It exists
+// to avoid tearing a tunnel down on the first dial failure (F-9): a single
+// public client connecting during an upstream restart shouldn't wipe the
+// tunnel out from under the legitimate operator.
+//
+// Zero value is invalid; use NewFailureTracker.
+type FailureTracker struct {
+	mu        sync.Mutex
+	failures  []time.Time
+	threshold int
+	window    time.Duration
+}
+
+// NewFailureTracker returns a tracker that will report "tripped" once it has
+// recorded `threshold` failures within `window`. A threshold of 1 reproduces
+// the original fail-fast behaviour; higher thresholds smooth over transient
+// upstream outages.
+func NewFailureTracker(threshold int, window time.Duration) *FailureTracker {
+	if threshold < 1 {
+		threshold = 1
+	}
+	return &FailureTracker{threshold: threshold, window: window}
+}
+
+// Record adds a failure observation and returns true if the threshold has
+// been crossed within the sliding window. The tracker resets on a Record that
+// returns true, so repeated trips don't continue firing.
+func (f *FailureTracker) Record(now time.Time) bool {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	cutoff := now.Add(-f.window)
+	keep := f.failures[:0]
+	for _, t := range f.failures {
+		if t.After(cutoff) {
+			keep = append(keep, t)
+		}
+	}
+	keep = append(keep, now)
+	f.failures = keep
+	if len(f.failures) >= f.threshold {
+		f.failures = f.failures[:0]
+		return true
+	}
+	return false
+}
+
+// Reset drops any recorded failures (used on a successful operation).
+func (f *FailureTracker) Reset() {
+	f.mu.Lock()
+	f.failures = f.failures[:0]
+	f.mu.Unlock()
+}
 
 // EnsurePort ensures that the URL has a port set, using defaults for http/https.
 func EnsurePort(u *url.URL) error {
