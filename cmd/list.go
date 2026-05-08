@@ -1,10 +1,9 @@
 // Package cmd: implements the `weft list` CLI command.
 //
 // The `weft list [server]` command calls the server's /list endpoint and prints
-// the JSON response to stdout. If the server requires authentication, an
-// optional --connection-secret flag can be provided; when present the command
-// will use the existing Login flow (cmd.Login) to obtain a JWT and include it
-// in the Authorization header.
+// the JSON response to stdout. The connection secret is supplied via the
+// userinfo component of the server URL (e.g. https://:secret@host:9092); the
+// command exchanges it for a JWT via the same Login flow as `weft tunnel`.
 package cmd
 
 import (
@@ -38,7 +37,6 @@ func formatBytes(bytes int) string {
 	return fmt.Sprintf("%.1f %s", size, units[i])
 }
 
-// Note: connection secret is passed in the URL path per README: /list/<secret>
 var listCmd = &cobra.Command{
 	Use:   "list [server]",
 	Short: "Call server /list endpoint and print the result",
@@ -117,8 +115,6 @@ var listCmd = &cobra.Command{
 }
 
 func init() {
-	listCmd.Flags().String("connection-secret", "", "Connection secret appended to /list/<secret>")
-	listCmd.Flags().String("proxy-name", "", "Proxy name (unused for URL form)")
 	listCmd.Flags().BoolP("human-readable", "l", false, "Print bytes in human-readable format")
 	rootCmd.AddCommand(listCmd)
 }
