@@ -15,6 +15,7 @@ import (
 	proxy "github.com/aquaduct-dev/weft/src/proxy"
 	"github.com/aquaduct-dev/weft/types"
 	"github.com/aquaduct-dev/weft/wireguard"
+	"github.com/rs/zerolog/log"
 	"golang.zx2c4.com/wireguard/wgctrl/wgtypes"
 )
 
@@ -75,12 +76,19 @@ func (d *TunnelDataplane) UpdateWireGuardConfig(peers map[string]Peer) error {
 		return fmt.Errorf("server shutting down")
 	}
 
-	// Update port from device
-	ipc, _ := d.device.Device.IpcGet()
-	for _, line := range strings.Split(ipc, "\n") {
-		if portStr, ok := strings.CutPrefix(line, "listen_port="); ok {
-			if p, err := strconv.Atoi(strings.TrimSpace(portStr)); err == nil && p != 0 {
-				d.wgListenPort = p
+	// Refresh wgListenPort from the device. If IpcGet fails we keep the
+	// last-known port — UpdateWireGuardConfig still passes &d.wgListenPort
+	// below, and a wrong port here would manifest as a peer-config error
+	// downstream — but log so the silent stale-port path is at least visible.
+	ipc, err := d.device.Device.IpcGet()
+	if err != nil {
+		log.Warn().Err(err).Msg("UpdateWireGuardConfig: IpcGet failed; using last-known wgListenPort")
+	} else {
+		for _, line := range strings.Split(ipc, "\n") {
+			if portStr, ok := strings.CutPrefix(line, "listen_port="); ok {
+				if p, parseErr := strconv.Atoi(strings.TrimSpace(portStr)); parseErr == nil && p != 0 {
+					d.wgListenPort = p
+				}
 			}
 		}
 	}
