@@ -860,6 +860,40 @@ var (
 // reachable. Tuned so a 3-record RR passes with 2/3 hits.
 const rrPassThresholdPercent = 66
 
+// ipCategory classifies an IP for operator-friendly diagnostic logging.
+// Used to explain *why* a record didn't qualify as a probe target.
+func ipCategory(ip net.IP) string {
+	addr, ok := netip.AddrFromSlice(ip)
+	if !ok {
+		return "invalid"
+	}
+	addr = addr.Unmap()
+	switch {
+	case addr.IsLoopback():
+		return "loopback"
+	case addr.IsUnspecified():
+		return "unspecified"
+	case addr.IsLinkLocalUnicast(), addr.IsLinkLocalMulticast():
+		return "link-local"
+	case addr.IsPrivate():
+		return "private"
+	case !addr.Is4():
+		return "ipv6 (skipped; ACME HTTP-01 here is IPv4-only)"
+	default:
+		return "public"
+	}
+}
+
+// describeIPs renders a DNS result list with a category tag per record so
+// operators can see at a glance why a record was filtered out.
+func describeIPs(ips []net.IP) []string {
+	out := make([]string, len(ips))
+	for i, ip := range ips {
+		out[i] = ip.String() + " (" + ipCategory(ip) + ")"
+	}
+	return out
+}
+
 // publicIPv4sFromIPs filters DNS results to non-loopback, non-private, non-
 // link-local IPv4 addresses. IPv6 records and v4-mapped v6 are normalised.
 func publicIPv4sFromIPs(ips []net.IP) []netip.Addr {
@@ -884,22 +918,29 @@ func publicIPv4sFromIPs(ips []net.IP) []netip.Addr {
 	return out
 }
 
+// probeOutcome captures one IP's probe result and a short operator-readable
+// reason — propagated up so a failing CanPassACMEChallenge can produce a
+// single actionable log instead of fragments scattered across debug lines.
+type probeOutcome struct {
+	ip     netip.Addr
+	ok     bool
+	detail string
+}
+
 // probeACMEChallenge runs a single HTTP HEAD against /.well-known/acme-challenge/
-// on the given host with the dial pinned to dialIP:80. Returns true if the
-// remote responded with 403 or 404 — autocert returns these for unknown
-// challenge tokens and they're our positive signal that the ACME handler is
-// reachable. Refuses to probe non-public IPs (F-11).
-func probeACMEChallenge(ctx context.Context, host string, dialIP netip.Addr) bool {
+// on host with the dial pinned to dialIP:80 (F-11 — defeats DNS rebinding).
+// Returns ok=true with a short detail string on a 403/404 response (autocert's
+// signature for unknown challenge tokens), and ok=false with a reason
+// otherwise. Refuses non-public IPs.
+func probeACMEChallenge(ctx context.Context, host string, dialIP netip.Addr) (bool, string) {
 	if !dialIP.Is4() || dialIP.IsLoopback() || dialIP.IsPrivate() || dialIP.IsLinkLocalUnicast() || dialIP.IsUnspecified() {
-		log.Warn().Str("host_ip", dialIP.String()).Msg("CanPassACMEChallenge: refusing to probe non-public IP")
-		return false
+		return false, "refused: non-public IP"
 	}
 	pinned := net.JoinHostPort(dialIP.String(), "80")
 	checkURL := fmt.Sprintf("http://%s/.well-known/acme-challenge/", host)
 	req, err := http.NewRequestWithContext(ctx, http.MethodHead, checkURL, nil)
 	if err != nil {
-		log.Debug().Err(err).Str("check_url", checkURL).Msg("CanPassACMEChallenge: failed to build HEAD request")
-		return false
+		return false, fmt.Sprintf("build request: %v", err)
 	}
 	client := &http.Client{
 		Timeout: 5 * time.Second,
@@ -911,16 +952,13 @@ func probeACMEChallenge(ctx context.Context, host string, dialIP netip.Addr) boo
 	}
 	resp, err := client.Do(req)
 	if err != nil {
-		log.Debug().Err(err).Str("host", host).Str("ip", dialIP.String()).Msg("CanPassACMEChallenge: HEAD probe failed")
-		return false
+		return false, fmt.Sprintf("connect: %v", err)
 	}
 	resp.Body.Close()
 	if resp.StatusCode == http.StatusForbidden || resp.StatusCode == http.StatusNotFound {
-		log.Debug().Str("host", host).Str("ip", dialIP.String()).Int("status", resp.StatusCode).Msg("CanPassACMEChallenge: HEAD probe ok")
-		return true
+		return true, fmt.Sprintf("ok (status %d)", resp.StatusCode)
 	}
-	log.Debug().Str("host", host).Str("ip", dialIP.String()).Int("status", resp.StatusCode).Msg("CanPassACMEChallenge: HEAD probe returned unexpected status")
-	return false
+	return false, fmt.Sprintf("unexpected status %d (expected 403 or 404 from autocert challenge handler)", resp.StatusCode)
 }
 
 // CanPassACMEChallenge checks whether ACME HTTP-01 issuance is likely to
@@ -933,42 +971,71 @@ func probeACMEChallenge(ctx context.Context, host string, dialIP netip.Addr) boo
 //     since net.LookupIP returns the literal as a single record.)
 //   - N >= 2 (round-robin DNS): probe every record; require >= 66% to respond
 //     so a partly-broken RR rotation can't quietly issue.
+//
+// On failure, emits a single warn-level log with per-IP outcomes and an
+// actionable explanation tailored to the failure mode.
 func (p *VHostProxy) CanPassACMEChallenge(ctx context.Context, host string) bool {
 	if host == "" {
-		log.Debug().Msg("CanPassACMEChallenge: empty host")
+		log.Warn().Msg("CanPassACMEChallenge: empty host — pass a hostname (or public IP literal) to probe")
 		return false
 	}
 
 	ips, err := lookupIP(host)
 	if err != nil {
-		log.Debug().Err(err).Str("host", host).Msg("CanPassACMEChallenge: DNS lookup failed")
+		log.Warn().Err(err).Str("host", host).Msgf(
+			"CanPassACMEChallenge: DNS lookup for %q failed. Verify the domain is registered and propagated (try: dig +short %s).",
+			host, host)
 		return false
 	}
 	targets := publicIPv4sFromIPs(ips)
 	if len(targets) == 0 {
-		log.Debug().Str("host", host).Msg("CanPassACMEChallenge: host does not resolve to any public IPv4 record")
+		log.Warn().Str("host", host).Strs("resolved", describeIPs(ips)).Msgf(
+			"CanPassACMEChallenge: %q resolves but no record is a public IPv4. Add an A record pointing to this server's public IP. (Loopback, RFC1918, link-local, and v6-only records are not eligible for ACME HTTP-01 here.)",
+			host)
 		return false
 	}
 
+	outcomes := make([]probeOutcome, len(targets))
 	successes := 0
-	for _, ip := range targets {
-		if probeACMEChallengeFn(ctx, host, ip) {
+	for i, ip := range targets {
+		ok, detail := probeACMEChallengeFn(ctx, host, ip)
+		outcomes[i] = probeOutcome{ip: ip, ok: ok, detail: detail}
+		if ok {
 			successes++
 		}
 	}
 
+	pass := false
 	if len(targets) == 1 {
-		ok := successes == 1
-		log.Debug().Str("host", host).Bool("ok", ok).Msg("CanPassACMEChallenge: single-record probe complete")
-		return ok
+		pass = successes == 1
+	} else {
+		// RR DNS: require >= 66% of records to respond. Integer math avoids float.
+		pass = successes*100 >= len(targets)*rrPassThresholdPercent
 	}
 
-	// RR DNS: require >= 66% of records to respond. Integer math avoids float.
-	ok := successes*100 >= len(targets)*rrPassThresholdPercent
-	level := log.Debug
-	if !ok {
-		level = log.Warn
+	if pass {
+		log.Debug().Str("host", host).Int("records", len(targets)).Int("successes", successes).Msg("CanPassACMEChallenge: probe passed")
+		return true
 	}
-	level().Str("host", host).Int("records", len(targets)).Int("successes", successes).Bool("ok", ok).Msg("CanPassACMEChallenge: RR-DNS probe complete")
-	return ok
+
+	// Failure path — emit one warn line with per-IP outcomes attached as
+	// structured fields so log shippers can grep, plus an actionable Msg.
+	ev := log.Warn().Str("host", host).Int("records_total", len(targets)).Int("records_ok", successes)
+	if len(targets) > 1 {
+		ev = ev.Int("threshold_pct", rrPassThresholdPercent)
+	}
+	for _, o := range outcomes {
+		ev = ev.Str("probe_"+o.ip.String(), o.detail)
+	}
+	switch {
+	case len(targets) == 1:
+		ev.Msgf(
+			"CanPassACMEChallenge: probe to %s for %q failed (%s). Check: (1) %s is the right public IP for %q, (2) inbound TCP/80 is open through your firewall and any NAT, (3) a handler answering /.well-known/acme-challenge/ (typically `weft server`) is running on this host.",
+			outcomes[0].ip, host, outcomes[0].detail, outcomes[0].ip, host)
+	default:
+		ev.Msgf(
+			"CanPassACMEChallenge: round-robin DNS check failed for %q — only %d of %d records (need >=%d%%) responded with the expected ACME handler. Each peer's result is logged above. ACME will fail randomly until every record either runs `weft server` on TCP/80 or is removed from the rotation.",
+			host, successes, len(targets), rrPassThresholdPercent)
+	}
+	return false
 }

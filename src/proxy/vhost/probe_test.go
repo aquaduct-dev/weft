@@ -37,8 +37,11 @@ func withSeams(t *testing.T, ips []net.IP, lookupErr error, probeResults map[str
 	origLookup := lookupIP
 	origProbe := probeACMEChallengeFn
 	lookupIP = func(string) ([]net.IP, error) { return ips, lookupErr }
-	probeACMEChallengeFn = func(_ context.Context, _ string, dialIP netip.Addr) bool {
-		return probeResults[dialIP.String()]
+	probeACMEChallengeFn = func(_ context.Context, _ string, dialIP netip.Addr) (bool, string) {
+		if probeResults[dialIP.String()] {
+			return true, "ok (test fake)"
+		}
+		return false, "test fake says fail"
 	}
 	t.Cleanup(func() {
 		lookupIP = origLookup
