@@ -4,6 +4,7 @@ go_library(
     name = "server",
     srcs = [
         "dataplane.go",
+        "handlers_acme_redirect.go",
         "handlers_auth.go",
         "handlers_health.go",
         "handlers_metrics.go",
@@ -19,6 +20,7 @@ go_library(
     importpath = "github.com/aquaduct-dev/weft/src/server",
     visibility = ["//visibility:public"],
     deps = [
+        "//src/acme",
         "//src/crypto",
         "//src/dns",
         "//src/internal/constants",
@@ -35,6 +37,7 @@ go_library(
 go_test(
     name = "server_test",
     srcs = [
+        "handlers_acme_redirect_test.go",
         "handlers_auth_test.go",
         "handlers_metrics_test.go",
         "handlers_tunnel_test.go",

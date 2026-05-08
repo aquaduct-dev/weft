@@ -193,6 +193,10 @@ func NewServer(port int, bindIP string, connectionSecret string, usageReportingU
 	mux.HandleFunc("/list", s.requireJWT(s.ListHandler))
 	mux.HandleFunc("/metrics", s.MetricsHandler)
 	mux.HandleFunc("/version", s.VersionHandler)
+	// /acme-redirect is unauthenticated — authorization is the IP-in-DNS
+	// check inside the handler, not a JWT. See src/acme/acme_redirect.go for
+	// the trust model.
+	mux.HandleFunc("/acme-redirect", s.ACMERedirectHandler)
 
 	s.UsageReporter = NewHTTPUsageReporter(
 		usageReportingURL,

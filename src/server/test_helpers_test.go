@@ -31,3 +31,6 @@ func (d *testDataplane) GetDevice() *wireguard.UserspaceDevice { return nil }
 func (d *testDataplane) GetPrivateKey() wgtypes.Key            { return wgtypes.Key{} }
 func (d *testDataplane) SetACMEEmail(email string)             {}
 func (d *testDataplane) SetCertsCachePath(path string)         {}
+func (d *testDataplane) RegisterACMERedirect(host, peerIP string) error {
+	return nil
+}

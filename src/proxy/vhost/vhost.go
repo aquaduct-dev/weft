@@ -247,6 +247,13 @@ type VHostProxyManager struct {
 	acmeEmail      string
 	certsCachePath string
 	Cleanup        func(tunnelName string)
+
+	// redirects holds peer-registered ACME challenge redirects (set by
+	// RegisterPeerRedirect, read by tryRedirectChallenge). Guarded by
+	// redirectsMu — kept distinct from `mu` so the challenge hot-path
+	// doesn't contend with the bulk of the manager's state.
+	redirects   map[string]peerRedirect
+	redirectsMu sync.Mutex
 }
 
 func NewVHostProxyManager() *VHostProxyManager {
@@ -624,6 +631,15 @@ func (p *VHostProxy) AddHostWithACME(cfg RouteConfig) (VHostCloser, *meter.Meter
 
 		go func() {
 			defer closer.Close()
+
+			// Spin up the peer-redirect loop so that, if the CA's HTTP-01
+			// validator lands on a sibling node behind DNS round-robin, that
+			// node knows to 301 the challenge back to us. The loop runs until
+			// we cancel it once issuance returns (success or failure).
+			redirectCtx, cancelRedirect := context.WithCancel(context.Background())
+			defer cancelRedirect()
+			go acme.RegisterRedirectsLoop(redirectCtx, cfg.Host, acme.DefaultPeerPort)
+
 			helper := acme.NewACMEHelper(p.manager.acmeManager)
 			cert, err := helper.WaitForCertificate(context.Background(), cfg.Host)
 			if err != nil {
@@ -665,6 +681,9 @@ func (p *VHostProxy) AddHostWithACME(cfg RouteConfig) (VHostCloser, *meter.Meter
 func (p *VHostProxy) ServeHTTP(w *meter.MeteredResponseWriter, r *meter.MeteredRequest) {
 	host := strings.Split(r.Host, ":")[0]
 	if p.port == p.manager.acmePort && p.manager.acmeManager != nil && strings.HasPrefix(r.URL.Path, "/.well-known/acme-challenge/") {
+		if p.manager.tryRedirectChallenge(w, r.Request, host) {
+			return
+		}
 		handler := p.manager.acmeManager.HTTPHandler(nil)
 		h := meter.MeteredHandlerFunc(func(w2 *meter.MeteredResponseWriter, r2 *meter.MeteredRequest) {
 			handler.ServeHTTP(w2, r2.Request)
@@ -747,11 +766,11 @@ func (p *VHostProxy) Start() error {
 					isAcmeHost := p.manager.acmeHosts[hello.ServerName]
 					p.manager.mu.Unlock()
 					if isAcmeHost {
-						return p.manager.acmeManager.GetCertificate(hello)
+						return acme.AcquireCertificate(p.manager.acmeManager, hello)
 					}
 					for _, proto := range hello.SupportedProtos {
 						if proto == "acme-tls/1" {
-							return p.manager.acmeManager.GetCertificate(hello)
+							return acme.AcquireCertificate(p.manager.acmeManager, hello)
 						}
 					}
 				}

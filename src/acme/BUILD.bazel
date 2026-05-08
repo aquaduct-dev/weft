@@ -2,7 +2,11 @@ load("@rules_go//go:def.bzl", "go_library", "go_test")
 
 go_library(
     name = "acme",
-    srcs = ["acme.go"],
+    srcs = [
+        "acme.go",
+        "acme_redirect.go",
+        "testing_helpers.go",
+    ],
     importpath = "github.com/aquaduct-dev/weft/src/acme",
     visibility = ["//visibility:public"],
     deps = [
@@ -13,7 +17,11 @@ go_library(
 
 go_test(
     name = "acme_test",
-    srcs = ["acme_test.go"],
+    timeout = "short",
+    srcs = [
+        "acme_redirect_test.go",
+        "acme_test.go",
+    ],
     embed = [":acme"],
     deps = [
         "@com_github_onsi_ginkgo_v2//:ginkgo",

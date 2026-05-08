@@ -18,6 +18,15 @@ import (
 	"golang.org/x/crypto/acme/autocert"
 )
 
+// Event names emitted on the structured "event" field of every cert
+// acquisition log line. Operators / log pipelines should filter on these.
+const (
+	EventCacheHit          = "acme_cache_hit"
+	EventIssuanceStarted   = "acme_issuance_started"
+	EventIssuanceSucceeded = "acme_issuance_succeeded"
+	EventIssuanceFailed    = "acme_issuance_failed"
+)
+
 // ACMEHelper wraps an autocert.Manager and exposes helpers used by server startup.
 type ACMEHelper struct {
 	Manager *autocert.Manager
@@ -28,39 +37,53 @@ func NewACMEHelper(m *autocert.Manager) *ACMEHelper {
 	return &ACMEHelper{Manager: m}
 }
 
+// AcquireCertificate fetches a certificate via autocert.Manager.GetCertificate
+// and emits structured log events for cache hits, issuance start, success, and
+// failure. Use this anywhere a cert is fetched from autocert so all acquisition
+// paths produce a consistent audit trail — operators rely on these events to
+// track cert lifecycle across multi-node deployments.
+func AcquireCertificate(m *autocert.Manager, hello *tls.ClientHelloInfo) (*tls.Certificate, error) {
+	if m == nil {
+		return nil, errors.New("acme manager not configured")
+	}
+	host := hello.ServerName
+
+	// Probe the cache so we can distinguish "served from disk" from "round-tripped
+	// to the CA" in logs. autocert will check the cache itself; this extra read is
+	// purely for observability.
+	cacheHit := false
+	if m.Cache != nil {
+		if cert, err := m.Cache.Get(context.Background(), host); err == nil && len(cert) > 0 {
+			cacheHit = true
+		}
+	}
+
+	if !cacheHit {
+		log.Info().Str("event", EventIssuanceStarted).Str("host", host).Msg("ACME: cert acquisition starting")
+	}
+
+	start := time.Now()
+	cert, err := m.GetCertificate(hello)
+	dur := time.Since(start)
+
+	if err != nil {
+		log.Warn().Str("event", EventIssuanceFailed).Str("host", host).Dur("duration", dur).Err(err).Msg("ACME: cert acquisition failed")
+		return nil, err
+	}
+	if cacheHit {
+		log.Info().Str("event", EventCacheHit).Str("host", host).Dur("duration", dur).Msg("ACME: cert served from cache")
+	} else {
+		log.Info().Str("event", EventIssuanceSucceeded).Str("host", host).Dur("duration", dur).Msg("ACME: cert acquired from CA")
+	}
+	return cert, nil
+}
+
 // WaitForCertificate waits until a certificate for host is available in the Manager's cache
 // (or can be obtained) or until timeout elapses. It returns the certificate if successful.
 func (a *ACMEHelper) WaitForCertificate(ctx context.Context, host string) (*tls.Certificate, error) {
 	if a == nil || a.Manager == nil {
 		return nil, errors.New("acme manager not configured")
 	}
-
-	// Quick attempt: try to get cert immediately (may trigger issuance).
-	tick := time.NewTicker(1 * time.Second)
-	defer tick.Stop()
-
-	// First try manager.Cache to see if cert exists on disk (DirCache).
-	if a.Manager.Cache != nil {
-		if cert, err := a.Manager.Cache.Get(context.Background(), host); err == nil && len(cert) > 0 {
-			// Try to parse into tls.Certificate
-			tc, err := tls.X509KeyPair(cert, cert)
-			if err == nil {
-				log.Info().Str("host", host).Msg("ACME: certificate found in cache")
-				return &tc, nil
-			}
-			// If parsing with same bytes fails, continue to attempt GetCertificate below.
-			log.Debug().Err(err).Str("host", host).Msg("ACME: cache present but failed to parse cert")
-		}
-	}
-
-	// Ask Manager to provide certificate via GetCertificate to trigger issuance if needed.
 	hello := &tls.ClientHelloInfo{ServerName: host}
-	log.Info().Str("host", host).Msg("Acquiring certificate via LetsEncrypt with ACME http01 challenge...")
-	cert, err := a.Manager.GetCertificate(hello)
-	if err != nil {
-		log.Warn().Err(err).Str("host", host).Msg("ACME: GetCertificate error")
-		return nil, err
-	}
-	log.Info().Str("host", host).Msg("Acquired TLS certificate")
-	return cert, nil
+	return AcquireCertificate(a.Manager, hello)
 }

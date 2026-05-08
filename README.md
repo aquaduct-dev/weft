@@ -170,6 +170,19 @@ TCP and UDP proxies are simple on the server side: they simply proxy to the tunn
 
 HTTP and HTTPS proxies are more complicated.  Each server-side `VHostProxy` must target the tunnel proxy port.  On the tunnel side, the proxy port should only forward TCP to the local HTTP server.
 
+### ACME / Certificate Acquisition
+
+Weft uses Let's Encrypt's ACME HTTP-01 challenge (via `golang.org/x/crypto/acme/autocert`) to obtain TLS certificates for tunneled hostnames. The challenge handler is mounted at `/.well-known/acme-challenge/` on the configured ACME port and is reachable on port 80 of the server's public hostname.
+
+Each cert acquisition (and any failure) emits a structured log line so that issuance can be tracked across multi-node deployments. At minimum, the following events are logged:
+
+- Issuance started — host being requested.
+- Cache hit — cert returned from the on-disk cache without contacting the CA.
+- Issuance succeeded — cert acquired from the CA.
+- Issuance failed — error returned from `Manager.GetCertificate`, with the underlying error.
+
+These are intentionally coarse-grained: the goal is to give operators a clear audit trail of when certs were obtained, renewed, or failed to renew, without leaking the cert material itself. Treat the issuance-succeeded log line as the canonical "a new cert exists" signal for any external monitoring or alerting.
+
 ### HTTPS Zero-Trust Secret Verification
 
 The Weft server uses a self-signed TLS certificate. To prevent man-in-the-middle attacks, Weft uses an encrypted challenge-response protocol that also securely delivers the server's certificate to the client.

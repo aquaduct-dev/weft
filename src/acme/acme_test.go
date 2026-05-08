@@ -2,12 +2,19 @@ package acme
 
 import (
 	"context"
+	"crypto/tls"
+	"testing"
 	"time"
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 	"golang.org/x/crypto/acme/autocert"
 )
+
+func TestAcme(t *testing.T) {
+	RegisterFailHandler(Fail)
+	RunSpecs(t, "ACME Suite")
+}
 
 // fakeCache implements autocert.Cache for tests.
 type fakeCache struct {
@@ -88,5 +95,31 @@ var _ = Describe("ACMEHelper", func() {
 		defer cancel()
 		_, err := h.WaitForCertificate(ctx, "example.org")
 		Expect(err).To(HaveOccurred())
+	})
+})
+
+var _ = Describe("AcquireCertificate", func() {
+	It("returns error when manager is nil", func() {
+		_, err := AcquireCertificate(nil, &tls.ClientHelloInfo{ServerName: "example.org"})
+		Expect(err).To(HaveOccurred())
+		Expect(err.Error()).To(ContainSubstring("acme manager not configured"))
+	})
+
+	It("returns an error and emits issuance_failed when issuance fails", func() {
+		// No cache, no network → autocert will fail. We just confirm the call
+		// doesn't panic and surfaces the error. Event emission is best-checked
+		// via log scraping in integration tests.
+		mgr := &autocert.Manager{Cache: nil}
+		_, err := AcquireCertificate(mgr, &tls.ClientHelloInfo{ServerName: "example.invalid"})
+		Expect(err).To(HaveOccurred())
+	})
+
+	It("exposes stable event name constants", func() {
+		// Operators / log pipelines depend on these values being stable. If
+		// you rename one, treat it as a breaking change to the log schema.
+		Expect(EventCacheHit).To(Equal("acme_cache_hit"))
+		Expect(EventIssuanceStarted).To(Equal("acme_issuance_started"))
+		Expect(EventIssuanceSucceeded).To(Equal("acme_issuance_succeeded"))
+		Expect(EventIssuanceFailed).To(Equal("acme_issuance_failed"))
 	})
 })

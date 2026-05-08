@@ -215,3 +215,11 @@ func (d *TunnelDataplane) SetACMEEmail(email string) {
 func (d *TunnelDataplane) SetCertsCachePath(path string) {
 	d.proxyManager.VHostProxyManager.SetCertsCachePath(path)
 }
+
+// RegisterACMERedirect forwards the peer redirect registration to the vhost
+// manager. The /acme-redirect HTTP handler must verify the peer IP is in DNS
+// for host before calling this — this layer is just plumbing.
+func (d *TunnelDataplane) RegisterACMERedirect(host, peerIP string) error {
+	d.proxyManager.VHostProxyManager.RegisterPeerRedirect(host, peerIP)
+	return nil
+}
