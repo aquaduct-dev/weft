@@ -240,10 +240,6 @@ type withJwt struct {
 
 // WithJWT wraps an existing http.RoundTripper with JWT authentication and automatic token renewal.
 func WithJWT(rt http.RoundTripper, jwt string, jwtRenewalFunction func() (string, error)) withJwt {
-	if rt == nil {
-		panic("Need an http.RoundTripper!")
-	}
-
 	return withJwt{jwt: jwt, rt: rt, jwtRefresh: jwtRenewalFunction}
 }
 
@@ -253,16 +249,21 @@ func (h *withJwt) IsJWTValid() bool {
 	}
 	token, _, err := jwt.NewParser().ParseUnverified(h.jwt, jwt.MapClaims{})
 	if err != nil {
-		log.Fatal().Err(err).Msg("Failed to parse JWT")
+		log.Warn().Err(err).Msg("Failed to parse JWT; treating as invalid and forcing refresh")
+		return false
 	}
 	claims, ok := token.Claims.(jwt.MapClaims)
 	if !ok {
-		log.Fatal().Msg("Failed to get JWT claims")
+		log.Warn().Msg("JWT claims unexpected type; treating as invalid and forcing refresh")
+		return false
 	}
-	exp := int64(claims["exp"].(float64))
-	jwtExpiry := time.Unix(exp, 0)
+	expFloat, ok := claims["exp"].(float64)
+	if !ok {
+		log.Warn().Msg("JWT missing or non-numeric exp claim; treating as invalid")
+		return false
+	}
+	jwtExpiry := time.Unix(int64(expFloat), 0)
 	return time.Until(jwtExpiry) > 1*time.Minute
-
 }
 
 func (h *withJwt) RoundTrip(req *http.Request) (*http.Response, error) {
