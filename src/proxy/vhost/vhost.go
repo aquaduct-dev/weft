@@ -315,7 +315,11 @@ func (v *VHostProxyManager) ACMEPort() int {
 }
 
 func (v *VHostProxyManager) AddACMEHost(host string, bindIp string) (io.Closer, error) {
-	proxy := v.Proxy(bindIp, 80)
+	// Bind on the configured ACME port (defaults to 80, overridable via
+	// SetACMEPort for tests). ServeHTTP routes /.well-known/acme-challenge/
+	// through autocert iff the proxy's port matches manager.acmePort, so
+	// they must agree.
+	proxy := v.Proxy(bindIp, v.ACMEPort())
 	v.mu.Lock()
 	v.acmeHosts[host] = true
 	v.mu.Unlock()
@@ -584,10 +588,28 @@ func (p *VHostProxy) AddHostWithTLS(cfg RouteConfig) (VHostCloser, *meter.Metere
 }
 
 // AddHostWithACME registers an HTTP reverse proxy and enables ACME for the given host.
+//
+// The :80 listener is bound BEFORE CanPassACMEChallenge runs. Probing first
+// is a chicken-and-egg on cold start: the probe HEADs
+// /.well-known/acme-challenge/ at the host's public IP and expects autocert's
+// 403 — which only arrives once *we* are answering on :80. With no prior
+// ACME hosts, the very first registration would fail the probe, never bind
+// :80, and leave every subsequent registration failing the same way.
+// Binding first lets the probe see a live listener (the same one autocert
+// will answer challenges on); probe failure tears the listener back down via
+// the deferred Close.
 func (p *VHostProxy) AddHostWithACME(cfg RouteConfig) (VHostCloser, *meter.MeteredHTTPHandler, error) {
 
-	// Before enabling ACME for the host, verify the server appears reachable from the public internet
-	// for HTTP-01 challenges. This reduces time wasted attempting issuance for hosts that won't complete.
+	// Bind the ACME challenge listener up front. The deferred Close runs on
+	// every return path: on probe failure it collapses the proxy (no other
+	// routes were added), on success the persistent "acme-<host>" route
+	// added below keeps it alive.
+	closer, err := p.manager.AddACMEHost(cfg.Host, cfg.BindIP)
+	if err != nil {
+		return VHostCloser{}, &meter.MeteredHTTPHandler{}, err
+	}
+	defer closer.Close()
+
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	if !p.CanPassACMEChallenge(ctx, cfg.Host) {
@@ -595,19 +617,13 @@ func (p *VHostProxy) AddHostWithACME(cfg RouteConfig) (VHostCloser, *meter.Meter
 		return VHostCloser{}, &meter.MeteredHTTPHandler{}, fmt.Errorf("host %s not reachable for ACME HTTP-01 challenge", cfg.Host)
 	}
 
-	closer, err := p.manager.AddACMEHost(cfg.Host, cfg.BindIP)
-	if err != nil {
-		return VHostCloser{}, &meter.MeteredHTTPHandler{}, err
-	}
-	defer closer.Close()
-
 	meteredProxy, route := p.newMeteredReverseProxy(cfg)
 
 	// Log that ACME registration has been requested for this host.
 	log.Debug().Str("host", cfg.Host).Msg("ACME: host registered with manager for issuance")
 
 	if p.manager.acmeManager != nil {
-		proxy := p.manager.Proxy(cfg.BindIP, 80)
+		proxy := p.manager.Proxy(cfg.BindIP, p.manager.ACMEPort())
 		closer, acmeHandler, err := proxy.AddHost(RouteConfig{
 			Host:   "acme-" + cfg.Host,
 			Target: &url.URL{Scheme: "http", Host: cfg.Host + ":80"},

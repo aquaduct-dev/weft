@@ -4,6 +4,7 @@ import (
 	"context"
 	"net"
 	"net/netip"
+	"net/url"
 	"testing"
 )
 
@@ -83,6 +84,53 @@ func TestCanPassACMEChallenge_SingleRecord_Fail(t *testing.T) {
 	withSeams(t, []net.IP{net.ParseIP("203.0.113.5")}, nil, map[string]bool{"203.0.113.5": false})
 	if newProxy().CanPassACMEChallenge(context.Background(), "host.example.") {
 		t.Fatalf("expected deny when single record's probe fails")
+	}
+}
+
+// AddHostWithACME must bind the :80 ACME challenge listener BEFORE running
+// CanPassACMEChallenge. Probing first is a chicken-and-egg on cold start:
+// the probe expects autocert's 403 on /.well-known/acme-challenge/, which
+// only arrives once *we* are answering on :80. With no other ACME hosts
+// already registered, the first registration's probe always saw "connection
+// refused", AddHostWithACME aborted, and :80 stayed unbound forever — so
+// every subsequent registration also failed.
+func TestAddHostWithACME_BindsListenerBeforeProbe(t *testing.T) {
+	manager := NewVHostProxyManager()
+	// Skip the cert-issuance goroutine; this test only locks in the
+	// ordering, not real ACME interaction.
+	manager.acmeManager = nil
+	// Use a high port so net.Listen succeeds without root.
+	const acmeTestPort = 18180
+	manager.SetACMEPort(acmeTestPort)
+
+	bindIP := "127.0.0.1"
+	p := manager.Proxy(bindIP, 19191)
+
+	var listenerBoundAtProbeTime bool
+	withSeams(t, []net.IP{net.ParseIP("203.0.113.5")}, nil, nil)
+	probeACMEChallengeFn = func(_ context.Context, _ string, _ netip.Addr) (bool, string) {
+		manager.mu.Lock()
+		acmeProxy := manager.proxies[acmeTestPort]
+		manager.mu.Unlock()
+		if acmeProxy != nil {
+			acmeProxy.mu.RLock()
+			listenerBoundAtProbeTime = acmeProxy.s != nil
+			acmeProxy.mu.RUnlock()
+		}
+		return true, "ok (test fake)"
+	}
+
+	target, _ := url.Parse("http://upstream.invalid:80")
+	if _, _, err := p.AddHostWithACME(RouteConfig{
+		Host:   "host.example",
+		BindIP: bindIP,
+		Target: target,
+	}); err != nil {
+		t.Fatalf("AddHostWithACME: %v", err)
+	}
+
+	if !listenerBoundAtProbeTime {
+		t.Fatalf("CanPassACMEChallenge ran before :%d listener was bound — chicken-and-egg regression", acmeTestPort)
 	}
 }
 
