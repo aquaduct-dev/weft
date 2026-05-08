@@ -11,7 +11,6 @@ import (
 	"encoding/base64"
 	"encoding/hex"
 	"fmt"
-
 	"net/http"
 	"net/netip"
 	"strconv"
@@ -33,7 +32,7 @@ type Server struct {
 	*http.Server
 
 	// Store manages the persistence and state of tunnel peers.
-	Store     TunnelStore
+	Store TunnelStore
 	// Dataplane manages the underlying networking (WireGuard/Proxies).
 	Dataplane Dataplane
 
@@ -174,15 +173,15 @@ func NewServer(port int, bindIP string, connectionSecret string, usageReportingU
 		certPEM:            certPEM,
 		certFingerprintHex: fingerprintHex,
 		challenges:         make(map[string]challengeEntry),
-		bindIP:            bindIP,
-		UsageReportingURL: usageReportingURL,
-		CloudflareToken:   cloudflareToken,
-		DNSUpdater:        dns.UpdateRecord,
+		bindIP:             bindIP,
+		UsageReportingURL:  usageReportingURL,
+		CloudflareToken:    cloudflareToken,
+		DNSUpdater:         dns.UpdateRecord,
 	}
 
 	dp, err := NewTunnelDataplane(0, bindIP, s.RemoveTunnel, s.isShuttingDown)
 	if err != nil {
-		panic(err)
+		log.Fatal().Err(err).Msg("failed to initialize tunnel dataplane")
 	}
 	s.Dataplane = dp
 
@@ -219,9 +218,6 @@ func NewServer(port int, bindIP string, connectionSecret string, usageReportingU
 	return s
 }
 
-// MetricsHandler serves Prometheus-formatted usage metrics for all active tunnels.
-
-
 func generateRandomSecret(length int) (string, error) {
 	b := make([]byte, length)
 	_, err := rand.Read(b)
@@ -231,19 +227,12 @@ func generateRandomSecret(length int) (string, error) {
 	return base64.URLEncoding.EncodeToString(b), nil
 }
 
-
-
-// HealthcheckHandler provides an endpoint for clients to report their health status.
-
-
 // reportUsage delegates to the usage reporter for on-demand reporting.
 func (s *Server) reportUsage(ctx context.Context, tunnels []string) {
 	if s.UsageReporter != nil {
 		s.UsageReporter.ReportUsage(ctx, tunnels)
 	}
 }
-
-
 
 func (s *Server) isShuttingDown() bool {
 	s.mu.Lock()
@@ -257,5 +246,3 @@ func (s *Server) isShuttingDown() bool {
 func (s *Server) CertFingerprint() string {
 	return s.certFingerprintHex
 }
-
-
