@@ -849,100 +849,58 @@ func (p *VHostProxy) GetTLSConfig(host string) *tls.Config {
 	return p.tlsConfigs[host]
 }
 
-// CanPassACMEChallenge checks whether the server's public IPv4 is internet-routable and
-// can complete an ACME HTTP-01 challenge for the given host. It attempts to
-// resolve the host and then perform a minimal HTTP GET to the ACME challenge
-// path served by the autocert.Manager on the manager's configured ACME port.
-func (p *VHostProxy) CanPassACMEChallenge(ctx context.Context, host string) bool {
-	// Basic validation
-	if host == "" {
-		log.Debug().Str("host", host).Msg("CanWebHost: empty host")
-		return false
-	}
+// Test seams. Replaced by tests; production uses net.LookupIP and the real prober.
+var (
+	lookupIP             = net.LookupIP
+	probeACMEChallengeFn = probeACMEChallenge
+)
 
-	// Resolve host to IPs
-	ips, err := net.LookupIP(host)
-	if err != nil {
-		log.Debug().Err(err).Str("host", host).Msg("CanWebHost: DNS lookup failed")
-		return false
-	}
+// rrPassThresholdPercent is the minimum fraction of public-IPv4 records that
+// must respond to the HTTP-01 probe for an RR-DNS host to be considered ACME-
+// reachable. Tuned so a 3-record RR passes with 2/3 hits.
+const rrPassThresholdPercent = 66
 
-	// Determine our public IPv4 address by querying an external service (api.ipify.org).
-	publicIP := p.bindIp
-	if publicIP == "" {
-		client := &http.Client{}
-		req, err := http.NewRequestWithContext(ctx, http.MethodGet, "https://api.ipify.org", nil)
-		if err != nil {
-			log.Debug().Err(err).Msg("CanWebHost: failed to create request to api.ipify.org")
-			return false
-		}
-		resp, err := client.Do(req)
-		if err != nil {
-			log.Debug().Err(err).Msg("CanWebHost: failed to query api.ipify.org for public IP")
-			return false
-		}
-		body, err := io.ReadAll(resp.Body)
-		resp.Body.Close()
-		if err != nil {
-			log.Debug().Err(err).Msg("CanWebHost: failed to read api.ipify.org response")
-			return false
-		}
-		publicIP = strings.TrimSpace(string(body))
-		if publicIP == "" {
-			log.Debug().Msg("CanWebHost: api.ipify.org returned empty body")
-			return false
-		}
-		// Validate it's an IPv4 address
-		parsed, err := netip.ParseAddr(publicIP)
-		if err != nil || !parsed.Is4() {
-			log.Debug().Str("public_ip", publicIP).Msg("CanWebHost: api.ipify.org did not return a valid IPv4")
-			return false
-		}
-		log.Debug().Str("public_ip", publicIP).Msg("CanWebHost: obtained public IP from api.ipify.org")
-	}
-
-	// Check that at least one resolved IP is a public IPv4 (not private, not loopback)
-	var targetIPv4 netip.Addr
+// publicIPv4sFromIPs filters DNS results to non-loopback, non-private, non-
+// link-local IPv4 addresses. IPv6 records and v4-mapped v6 are normalised.
+func publicIPv4sFromIPs(ips []net.IP) []netip.Addr {
+	out := make([]netip.Addr, 0, len(ips))
 	for _, ip := range ips {
 		addr, ok := netip.AddrFromSlice(ip)
-		if !ok || !addr.Is4() {
+		if !ok {
 			continue
 		}
 		addr = addr.Unmap()
+		if !addr.Is4() {
+			continue
+		}
 		if addr.IsLoopback() || addr.IsUnspecified() || addr.IsLinkLocalUnicast() || addr.IsLinkLocalMulticast() {
 			continue
 		}
 		if addr.IsPrivate() {
-			// if host resolves only to private addresses, it may not be reachable from the Internet
 			continue
 		}
-		targetIPv4 = addr
-		break
+		out = append(out, addr)
 	}
-	if !targetIPv4.IsValid() {
-		log.Debug().Str("host", host).Msg("CanWebHost: host does not resolve to a public IPv4 address")
-		// Continue, but fail — ACME HTTP-01 requires a publicly routable host.
+	return out
+}
+
+// probeACMEChallenge runs a single HTTP HEAD against /.well-known/acme-challenge/
+// on the given host with the dial pinned to dialIP:80. Returns true if the
+// remote responded with 403 or 404 — autocert returns these for unknown
+// challenge tokens and they're our positive signal that the ACME handler is
+// reachable. Refuses to probe non-public IPs (F-11).
+func probeACMEChallenge(ctx context.Context, host string, dialIP netip.Addr) bool {
+	if !dialIP.Is4() || dialIP.IsLoopback() || dialIP.IsPrivate() || dialIP.IsLinkLocalUnicast() || dialIP.IsUnspecified() {
+		log.Warn().Str("host_ip", dialIP.String()).Msg("CanPassACMEChallenge: refusing to probe non-public IP")
 		return false
 	}
-	log.Debug().Str("host_ip", targetIPv4.String()).Str("host", host).Msg("CanWebHost: host resolves to public IPv4")
-	// At this point DNS resolves to a public IPv4. Perform an active HTTP probe to verify
-	// the ACME HTTP-01 challenge handler is reachable at http://<host>/.well-known/acme-challenge/
-	// from the perspective of the server's public IP. This helps avoid triggering ACME issuance
-	// for hosts that point to the public IP but are blocked by firewall or NAT.
+	pinned := net.JoinHostPort(dialIP.String(), "80")
 	checkURL := fmt.Sprintf("http://%s/.well-known/acme-challenge/", host)
-
-	// F-11: pin the HTTP dial to the IP we resolved above so a malicious DNS
-	// record can't switch to a loopback/private address between this code's
-	// LookupIP and the http.Client's dial (DNS rebinding -> SSRF). We also
-	// hard-fail the probe if the pinned address is non-public.
-	pinned := net.JoinHostPort(targetIPv4.String(), "80")
-	if !targetIPv4.Is4() || targetIPv4.IsLoopback() || targetIPv4.IsPrivate() || targetIPv4.IsLinkLocalUnicast() || targetIPv4.IsUnspecified() {
-		log.Warn().Str("host_ip", targetIPv4.String()).Msg("CanWebHost: refusing to probe non-public IP")
+	req, err := http.NewRequestWithContext(ctx, http.MethodHead, checkURL, nil)
+	if err != nil {
+		log.Debug().Err(err).Str("check_url", checkURL).Msg("CanPassACMEChallenge: failed to build HEAD request")
 		return false
 	}
-
-	// Try a HEAD first; some handlers may not accept HEAD so fall back to GET.
-	req, err := http.NewRequestWithContext(ctx, http.MethodHead, checkURL, nil)
 	client := &http.Client{
 		Timeout: 5 * time.Second,
 		Transport: &http.Transport{
@@ -951,27 +909,66 @@ func (p *VHostProxy) CanPassACMEChallenge(ctx context.Context, host string) bool
 			},
 		},
 	}
+	resp, err := client.Do(req)
 	if err != nil {
-		log.Debug().Err(err).Str("check_url", checkURL).Msg("CanWebHost: failed to create HEAD request for HTTP-01 probe")
-	} else {
-		resp, err := client.Do(req)
-		if err == nil {
-			resp.Body.Close()
-			if resp.StatusCode == 403 || resp.StatusCode == 404 {
-				log.Debug().Str("host", host).Str("host_ip", targetIPv4.String()).Int("status", resp.StatusCode).Msg("CanWebHost: HTTP probe succeeded (HEAD) for ACME challenge path")
-				return true
-			}
-			log.Debug().Str("host", host).Int("status", resp.StatusCode).Msg("CanWebHost: HEAD probe returned non-2xx/3xx status")
-		} else {
-			log.Debug().Err(err).Str("host", host).Msg("CanWebHost: HEAD probe error; will retry with GET")
-		}
+		log.Debug().Err(err).Str("host", host).Str("ip", dialIP.String()).Msg("CanPassACMEChallenge: HEAD probe failed")
+		return false
 	}
+	resp.Body.Close()
+	if resp.StatusCode == http.StatusForbidden || resp.StatusCode == http.StatusNotFound {
+		log.Debug().Str("host", host).Str("ip", dialIP.String()).Int("status", resp.StatusCode).Msg("CanPassACMEChallenge: HEAD probe ok")
+		return true
+	}
+	log.Debug().Str("host", host).Str("ip", dialIP.String()).Int("status", resp.StatusCode).Msg("CanPassACMEChallenge: HEAD probe returned unexpected status")
+	return false
+}
 
-	if targetIPv4.String() == publicIP {
-		log.Warn().Str("host", host).Str("host_ip", targetIPv4.String()).Str("public_ip", publicIP).Msg("CanWebHost: DNS -> public IP matches but HTTP probes failed; allowing ACME as permissive fallback")
+// CanPassACMEChallenge checks whether ACME HTTP-01 issuance is likely to
+// succeed for host by resolving its DNS and probing each public-IPv4 record
+// for an autocert-style 403/404 on the challenge path.
+//
+// Behaviour by record count (post public-IPv4 filter):
+//   - 0 records: deny. ACME requires DNS pointed at a public IP.
+//   - 1 record: probe once; require success. (Also covers IP-literal hosts
+//     since net.LookupIP returns the literal as a single record.)
+//   - N >= 2 (round-robin DNS): probe every record; require >= 66% to respond
+//     so a partly-broken RR rotation can't quietly issue.
+func (p *VHostProxy) CanPassACMEChallenge(ctx context.Context, host string) bool {
+	if host == "" {
+		log.Debug().Msg("CanPassACMEChallenge: empty host")
 		return false
 	}
 
-	log.Warn().Str("host", host).Str("host_ip", targetIPv4.String()).Str("public_ip", publicIP).Msg("CanWebHost: HTTP probes failed and DNS does not point to server public IP; denying ACME")
-	return false
+	ips, err := lookupIP(host)
+	if err != nil {
+		log.Debug().Err(err).Str("host", host).Msg("CanPassACMEChallenge: DNS lookup failed")
+		return false
+	}
+	targets := publicIPv4sFromIPs(ips)
+	if len(targets) == 0 {
+		log.Debug().Str("host", host).Msg("CanPassACMEChallenge: host does not resolve to any public IPv4 record")
+		return false
+	}
+
+	successes := 0
+	for _, ip := range targets {
+		if probeACMEChallengeFn(ctx, host, ip) {
+			successes++
+		}
+	}
+
+	if len(targets) == 1 {
+		ok := successes == 1
+		log.Debug().Str("host", host).Bool("ok", ok).Msg("CanPassACMEChallenge: single-record probe complete")
+		return ok
+	}
+
+	// RR DNS: require >= 66% of records to respond. Integer math avoids float.
+	ok := successes*100 >= len(targets)*rrPassThresholdPercent
+	level := log.Debug
+	if !ok {
+		level = log.Warn
+	}
+	level().Str("host", host).Int("records", len(targets)).Int("successes", successes).Bool("ok", ok).Msg("CanPassACMEChallenge: RR-DNS probe complete")
+	return ok
 }
