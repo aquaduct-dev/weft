@@ -17,6 +17,13 @@ import (
 	"github.com/rs/zerolog/log"
 )
 
+// Sentinel errors returned by StartProxy. Callers should use errors.Is to
+// classify these (HTTP handlers map them to 409 Conflict).
+var (
+	ErrProxyAlreadyExists = errors.New("proxy already exists")
+	ErrProxyConflict      = errors.New("proxy conflicts with existing proxy")
+)
+
 // ProxyManager orchestrates the lifecycle of all active proxies (TCP, UDP, and VHost).
 type ProxyManager struct {
 	// proxies maps tunnel names to their active Proxy implementation.
@@ -325,7 +332,7 @@ func (p *ProxyManager) StartProxy(srcURL *url.URL, dstURL *url.URL, proxyName st
 
 	// Check that no other proxies exist with this name
 	if _, ok := p.proxies[proxyName]; ok {
-		return nil, fmt.Errorf("proxy %s already exists", proxyName)
+		return nil, fmt.Errorf("proxy %s: %w", proxyName, ErrProxyAlreadyExists)
 	}
 
 	proxyType := fmt.Sprintf("%s>%s", srcURL.Scheme, dstURL.Scheme)
@@ -346,7 +353,7 @@ func (p *ProxyManager) StartProxy(srcURL *url.URL, dstURL *url.URL, proxyName st
 		}
 		for name, existingProxy := range p.proxies {
 			if newProxy.Conflicts(existingProxy) {
-				return nil, fmt.Errorf("proxy %s conflicts with %s", proxyName, name)
+				return nil, fmt.Errorf("proxy %s conflicts with %s: %w", proxyName, name, ErrProxyConflict)
 			}
 		}
 
@@ -364,7 +371,7 @@ func (p *ProxyManager) StartProxy(srcURL *url.URL, dstURL *url.URL, proxyName st
 		newProxy := &UDPProxy{Addr: addr, name: proxyName, instanceId: generateInstanceId()}
 		for name, existingProxy := range p.proxies {
 			if newProxy.Conflicts(existingProxy) {
-				return nil, fmt.Errorf("proxy %s conflicts with %s", proxyName, name)
+				return nil, fmt.Errorf("proxy %s conflicts with %s: %w", proxyName, name, ErrProxyConflict)
 			}
 		}
 
@@ -397,7 +404,7 @@ func (p *ProxyManager) StartProxy(srcURL *url.URL, dstURL *url.URL, proxyName st
 		}
 		for name, existingProxy := range p.proxies {
 			if newProxy.Conflicts(existingProxy) {
-				return nil, fmt.Errorf("proxy conflicts with %s", name)
+				return nil, fmt.Errorf("proxy conflicts with %s: %w", name, ErrProxyConflict)
 			}
 		}
 
@@ -443,7 +450,7 @@ func (p *ProxyManager) StartProxy(srcURL *url.URL, dstURL *url.URL, proxyName st
 		}
 		for name, existingProxy := range p.proxies {
 			if newProxy.Conflicts(existingProxy) {
-				return nil, fmt.Errorf("proxy conflicts with %s", name)
+				return nil, fmt.Errorf("proxy conflicts with %s: %w", name, ErrProxyConflict)
 			}
 		}
 

@@ -2,11 +2,12 @@ package server
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/netip"
-	"strings"
 
+	"github.com/aquaduct-dev/weft/src/proxy"
 	"github.com/aquaduct-dev/weft/types"
 	"github.com/rs/zerolog/log"
 	"golang.zx2c4.com/wireguard/wgctrl/wgtypes"
@@ -42,11 +43,7 @@ func (s *Server) ConnectHandler(w http.ResponseWriter, r *http.Request) {
 
 	resp, err := s.Serve(&req)
 	if err != nil {
-		if err.Error() == "invalid connection secret" {
-			http.Error(w, fmt.Sprintf("Invalid connection secret: %v", err), http.StatusUnauthorized)
-			return
-		}
-		if strings.Contains(err.Error(), "already exists") || strings.Contains(err.Error(), "conflict") {
+		if errors.Is(err, proxy.ErrProxyAlreadyExists) || errors.Is(err, proxy.ErrProxyConflict) {
 			http.Error(w, fmt.Sprintf("Conflict: %v", err), http.StatusConflict)
 			return
 		}

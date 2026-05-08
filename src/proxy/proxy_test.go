@@ -2,6 +2,7 @@ package proxy
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -249,7 +250,8 @@ var _ = Describe("Proxy Tests", func() {
 		// Attempt to create another tunnel with the same name
 		_, err = proxyManager.StartProxy(localURL, remoteURL, "duplicate-tunnel", nil, nil, nil, "")
 		Expect(err).To(HaveOccurred())
-		Expect(err.Error()).To(Equal("proxy duplicate-tunnel already exists"))
+		Expect(errors.Is(err, ErrProxyAlreadyExists)).To(BeTrue())
+		Expect(err.Error()).To(ContainSubstring("duplicate-tunnel"))
 	})
 
 	It("should not allow duplicate tunnels by host", func() {
