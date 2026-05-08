@@ -16,19 +16,13 @@ import (
 	"regexp"
 	"strings"
 	"sync"
-
 	"time"
 
 	"github.com/aquaduct-dev/weft/src/acme"
-
 	"github.com/aquaduct-dev/weft/src/internal/util"
-
 	"github.com/aquaduct-dev/weft/src/proxy/vhost/meter"
-
 	"github.com/aquaduct-dev/weft/wireguard"
-
 	"github.com/rs/zerolog/log"
-
 	"golang.org/x/crypto/acme/autocert"
 )
 
@@ -679,7 +673,11 @@ func (p *VHostProxy) AddHostWithACME(cfg RouteConfig) (VHostCloser, *meter.Meter
 }
 
 func (p *VHostProxy) ServeHTTP(w *meter.MeteredResponseWriter, r *meter.MeteredRequest) {
-	host := strings.Split(r.Host, ":")[0]
+	// r.Host may contain :port (and bracketed IPv6); SplitHostPort handles both.
+	host := r.Host
+	if h, _, err := net.SplitHostPort(host); err == nil {
+		host = h
+	}
 	if p.port == p.manager.acmePort && p.manager.acmeManager != nil && strings.HasPrefix(r.URL.Path, "/.well-known/acme-challenge/") {
 		if p.manager.tryRedirectChallenge(w, r.Request, host) {
 			return
