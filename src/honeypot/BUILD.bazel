@@ -5,7 +5,9 @@ go_library(
     srcs = [
         "event.go",
         "honeypot.go",
+        "http.go",
         "tcp.go",
+        "tls.go",
     ],
     importpath = "github.com/aquaduct-dev/weft/src/honeypot",
     visibility = ["//visibility:public"],

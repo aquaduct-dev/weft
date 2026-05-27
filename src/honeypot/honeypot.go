@@ -47,9 +47,12 @@ func New(bindIP string, ports []int, emitter *Emitter) *Honeypot {
 // scanners that hit 80 expecting HTTP get the HTTP reader, etc.
 func (h *Honeypot) portHandler(port int) func(context.Context, net.Conn) {
 	switch port {
-	// Future commits add: 22 → handleSSH, 80 → handleHTTP, 443 → handleHTTPS.
-	// For now everything falls through to the generic TCP catch-all, which
-	// just emits a port_scan event and reads up to N bytes for a banner.
+	case 80, 8080, 8000:
+		return h.handleHTTP
+	case 443, 8443:
+		return h.handleHTTPS
+	// SSH (22, 2222) lands in a follow-up commit; falls through to TCP
+	// catch-all for now.
 	default:
 		return h.handleTCP
 	}
