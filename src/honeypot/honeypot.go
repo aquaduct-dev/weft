@@ -51,8 +51,8 @@ func (h *Honeypot) portHandler(port int) func(context.Context, net.Conn) {
 		return h.handleHTTP
 	case 443, 8443:
 		return h.handleHTTPS
-	// SSH (22, 2222) lands in a follow-up commit; falls through to TCP
-	// catch-all for now.
+	case 22, 2222:
+		return h.handleSSH
 	default:
 		return h.handleTCP
 	}

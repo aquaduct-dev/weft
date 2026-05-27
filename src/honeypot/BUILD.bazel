@@ -6,10 +6,14 @@ go_library(
         "event.go",
         "honeypot.go",
         "http.go",
+        "ssh.go",
         "tcp.go",
         "tls.go",
     ],
     importpath = "github.com/aquaduct-dev/weft/src/honeypot",
     visibility = ["//visibility:public"],
-    deps = ["@com_github_rs_zerolog//log"],
+    deps = [
+        "@com_github_rs_zerolog//log",
+        "@org_golang_x_crypto//ssh",
+    ],
 )
