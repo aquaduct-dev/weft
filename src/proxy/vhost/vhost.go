@@ -18,7 +18,10 @@ import (
 	"sync"
 	"time"
 
+	stdlog "log"
+
 	"github.com/aquaduct-dev/weft/src/acme"
+	"github.com/aquaduct-dev/weft/src/honeypot"
 	"github.com/aquaduct-dev/weft/src/internal/util"
 	"github.com/aquaduct-dev/weft/src/proxy/vhost/meter"
 	"github.com/aquaduct-dev/weft/wireguard"
@@ -248,6 +251,14 @@ type VHostProxyManager struct {
 	// doesn't contend with the bulk of the manager's state.
 	redirects   map[string]peerRedirect
 	redirectsMu sync.Mutex
+
+	// honeypotEmitter, when non-nil, receives one structured event per
+	// unmatched-host HTTP request (default-handler 404 path) and per TLS
+	// handshake failure on any VHost listener. Set by Set/GetHoneypotEmitter
+	// — guarded by honeypotMu so a hot reconfigure doesn't race with the
+	// request/handshake paths.
+	honeypotMu      sync.RWMutex
+	honeypotEmitter *honeypot.Emitter
 }
 
 func NewVHostProxyManager() *VHostProxyManager {
@@ -282,6 +293,25 @@ func NewVHostProxyManager() *VHostProxyManager {
 		Cache: autocert.DirCache(m.certsCachePath),
 	}
 	return m
+}
+
+// SetHoneypotEmitter installs (or clears, when em is nil) the emitter used to
+// publish honeypot events from every VHost on this manager. Safe to call
+// concurrently with request handling.
+func (v *VHostProxyManager) SetHoneypotEmitter(em *honeypot.Emitter) {
+	v.honeypotMu.Lock()
+	v.honeypotEmitter = em
+	v.honeypotMu.Unlock()
+}
+
+// honeypotEmitterLoaded returns the current emitter, or nil if none. Used by
+// the request and TLS-error hot paths; readers take only an RLock so a
+// reconfigure can't stall request handling.
+func (v *VHostProxyManager) honeypotEmitterLoaded() *honeypot.Emitter {
+	v.honeypotMu.RLock()
+	em := v.honeypotEmitter
+	v.honeypotMu.RUnlock()
+	return em
 }
 
 func (v *VHostProxyManager) SetACMEEmail(email string) {
@@ -725,6 +755,12 @@ func (p *VHostProxy) ServeHTTP(w *meter.MeteredResponseWriter, r *meter.MeteredR
 		route.Handler.ServeHTTP(w, r)
 		return
 	}
+	// Unmatched host — this is the high-signal abuse path: scanner probing
+	// for /.env, /wp-login.php, etc. against a host the bastion doesn't
+	// serve. Emit a honeypot event before falling through to 404.
+	if em := p.manager.honeypotEmitterLoaded(); em != nil {
+		emitUnmatchedHTTPEvent(em, r.Request, p.port, p.hasTLS())
+	}
 	p.defaultHandler.ServeHTTP(w, r)
 }
 func (p *VHostProxy) findRoute(r *http.Request, routes []*Route) *Route {
@@ -763,6 +799,16 @@ func (p *VHostProxy) Start() error {
 		addr = fmt.Sprintf("%s:%d", p.bindIp, p.port)
 	}
 	p.s = meter.NewMeteredServer(addr, p)
+	// Route net/http's TLS handshake / connection-state error lines through
+	// a structured emitter when honeypot mode is on. The default ErrorLog
+	// writes to stderr unstructured (`http: TLS handshake error from ...`),
+	// which is unparseable downstream. Attaching this here also unhides
+	// these lines if the operator hasn't opted into honeypot mode (zerolog
+	// just consumes them as warnings).
+	p.s.Server.ErrorLog = stdlog.New(
+		&httpErrorLogWriter{port: p.port, manager: p.manager},
+		"", 0,
+	)
 
 	if p.hasTLS() {
 		tlsConfig := &tls.Config{

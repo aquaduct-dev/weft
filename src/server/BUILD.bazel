@@ -23,6 +23,7 @@ go_library(
         "//src/acme",
         "//src/crypto",
         "//src/dns",
+        "//src/honeypot",
         "//src/internal/constants",
         "//src/proxy",
         "//src/version",
