@@ -38,6 +38,7 @@ go_library(
 go_test(
     name = "server_test",
     srcs = [
+        "dataplane_endpoint_wipe_test.go",
         "handlers_acme_redirect_test.go",
         "handlers_auth_test.go",
         "handlers_metrics_test.go",
