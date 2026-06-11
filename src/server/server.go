@@ -187,6 +187,7 @@ func NewServer(port int, bindIP string, connectionSecret string, usageReportingU
 
 	mux.HandleFunc("/connect", s.requireJWT(s.ConnectHandler))
 	mux.HandleFunc("/healthcheck", s.requireJWT(s.HealthcheckHandler))
+	mux.HandleFunc("/certificates", s.requireJWT(s.CertificatesHandler))
 	mux.HandleFunc("/shutdown", s.requireJWT(s.ShutdownHandler))
 	mux.HandleFunc("/login", s.LoginHandler)
 	mux.HandleFunc("/list", s.requireJWT(s.ListHandler))

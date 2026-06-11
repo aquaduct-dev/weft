@@ -6,6 +6,7 @@ go_library(
         "dataplane.go",
         "handlers_acme_redirect.go",
         "handlers_auth.go",
+        "handlers_certificates.go",
         "handlers_health.go",
         "handlers_metrics.go",
         "handlers_tunnel.go",

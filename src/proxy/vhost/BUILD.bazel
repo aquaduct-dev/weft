@@ -14,6 +14,7 @@ go_library(
         "//src/honeypot",
         "//src/internal/util",
         "//src/proxy/vhost/meter",
+        "//types",
         "//wireguard",
         "@com_github_rs_zerolog//log",
         "@org_golang_x_crypto//acme/autocert",
@@ -24,6 +25,7 @@ go_test(
     name = "vhost_test",
     srcs = [
         "acme_redirect_test.go",
+        "certificates_test.go",
         "honeypot_emit_test.go",
         "path_prefix_test.go",
         "probe_test.go",

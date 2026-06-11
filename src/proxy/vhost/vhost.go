@@ -3,6 +3,8 @@ package vhost
 import (
 	"context"
 	"crypto/tls"
+	"crypto/x509"
+	"encoding/pem"
 	"fmt"
 	"io"
 	"net"
@@ -14,6 +16,7 @@ import (
 	"path"
 	"path/filepath"
 	"regexp"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -24,6 +27,7 @@ import (
 	"github.com/aquaduct-dev/weft/src/honeypot"
 	"github.com/aquaduct-dev/weft/src/internal/util"
 	"github.com/aquaduct-dev/weft/src/proxy/vhost/meter"
+	"github.com/aquaduct-dev/weft/types"
 	"github.com/aquaduct-dev/weft/wireguard"
 	"github.com/rs/zerolog/log"
 	"golang.org/x/crypto/acme/autocert"
@@ -344,6 +348,77 @@ func (v *VHostProxyManager) ACMEPort() int {
 	return v.acmePort
 }
 
+// ListCertificates reads the autocert cache directory and returns a summary of
+// every TLS certificate the bastion has obtained, with validity windows. It
+// skips the ACME account key and in-flight challenge tokens (which aren't
+// certificates). A missing cache directory yields an empty list, not an error.
+func (v *VHostProxyManager) ListCertificates() ([]types.CertInfo, error) {
+	v.mu.Lock()
+	dir := v.certsCachePath
+	v.mu.Unlock()
+	if dir == "" {
+		return []types.CertInfo{}, nil
+	}
+
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return []types.CertInfo{}, nil
+		}
+		return nil, fmt.Errorf("read cert cache dir: %w", err)
+	}
+
+	out := make([]types.CertInfo, 0, len(entries))
+	for _, e := range entries {
+		if e.IsDir() {
+			continue
+		}
+		name := e.Name()
+		// Skip the ACME account key and transient challenge artifacts — only
+		// real cached certificates carry a leaf we can parse.
+		if name == "acme_account+key" || strings.Contains(name, "+token") ||
+			strings.Contains(name, "+http-01") || strings.Contains(name, "+tls-alpn") {
+			continue
+		}
+		data, err := os.ReadFile(filepath.Join(dir, name))
+		if err != nil {
+			continue
+		}
+		leaf := firstLeafCertificate(data)
+		if leaf == nil {
+			continue
+		}
+		out = append(out, types.CertInfo{
+			Host:      name,
+			Subject:   leaf.Subject.CommonName,
+			DNSNames:  leaf.DNSNames,
+			Issuer:    leaf.Issuer.CommonName,
+			Serial:    leaf.SerialNumber.Text(16),
+			NotBefore: leaf.NotBefore,
+			NotAfter:  leaf.NotAfter,
+		})
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].Host < out[j].Host })
+	return out, nil
+}
+
+// firstLeafCertificate returns the first X.509 CERTIFICATE parsed from a PEM
+// bundle (autocert stores the leaf first), or nil if none parses.
+func firstLeafCertificate(pemBytes []byte) *x509.Certificate {
+	for {
+		block, rest := pem.Decode(pemBytes)
+		if block == nil {
+			return nil
+		}
+		if block.Type == "CERTIFICATE" {
+			if cert, err := x509.ParseCertificate(block.Bytes); err == nil {
+				return cert
+			}
+		}
+		pemBytes = rest
+	}
+}
+
 func (v *VHostProxyManager) AddACMEHost(host string, bindIp string) (io.Closer, error) {
 	// Bind on the configured ACME port (defaults to 80, overridable via
 	// SetACMEPort for tests). ServeHTTP routes /.well-known/acme-challenge/
@@ -382,7 +457,7 @@ type VHostCloser struct {
 func (v VHostCloser) Close() error {
 	v.VHostProxy.mu.Lock()
 	defer v.VHostProxy.mu.Unlock()
-	
+
 	removeRoute := func(routes []*Route, target *Route) []*Route {
 		for i, r := range routes {
 			if r == target {
@@ -412,7 +487,7 @@ func (v VHostCloser) Close() error {
 			}
 		}
 	}
-	
+
 	if v.VHostProxy.s != nil && len(v.VHostProxy.routes) == 0 && len(v.VHostProxy.tlsRoutes) == 0 {
 		log.Info().Bool("has_tls", v.VHostProxy.hasTLS()).Int("port", v.VHostProxy.port).Msg("Closing VHost (no proxies)")
 		v.VHostProxy.s.Close()
@@ -848,7 +923,7 @@ func (p *VHostProxy) Start() error {
 				return nil, fmt.Errorf("no certificate for server name %s", hello.ServerName)
 			},
 		}
-		
+
 		var l net.Listener
 		var err error
 		if strings.HasPrefix(addr, "10.1.") {
@@ -864,7 +939,7 @@ func (p *VHostProxy) Start() error {
 			log.Error().Err(err).Int("port", p.port).Msg("VHost: Listen failed")
 			return err
 		}
-		
+
 		l = tls.NewListener(l, tlsConfig)
 		log.Info().Str("addr", l.Addr().String()).Msg("VHost: listening tls")
 		go p.s.Serve(l)
@@ -872,7 +947,7 @@ func (p *VHostProxy) Start() error {
 	}
 
 	log.Info().Int("port", p.port).Bool("has_tls", p.hasTLS()).Msg("Serving VHost")
-	
+
 	var l net.Listener
 	var err error
 	if strings.HasPrefix(addr, "10.1.") {

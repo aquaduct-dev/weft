@@ -249,6 +249,12 @@ func (d *TunnelDataplane) SetCertsCachePath(path string) {
 	d.proxyManager.VHostProxyManager.SetCertsCachePath(path)
 }
 
+// ListCertificates returns a summary of the TLS certificates the bastion has
+// cached, for the /certificates endpoint.
+func (d *TunnelDataplane) ListCertificates() ([]types.CertInfo, error) {
+	return d.proxyManager.VHostProxyManager.ListCertificates()
+}
+
 // RegisterACMERedirect forwards the peer redirect registration to the vhost
 // manager. The /acme-redirect HTTP handler must verify the peer IP is in DNS
 // for host before calling this — this layer is just plumbing.

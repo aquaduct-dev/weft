@@ -1,5 +1,7 @@
 package types
 
+import "time"
+
 // ConnectRequest is the request body for the /connect endpoint.
 type ConnectRequest struct {
 	ClientPublicKey string `json:"client_public_key"`
@@ -51,6 +53,29 @@ type HealthcheckRequest struct {
 type HealthcheckResponse struct {
 	Status  string `json:"status"`
 	Message string `json:"message,omitempty"`
+}
+
+// CertInfo summarizes one TLS certificate the bastion has obtained and cached,
+// for the /certificates listing. Times are RFC3339 in JSON.
+type CertInfo struct {
+	// Host is the cache key the cert is stored under (the served hostname).
+	Host string `json:"host"`
+	// Subject is the certificate subject common name.
+	Subject string `json:"subject"`
+	// DNSNames are the SANs on the certificate.
+	DNSNames []string `json:"dns_names,omitempty"`
+	// Issuer is the issuing CA's common name (e.g. "R3" for Let's Encrypt).
+	Issuer string `json:"issuer"`
+	// Serial is the certificate serial number in hex.
+	Serial string `json:"serial"`
+	// NotBefore and NotAfter bound the certificate's validity.
+	NotBefore time.Time `json:"not_before"`
+	NotAfter  time.Time `json:"not_after"`
+}
+
+// CertificatesResponse is the body of GET /certificates.
+type CertificatesResponse struct {
+	Certificates []CertInfo `json:"certificates"`
 }
 
 // TunnelUsage represents the usage statistics for a specific tunnel for reporting.

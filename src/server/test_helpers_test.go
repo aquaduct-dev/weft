@@ -22,7 +22,7 @@ func (d *testDataplane) UpdateWireGuardConfig(peers map[string]Peer) error { ret
 func (d *testDataplane) StartProxy(req *types.ConnectRequest, peerIP netip.Addr) (int, error) {
 	return 0, nil
 }
-func (d *testDataplane) CloseProxy(name string)                {}
+func (d *testDataplane) CloseProxy(name string) {}
 func (d *testDataplane) GetProxyCounters() map[string]ProxyCounters {
 	return d.counters
 }
@@ -31,6 +31,9 @@ func (d *testDataplane) GetDevice() *wireguard.UserspaceDevice { return nil }
 func (d *testDataplane) GetPrivateKey() wgtypes.Key            { return wgtypes.Key{} }
 func (d *testDataplane) SetACMEEmail(email string)             {}
 func (d *testDataplane) SetCertsCachePath(path string)         {}
+func (d *testDataplane) ListCertificates() ([]types.CertInfo, error) {
+	return []types.CertInfo{}, nil
+}
 func (d *testDataplane) RegisterACMERedirect(host, peerIP string) error {
 	return nil
 }
