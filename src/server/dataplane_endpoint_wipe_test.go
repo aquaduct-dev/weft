@@ -14,9 +14,9 @@ roamed endpoints of every *other* tunnel, forcing each to re-learn its return
 path.
 
 This test sets endpoints on two peers (A and B), removes only B via the
-production UpdateWireGuardConfig path, and asserts the innocent bystander A lost
-its endpoint. It characterizes the bug: when weft switches to incremental
-per-peer add/remove, A's endpoint should survive and the final assertion flips.
+production UpdateWireGuardConfig path, and asserts the innocent bystander A keeps
+its endpoint. It guards the incremental per-peer reconcile: if UpdateWireGuardConfig
+ever regresses to a replace_peers rebuild, A's endpoint is wiped and this fails.
 */
 package server
 
@@ -46,7 +46,7 @@ func endpointFor(ipc, pubHex string) string {
 	return ""
 }
 
-func TestRemovingOneTunnelWipesBystanderEndpoints(t *testing.T) {
+func TestRemovingOneTunnelPreservesBystanderEndpoints(t *testing.T) {
 	dp, err := NewTunnelDataplane(0, "", func(string) {}, func() bool { return false })
 	if err != nil {
 		t.Fatalf("NewTunnelDataplane: %v", err)
@@ -108,13 +108,17 @@ func TestRemovingOneTunnelWipesBystanderEndpoints(t *testing.T) {
 		t.Fatalf("IpcGet (post-removal): %v", err)
 	}
 
-	// tunnel-a was never touched, yet removing tunnel-b should have wiped its
-	// learned endpoint via replace_peers. That is the disruption.
+	// tunnel-a was never touched: removing tunnel-b must leave its learned
+	// endpoint intact. A regression to replace_peers would wipe it here.
 	epA := endpointFor(ipc, hexA)
-	if epA != "" {
-		t.Fatalf("tunnel-a endpoint survived removal of tunnel-b (got %q): "+
-			"replace_peers wipe NOT reproduced — has weft moved to incremental peer ops?", epA)
+	if epA != "192.0.2.10:51820" {
+		t.Fatalf("tunnel-a lost its learned endpoint when tunnel-b was removed "+
+			"(got %q, want 192.0.2.10:51820): UpdateWireGuardConfig regressed to a replace_peers wipe", epA)
 	}
-	t.Logf("confirmed: removing tunnel-b wiped innocent tunnel-a's learned endpoint " +
-		"(was 192.0.2.10:51820, now empty). One tunnel's teardown disrupts all peers' return paths.")
+	// And tunnel-b really is gone.
+	if got := endpointFor(ipc, hexB); got != "" {
+		t.Fatalf("tunnel-b was not removed (endpoint still %q)", got)
+	}
+	t.Logf("confirmed: removing tunnel-b left innocent tunnel-a's endpoint intact (%s). "+
+		"Per-tunnel teardown no longer disrupts other peers' return paths.", epA)
 }

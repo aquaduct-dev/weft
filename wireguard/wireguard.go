@@ -221,6 +221,14 @@ func ConfigToString(cfg wgtypes.Config) (string, error) {
 			b.WriteString(fmt.Sprintf("public_key=%s\n", hex.EncodeToString(peer.PublicKey[:])))
 		}
 
+		// A removal carries only public_key + remove=true; no other peer
+		// attributes apply. Emitting them would be ignored at best and
+		// confusing at worst, so short-circuit here.
+		if peer.Remove {
+			b.WriteString("remove=true\n")
+			continue
+		}
+
 		if len(peer.AllowedIPs) > 0 {
 			for _, ipNet := range peer.AllowedIPs {
 				b.WriteString(fmt.Sprintf("allowed_ip=%s\n", ipNet.String()))

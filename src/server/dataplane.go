@@ -2,6 +2,7 @@ package server
 
 import (
 	"crypto/rand"
+	"encoding/hex"
 	"fmt"
 	"math/big"
 	"net"
@@ -77,32 +78,64 @@ func (d *TunnelDataplane) UpdateWireGuardConfig(peers map[string]Peer) error {
 		return fmt.Errorf("server shutting down")
 	}
 
-	// Refresh wgListenPort from the device. If IpcGet fails we keep the
-	// last-known port — UpdateWireGuardConfig still passes &d.wgListenPort
-	// below, and a wrong port here would manifest as a peer-config error
-	// downstream — but log so the silent stale-port path is at least visible.
-	ipc, err := d.device.Device.IpcGet()
+	// Reconcile the device's peers incrementally rather than with a full
+	// ReplacePeers rebuild. ReplacePeers runs RemoveAllPeers() and re-adds the
+	// survivors from config that carries no endpoint — which discards the
+	// endpoints WireGuard learned by roaming from each client's keepalives. The
+	// effect is that adding or removing one tunnel wipes the return path of
+	// *every other* tunnel on this device, forcing them all to re-learn and
+	// breaking any that take traffic in the meantime. Instead we add only new
+	// peers and remove only departed ones, leaving live peers — and their
+	// learned endpoints — untouched.
+	current, err := d.device.Device.IpcGet()
 	if err != nil {
-		log.Warn().Err(err).Msg("UpdateWireGuardConfig: IpcGet failed; using last-known wgListenPort")
-	} else {
-		for _, line := range strings.Split(ipc, "\n") {
-			if portStr, ok := strings.CutPrefix(line, "listen_port="); ok {
-				if p, parseErr := strconv.Atoi(strings.TrimSpace(portStr)); parseErr == nil && p != 0 {
-					d.wgListenPort = p
-				}
+		return fmt.Errorf("read current wireguard config: %w", err)
+	}
+
+	currentKeys := make(map[string]struct{})
+	for _, line := range strings.Split(current, "\n") {
+		if portStr, ok := strings.CutPrefix(line, "listen_port="); ok {
+			if p, parseErr := strconv.Atoi(strings.TrimSpace(portStr)); parseErr == nil && p != 0 {
+				d.wgListenPort = p
 			}
+			continue
+		}
+		if key, ok := strings.CutPrefix(line, "public_key="); ok {
+			currentKeys[strings.TrimSpace(key)] = struct{}{}
 		}
 	}
 
-	cfg := wgtypes.Config{
-		ListenPort:   &d.wgListenPort,
-		ReplacePeers: true,
-	}
+	var cfg wgtypes.Config // no ReplacePeers: incremental add/remove only.
+
+	desiredKeys := make(map[string]struct{}, len(peers))
 	for _, p := range peers {
+		hexKey := hex.EncodeToString(p.PublicKey[:])
+		desiredKeys[hexKey] = struct{}{}
+		if _, present := currentKeys[hexKey]; present {
+			continue // already configured; leave its learned endpoint intact.
+		}
 		cfg.Peers = append(cfg.Peers, wgtypes.PeerConfig{
 			PublicKey:  p.PublicKey,
 			AllowedIPs: []net.IPNet{{IP: net.IP(p.IP.AsSlice()), Mask: net.CIDRMask(32, 32)}, {IP: net.IP(constants.DefaultServerIP.AsSlice()), Mask: net.CIDRMask(32, 32)}},
 		})
+	}
+
+	for hexKey := range currentKeys {
+		if _, want := desiredKeys[hexKey]; want {
+			continue
+		}
+		raw, decErr := hex.DecodeString(hexKey)
+		if decErr != nil || len(raw) != len(wgtypes.Key{}) {
+			log.Warn().Str("public_key", hexKey).Msg("UpdateWireGuardConfig: skipping unparseable peer key during removal")
+			continue
+		}
+		var pk wgtypes.Key
+		copy(pk[:], raw)
+		cfg.Peers = append(cfg.Peers, wgtypes.PeerConfig{PublicKey: pk, Remove: true})
+	}
+
+	if len(cfg.Peers) == 0 {
+		return nil // device already in sync with the desired peer set.
 	}
 
 	newConfig, err := wireguard.ConfigToString(cfg)
@@ -110,28 +143,11 @@ func (d *TunnelDataplane) UpdateWireGuardConfig(peers map[string]Peer) error {
 		return err
 	}
 
-	currentConfig, _ := d.device.Device.IpcGet()
-	if d.sanitizeConfig(currentConfig) == d.sanitizeConfig(newConfig) && currentConfig != "" {
-		return nil
-	}
-
 	if err := d.device.Device.IpcSet(newConfig); err != nil {
-		return err
+		return fmt.Errorf("apply wireguard config: %w", err)
 	}
 
 	return nil
-}
-
-func (d *TunnelDataplane) sanitizeConfig(conf string) string {
-	var out []string
-	for _, line := range strings.Split(conf, "\n") {
-		if strings.HasPrefix(strings.TrimSpace(line), "private_key=") {
-			out = append(out, constants.WGPrivateKeyRedacted)
-			continue
-		}
-		out = append(out, line)
-	}
-	return strings.Join(out, "\n")
 }
 
 func (d *TunnelDataplane) StartProxy(req *types.ConnectRequest, peerIP netip.Addr) (int, error) {
