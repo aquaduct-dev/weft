@@ -5,6 +5,7 @@ import (
 	"crypto/tls"
 	"crypto/x509"
 	"encoding/pem"
+	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -228,6 +229,14 @@ type VHostProxy struct {
 	tlsRoutes map[string][]*Route
 	// tlsConfigs holds tls.Config per hostname for mounting listeners.
 	tlsConfigs map[string]*tls.Config
+
+	// enableHTTP2 opts this proxy's TLS listener into HTTP/2 (ALPN h2). It is
+	// OFF by default and set from WEFT_ENABLE_HTTP2 at construction. h2 is
+	// all-or-nothing per listener (ALPN is negotiated per connection and this
+	// proxy serves every host on one port by SNI), and httputil.ReverseProxy
+	// cannot bridge WebSockets over h2 — so enabling it affects every host on
+	// the port and would break WebSocket-proxying hosts. See http2Enabled.
+	enableHTTP2 bool
 }
 
 type VHostKey struct {
@@ -509,8 +518,30 @@ func NewVHostProxy(key VHostKey, manager *VHostProxyManager) *VHostProxy {
 		defaultHandler: meter.MeteredHandlerFunc(func(w *meter.MeteredResponseWriter, r *meter.MeteredRequest) {
 			http.NotFound(w, r.Request)
 		}),
-		tlsRoutes:  make(map[string][]*Route),
-		tlsConfigs: make(map[string]*tls.Config),
+		tlsRoutes:   make(map[string][]*Route),
+		tlsConfigs:  make(map[string]*tls.Config),
+		enableHTTP2: http2Enabled(),
+	}
+}
+
+// http2Enabled reports whether HTTP/2 termination is enabled for vhost TLS
+// listeners, read once from the WEFT_ENABLE_HTTP2 environment variable.
+//
+// It is OFF by default and deliberately opt-in per weft deployment. HTTP/2 is
+// all-or-nothing for a listener: ALPN is negotiated per TCP connection, and a
+// single VHostProxy serves every host on its port via SNI, so enabling h2
+// affects all of them. Critically, httputil.ReverseProxy cannot proxy
+// WebSockets over HTTP/2 — a browser that negotiates h2 for a WebSocket
+// connection cannot fall back to the HTTP/1.1 Upgrade path — so turning this on
+// for a listener that carries any WebSocket-proxying host (e.g. aquaduct.dev's
+// darkforest feed) would break those WebSockets. Only enable it once no host on
+// the shared listener relies on WebSocket proxying.
+func http2Enabled() bool {
+	switch strings.ToLower(strings.TrimSpace(os.Getenv("WEFT_ENABLE_HTTP2"))) {
+	case "1", "true", "yes", "on":
+		return true
+	default:
+		return false
 	}
 }
 
@@ -886,11 +917,22 @@ func (p *VHostProxy) Start() error {
 	)
 
 	if p.hasTLS() {
+		// ALPN advertisement:
+		//   - acme-tls/1 must be advertised so Let's Encrypt can perform
+		//     TLS-ALPN-01 challenges against this listener — that's the only
+		//     renewal path once the transient port-80 listener from
+		//     AddHostWithACME has closed.
+		//   - h2 is advertised only when HTTP/2 is enabled for this proxy
+		//     (opt-in; see http2Enabled). When advertised it is preferred so
+		//     browsers negotiate it.
+		//   - http/1.1 is always offered as the universal fallback (and the
+		//     only protocol WebSocket-proxying hosts can use).
+		nextProtos := []string{"acme-tls/1", "http/1.1"}
+		if p.enableHTTP2 {
+			nextProtos = []string{"h2", "http/1.1", "acme-tls/1"}
+		}
 		tlsConfig := &tls.Config{
-			// acme-tls/1 must be advertised so Let's Encrypt can perform TLS-ALPN-01 challenges
-			// against this listener — that's the only renewal path once the transient port-80
-			// listener from AddHostWithACME has closed.
-			NextProtos: []string{"acme-tls/1", "http/1.1"},
+			NextProtos: nextProtos,
 			GetCertificate: func(hello *tls.ClientHelloInfo) (*tls.Certificate, error) {
 				// All map reads here happen on TLS handshake goroutines and
 				// can race with AddACMEHost / AddHostWithTLS / AddHostWithACME
@@ -938,6 +980,22 @@ func (p *VHostProxy) Start() error {
 		if err != nil {
 			log.Error().Err(err).Int("port", p.port).Msg("VHost: Listen failed")
 			return err
+		}
+
+		if p.enableHTTP2 {
+			// HTTP/2 path: the byte counter must sit BENEATH TLS so net/http
+			// sees the *tls.Conn and can negotiate h2 via ALPN. ServeTLSCounted
+			// wraps the raw listener in the counter, terminates TLS with
+			// tlsConfig, enables h2, and serves. (On the default path below the
+			// counter wraps the TLS conn, hiding it from net/http — which is
+			// why h2 cannot be negotiated there.)
+			log.Info().Str("addr", l.Addr().String()).Msg("VHost: listening tls (http/2 enabled)")
+			go func(rawListener net.Listener) {
+				if err := p.s.ServeTLSCounted(rawListener, tlsConfig); err != nil && !errors.Is(err, http.ErrServerClosed) {
+					log.Error().Err(err).Int("port", p.port).Msg("VHost: tls (http/2) serve exited")
+				}
+			}(l)
+			return nil
 		}
 
 		l = tls.NewListener(l, tlsConfig)

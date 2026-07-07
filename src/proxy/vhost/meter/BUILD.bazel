@@ -9,7 +9,10 @@ go_library(
 
 go_test(
     name = "meter_test",
-    srcs = ["meter_test.go"],
+    srcs = [
+        "meter_http2_test.go",
+        "meter_test.go",
+    ],
     deps = [
         ":meter",
         "@com_github_onsi_ginkgo_v2//:ginkgo",

@@ -4,6 +4,7 @@ package meter
 import (
 "bufio"
 "context"
+"crypto/tls"
 "fmt"
 "net"
 "net/http"
@@ -162,7 +163,14 @@ srv := &MeteredServer{
 Server: &http.Server{
 Addr: addr,
 ConnContext: func(ctx context.Context, c net.Conn) context.Context {
-return context.WithValue(ctx, bytesReadKey, c.(*countingConn))
+// Recover the per-connection byte counter. On the plaintext-counting
+// path (Serve) c is the *countingConn directly; on the HTTP/2 path
+// (ServeTLSCounted) the counter sits beneath TLS, so unwrap the
+// *tls.Conn to reach it.
+if cc := asCountingConn(c); cc != nil {
+return context.WithValue(ctx, bytesReadKey, cc)
+}
+return ctx
 },
 },
 MeteredHandler: handler,
@@ -177,9 +185,16 @@ if srv.MeteredHandler == nil {
 panic("meter: MeteredServer.MeteredHandler is nil")
 }
 
+cc, _ := r.Context().Value(bytesReadKey).(*countingConn)
+if cc == nil {
+// No per-connection counter on the context (unexpected listener
+// wrapping). Degrade metering to zero for this request rather than
+// panicking the edge handler.
+cc = &countingConn{bytesRx: &atomic.Uint64{}, bytesTx: &atomic.Uint64{}}
+}
 meteredRequest := &MeteredRequest{
 Request:      r,
-countingConn: r.Context().Value(bytesReadKey).(*countingConn),
+countingConn: cc,
 }
 
 // Wrap the response writer to count bytes
@@ -237,4 +252,44 @@ if err == nil {
 c.bytesTx.Add(uint64(n))
 }
 return n, err
+}
+
+// asCountingConn extracts the *countingConn from c, unwrapping a *tls.Conn when
+// the counter sits beneath TLS termination (the ServeTLSCounted / HTTP/2 path).
+// Returns nil if no counter is present. The loop is bounded to avoid spinning
+// on a pathological wrapping chain.
+func asCountingConn(c net.Conn) *countingConn {
+for i := 0; i < 4 && c != nil; i++ {
+switch v := c.(type) {
+case *countingConn:
+return v
+case *tls.Conn:
+c = v.NetConn()
+default:
+return nil
+}
+}
+return nil
+}
+
+// ServeTLSCounted serves HTTPS on rawListener with HTTP/2 enabled (in addition
+// to HTTP/1.1). Unlike Serve, the byte counter is wrapped BENEATH TLS
+// termination so net/http sees the underlying *tls.Conn and can negotiate h2
+// via ALPN — the counter therefore measures on-the-wire (encrypted) bytes
+// rather than plaintext, differing only by TLS record overhead, and only when
+// HTTP/2 is explicitly enabled. ConnContext recovers the counter from the
+// *tls.Conn via asCountingConn. tlsConfig must advertise "h2" in NextProtos.
+func (srv *MeteredServer) ServeTLSCounted(rawListener net.Listener, tlsConfig *tls.Config) error {
+// Enable HTTP/2 using net/http's built-in support (Go 1.24+ Protocols),
+// so no golang.org/x/net/http2 dependency is required. HTTP/1.1 stays on
+// as the fallback for clients (and WebSocket proxying) that don't use h2.
+if srv.Server.Protocols == nil {
+p := new(http.Protocols)
+p.SetHTTP1(true)
+p.SetHTTP2(true)
+srv.Server.Protocols = p
+}
+counted := &countingListener{Listener: rawListener}
+tlsListener := tls.NewListener(counted, tlsConfig)
+return srv.Server.Serve(tlsListener)
 }
