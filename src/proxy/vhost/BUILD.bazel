@@ -16,6 +16,8 @@ go_library(
         "//src/proxy/vhost/meter",
         "//types",
         "//wireguard",
+        "@com_github_quic_go_quic_go//:quic-go",
+        "@com_github_quic_go_quic_go//http3",
         "@com_github_rs_zerolog//log",
         "@org_golang_x_crypto//acme/autocert",
     ],

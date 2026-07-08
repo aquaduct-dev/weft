@@ -2,7 +2,10 @@ load("@rules_go//go:def.bzl", "go_library", "go_test")
 
 go_library(
     name = "meter",
-    srcs = ["meter.go"],
+    srcs = [
+        "meter.go",
+        "meter_http3.go",
+    ],
     importpath = "github.com/aquaduct-dev/weft/src/proxy/vhost/meter",
     visibility = ["//visibility:public"],
 )
@@ -11,11 +14,13 @@ go_test(
     name = "meter_test",
     srcs = [
         "meter_http2_test.go",
+        "meter_http3_test.go",
         "meter_test.go",
     ],
     deps = [
         ":meter",
         "@com_github_onsi_ginkgo_v2//:ginkgo",
         "@com_github_onsi_gomega//:gomega",
+        "@com_github_quic_go_quic_go//http3",
     ],
 )

@@ -44,6 +44,7 @@ use_repo(
     "com_github_golang_jwt_jwt_v4",
     "com_github_onsi_ginkgo_v2",
     "com_github_onsi_gomega",
+    "com_github_quic_go_quic_go",
     "com_github_rs_zerolog",
     "com_github_spf13_cobra",
     "com_github_stretchr_testify",

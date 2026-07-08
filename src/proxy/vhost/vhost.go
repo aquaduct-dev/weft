@@ -30,6 +30,8 @@ import (
 	"github.com/aquaduct-dev/weft/src/proxy/vhost/meter"
 	"github.com/aquaduct-dev/weft/types"
 	"github.com/aquaduct-dev/weft/wireguard"
+	"github.com/quic-go/quic-go"
+	"github.com/quic-go/quic-go/http3"
 	"github.com/rs/zerolog/log"
 	"golang.org/x/crypto/acme/autocert"
 )
@@ -238,6 +240,16 @@ type VHostProxy struct {
 	// CONNECT, so browsers open WebSockets over HTTP/1.1 — the standard h2-pages
 	// + h1-WebSockets setup.
 	enableHTTP2 bool
+
+	// enableHTTP3 controls whether this proxy also serves HTTP/3 (QUIC) on a UDP
+	// listener alongside the TCP h1/h2 listener. ON by default for public
+	// listeners (see http3Enabled); WEFT_ENABLE_HTTP3=0 forces it off. Only the
+	// public edge gets h3 — internal WireGuard-netstack hosts stay on h1/h2.
+	enableHTTP3 bool
+	// h3 and h3conn hold the HTTP/3 server and its UDP socket while h3 is active
+	// so Close can shut them down. Set under mu during Start.
+	h3     *http3.Server
+	h3conn net.PacketConn
 }
 
 type VHostKey struct {
@@ -501,6 +513,15 @@ func (v VHostCloser) Close() error {
 	if v.VHostProxy.s != nil && len(v.VHostProxy.routes) == 0 && len(v.VHostProxy.tlsRoutes) == 0 {
 		log.Info().Bool("has_tls", v.VHostProxy.hasTLS()).Int("port", v.VHostProxy.port).Msg("Closing VHost (no proxies)")
 		v.VHostProxy.s.Close()
+		// Tear down the HTTP/3 server + its UDP socket alongside the TCP server.
+		if v.VHostProxy.h3 != nil {
+			_ = v.VHostProxy.h3.Close()
+			v.VHostProxy.h3 = nil
+		}
+		if v.VHostProxy.h3conn != nil {
+			_ = v.VHostProxy.h3conn.Close()
+			v.VHostProxy.h3conn = nil
+		}
 		v.VHostProxy.manager.mu.Lock()
 		delete(v.VHostProxy.manager.proxies, v.VHostProxy.port)
 		v.VHostProxy.manager.mu.Unlock()
@@ -522,6 +543,22 @@ func NewVHostProxy(key VHostKey, manager *VHostProxyManager) *VHostProxy {
 		tlsRoutes:   make(map[string][]*Route),
 		tlsConfigs:  make(map[string]*tls.Config),
 		enableHTTP2: http2Enabled(),
+		enableHTTP3: http3Enabled(),
+	}
+}
+
+// http3Enabled reports whether HTTP/3 (QUIC) serving is enabled. Like HTTP/2 it
+// is ON by default — weft is meant to be brainless — with WEFT_ENABLE_HTTP3 set
+// to a falsy value (0/false/no/off) as a kill switch. HTTP/3 is served on a UDP
+// listener for the public edge only (internal WireGuard-netstack hosts stay on
+// h1/h2), and advertised to clients via an Alt-Svc header on the h1/h2
+// responses so they upgrade on a subsequent connection.
+func http3Enabled() bool {
+	switch strings.ToLower(strings.TrimSpace(os.Getenv("WEFT_ENABLE_HTTP3"))) {
+	case "0", "false", "no", "off":
+		return false
+	default:
+		return true
 	}
 }
 
@@ -851,7 +888,14 @@ func (p *VHostProxy) ServeHTTP(w *meter.MeteredResponseWriter, r *meter.MeteredR
 	p.mu.RLock()
 	routes := p.routes[host]
 	tlsRoutes := p.tlsRoutes[host]
+	h3up := p.h3 != nil
 	p.mu.RUnlock()
+
+	// Advertise HTTP/3 so clients upgrade on a later connection. Only when h3 is
+	// actually listening, so we never point browsers at a port we aren't serving.
+	if h3up {
+		w.Header().Add("Alt-Svc", fmt.Sprintf(`h3=":%d"; ma=2592000`, p.port))
+	}
 
 	var candidateRoutes []*Route
 	if len(tlsRoutes) > 0 {
@@ -886,6 +930,72 @@ func (p *VHostProxy) findRoute(r *http.Request, routes []*Route) *Route {
 
 func (p *VHostProxy) hasTLS() bool {
 	return len(p.tlsRoutes) > 0
+}
+
+// serveH3 is the http.Handler for the HTTP/3 server. It mirrors ServeHTTP's
+// host/route matching, then serves via the matched route with application-layer
+// metering — QUIC has no per-connection countingConn for the conn-level meter to
+// hook (see MeteredHTTPHandler.ServeHTTPMetered).
+func (p *VHostProxy) serveH3(w http.ResponseWriter, r *http.Request) {
+	host := r.Host
+	if h, _, err := net.SplitHostPort(host); err == nil {
+		host = h
+	}
+
+	p.mu.RLock()
+	routes := p.routes[host]
+	tlsRoutes := p.tlsRoutes[host]
+	p.mu.RUnlock()
+
+	candidateRoutes := tlsRoutes
+	if len(candidateRoutes) == 0 {
+		candidateRoutes = routes
+	}
+
+	route := p.findRoute(r, candidateRoutes)
+	if route == nil {
+		if em := p.manager.honeypotEmitterLoaded(); em != nil {
+			emitUnmatchedHTTPEvent(em, r, p.port, true)
+		}
+		http.NotFound(w, r)
+		return
+	}
+	if route.Apply(w, r) {
+		return
+	}
+	route.Handler.ServeHTTPMetered(w, r)
+}
+
+// startHTTP3 opens a UDP listener on addr and serves HTTP/3 with the same
+// certificate selection as the TCP listener (http3 sets ALPN to "h3"). Failures
+// are non-fatal: the caller logs and h1/h2 on TCP continue regardless.
+func (p *VHostProxy) startHTTP3(addr string, tlsConfig *tls.Config) error {
+	udpAddr, err := net.ResolveUDPAddr("udp", addr)
+	if err != nil {
+		return fmt.Errorf("resolve udp addr: %w", err)
+	}
+	udpConn, err := net.ListenUDP("udp", udpAddr)
+	if err != nil {
+		return fmt.Errorf("listen udp: %w", err)
+	}
+
+	// Reuse cert selection (GetCertificate); Clone so http3 can set NextProtos
+	// to "h3" without disturbing the TCP listener's ALPN list.
+	h3srv := &http3.Server{
+		Handler:   http.HandlerFunc(p.serveH3),
+		TLSConfig: tlsConfig.Clone(),
+	}
+	p.h3 = h3srv
+	p.h3conn = udpConn
+
+	go func() {
+		if err := h3srv.Serve(udpConn); err != nil &&
+			!errors.Is(err, quic.ErrServerClosed) && !errors.Is(err, http.ErrServerClosed) {
+			log.Error().Err(err).Int("port", p.port).Msg("VHost: HTTP/3 serve exited")
+		}
+	}()
+	log.Info().Str("addr", addr).Msg("VHost: listening h3 (udp)")
+	return nil
 }
 
 func keys(mymap map[string]*tls.Config) []string {
@@ -987,6 +1097,16 @@ func (p *VHostProxy) Start() error {
 		if err != nil {
 			log.Error().Err(err).Int("port", p.port).Msg("VHost: Listen failed")
 			return err
+		}
+
+		// Serve HTTP/3 (QUIC) on UDP for the public edge, alongside the TCP
+		// h1/h2 listener. Internal WireGuard-netstack hosts (10.1.*) stay on
+		// h1/h2 — the netstack has no UDP PacketConn for quic-go. h3 failures
+		// are non-fatal; h1/h2 continue.
+		if p.enableHTTP3 && !strings.HasPrefix(addr, "10.1.") {
+			if err := p.startHTTP3(addr, tlsConfig); err != nil {
+				log.Warn().Err(err).Int("port", p.port).Msg("VHost: HTTP/3 unavailable; continuing with h1/h2")
+			}
 		}
 
 		if p.enableHTTP2 {
