@@ -275,10 +275,11 @@ return nil
 // ServeTLSCounted serves HTTPS on rawListener with HTTP/2 enabled (in addition
 // to HTTP/1.1). Unlike Serve, the byte counter is wrapped BENEATH TLS
 // termination so net/http sees the underlying *tls.Conn and can negotiate h2
-// via ALPN — the counter therefore measures on-the-wire (encrypted) bytes
-// rather than plaintext, differing only by TLS record overhead, and only when
-// HTTP/2 is explicitly enabled. ConnContext recovers the counter from the
-// *tls.Conn via asCountingConn. tlsConfig must advertise "h2" in NextProtos.
+// via ALPN. The counter therefore measures on-the-wire (encrypted) bytes rather
+// than plaintext — a sub-1% TLS-record-overhead difference, partly offset by h2
+// reusing one connection instead of several. ConnContext recovers the counter
+// from the *tls.Conn via asCountingConn. tlsConfig must advertise "h2" in
+// NextProtos.
 func (srv *MeteredServer) ServeTLSCounted(rawListener net.Listener, tlsConfig *tls.Config) error {
 // Enable HTTP/2 using net/http's built-in support (Go 1.24+ Protocols),
 // so no golang.org/x/net/http2 dependency is required. HTTP/1.1 stays on

@@ -230,14 +230,13 @@ type VHostProxy struct {
 	// tlsConfigs holds tls.Config per hostname for mounting listeners.
 	tlsConfigs map[string]*tls.Config
 
-	// enableHTTP2 opts this proxy's TLS listener into HTTP/2 (ALPN h2). It is
-	// OFF by default and set from WEFT_ENABLE_HTTP2 at construction. h2 is
-	// all-or-nothing per listener (ALPN is negotiated per connection and this
-	// proxy serves every host on one port by SNI), so it applies to every host.
+	// enableHTTP2 controls whether this proxy's TLS listener serves HTTP/2
+	// (ALPN h2). It is ON by default (see http2Enabled) and can be forced off
+	// with WEFT_ENABLE_HTTP2=0 as a kill switch. h2 applies to every host on the
+	// port (ALPN is per-connection and one VHostProxy serves all hosts by SNI).
 	// WebSockets are unaffected: weft does not advertise RFC 8441 Extended
-	// CONNECT (Go keeps it off unless the process sets GODEBUG=http2xconnect=1),
-	// so browsers open WebSockets over HTTP/1.1 — the standard h2-pages +
-	// h1-WebSockets setup. See http2Enabled.
+	// CONNECT, so browsers open WebSockets over HTTP/1.1 — the standard h2-pages
+	// + h1-WebSockets setup.
 	enableHTTP2 bool
 }
 
@@ -527,15 +526,14 @@ func NewVHostProxy(key VHostKey, manager *VHostProxyManager) *VHostProxy {
 }
 
 // http2Enabled reports whether HTTP/2 termination is enabled for vhost TLS
-// listeners, read once from the WEFT_ENABLE_HTTP2 environment variable.
+// listeners. It is ON by default: weft aims to be brainless to run, and h2 is
+// the correct default for a modern TLS-terminating reverse proxy. Set
+// WEFT_ENABLE_HTTP2 to a falsy value (0/false/no/off) as a kill switch to force
+// HTTP/1.1 without a code change or redeploy of the image.
 //
-// It is OFF by default so h2 can be rolled out deliberately per deployment
-// (ALPN is per-connection and one VHostProxy serves every host on its port by
-// SNI, so enabling it applies to all of them).
-//
-// WebSockets keep working. weft does not advertise RFC 8441 Extended CONNECT
-// (SETTINGS_ENABLE_CONNECT_PROTOCOL) — Go leaves that off unless the process is
-// started with GODEBUG=http2xconnect=1 — so browsers do not attempt
+// WebSockets keep working either way. weft does not advertise RFC 8441 Extended
+// CONNECT (SETTINGS_ENABLE_CONNECT_PROTOCOL) — Go leaves that off unless the
+// process is started with GODEBUG=http2xconnect=1 — so browsers do not attempt
 // WebSockets-over-HTTP/2 and instead open a plain HTTP/1.1 WebSocket, which the
 // reverse proxy handles as before (the same h2-pages + h1-WebSockets config
 // nginx and every CDN run).
@@ -546,10 +544,10 @@ func NewVHostProxy(key VHostKey, manager *VHostProxyManager) *VHostProxy {
 // fallback to h1 once the server claims support).
 func http2Enabled() bool {
 	switch strings.ToLower(strings.TrimSpace(os.Getenv("WEFT_ENABLE_HTTP2"))) {
-	case "1", "true", "yes", "on":
-		return true
-	default:
+	case "0", "false", "no", "off":
 		return false
+	default:
+		return true
 	}
 }
 
@@ -930,11 +928,10 @@ func (p *VHostProxy) Start() error {
 		//     TLS-ALPN-01 challenges against this listener — that's the only
 		//     renewal path once the transient port-80 listener from
 		//     AddHostWithACME has closed.
-		//   - h2 is advertised only when HTTP/2 is enabled for this proxy
-		//     (opt-in; see http2Enabled). When advertised it is preferred so
-		//     browsers negotiate it. WebSockets are unaffected — weft does not
-		//     advertise RFC 8441 Extended CONNECT, so browsers use HTTP/1.1 for
-		//     WebSockets.
+		//   - h2 is advertised whenever HTTP/2 is enabled for this proxy (the
+		//     default; see http2Enabled) and is preferred so browsers negotiate
+		//     it. WebSockets are unaffected — weft does not advertise RFC 8441
+		//     Extended CONNECT, so browsers use HTTP/1.1 for WebSockets.
 		//   - http/1.1 is always offered as the fallback and carries WebSocket
 		//     traffic.
 		nextProtos := []string{"acme-tls/1", "http/1.1"}
