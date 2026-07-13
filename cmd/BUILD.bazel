@@ -3,7 +3,6 @@ load("@rules_go//go:def.bzl", "go_library")
 go_library(
     name = "cmd",
     srcs = [
-        "honeypot.go",
         "list.go",
         "probe.go",
         "proxy.go",
@@ -16,7 +15,6 @@ go_library(
     deps = [
         "//src/auth",
         "//src/client",
-        "//src/honeypot",
         "//src/logging",
         "//src/proxy",
         "//src/proxy/vhost",

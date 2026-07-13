@@ -4,14 +4,13 @@ go_library(
     name = "vhost",
     srcs = [
         "acme_redirect.go",
-        "honeypot_emit.go",
+        "errorlog.go",
         "vhost.go",
     ],
     importpath = "github.com/aquaduct-dev/weft/src/proxy/vhost",
     visibility = ["//visibility:public"],
     deps = [
         "//src/acme",
-        "//src/honeypot",
         "//src/internal/util",
         "//src/proxy/vhost/meter",
         "//types",
@@ -28,7 +27,6 @@ go_test(
     srcs = [
         "acme_redirect_test.go",
         "certificates_test.go",
-        "honeypot_emit_test.go",
         "path_prefix_test.go",
         "probe_test.go",
         "vhost_race_test.go",
@@ -39,7 +37,6 @@ go_test(
     deps = [
         "//src/acme",
         "//src/crypto",
-        "//src/honeypot",
         "//src/proxy/vhost/meter",
         "@com_github_onsi_ginkgo_v2//:ginkgo",
         "@com_github_onsi_gomega//:gomega",

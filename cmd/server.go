@@ -12,7 +12,6 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/aquaduct-dev/weft/src/honeypot"
 	"github.com/aquaduct-dev/weft/src/server"
 	"github.com/rs/zerolog/log"
 	"github.com/spf13/cobra"
@@ -192,26 +191,6 @@ var serverCmd = &cobra.Command{
 			srv.Dataplane.SetCertsCachePath(certsCachePath)
 		}
 
-		// Honeypot integration — when --honeypot-ingest-url is set, every
-		// unmatched-host HTTP request and TLS handshake error on a VHost
-		// listener is emitted as a structured event to the configured URL.
-		// Normal tunnel traffic is unaffected.
-		honeypotURL, _ := cmd.Flags().GetString("honeypot-ingest-url")
-		if honeypotURL != "" {
-			honeypotSecret, _ := cmd.Flags().GetString("honeypot-ingest-secret")
-			if honeypotSecret == "" {
-				honeypotSecret = os.Getenv("WEFT_HONEYPOT_INGEST_SECRET")
-			}
-			honeypotDstHost, _ := cmd.Flags().GetString("honeypot-dst-host")
-			emitter := honeypot.NewEmitter(honeypotURL, honeypotSecret, honeypotDstHost)
-			if tdp, ok := srv.Dataplane.(*server.TunnelDataplane); ok {
-				tdp.SetHoneypotEmitter(emitter)
-				log.Info().Str("ingest_url", honeypotURL).Msg("honeypot: integrated emit enabled")
-			} else {
-				log.Warn().Msg("honeypot: dataplane is not *TunnelDataplane, emit disabled")
-			}
-		}
-
 		log.Info().Str("connection_secret", srv.ConnectionSecret).Msg("Connection Secret")
 		// F-10: print the server's TLS leaf-cert fingerprint so operators can
 		// pin it on clients via `weft tunnel --server-fingerprint=...`.
@@ -264,7 +243,4 @@ func init() {
 	serverCmd.Flags().String("usage-reporting-url", "", "URL to post usage reports to")
 	serverCmd.Flags().String("cloudflare-token", "", "Cloudflare API Token for DNS updates")
 	serverCmd.Flags().Bool("use-strict-bind-ip", false, "Require --bind-ip to be an explicit non-wildcard IP. Prevents TCP/UDP tunnels from choosing their own listen host.")
-	serverCmd.Flags().String("honeypot-ingest-url", "", "If set, every unmatched-host HTTP request and TLS handshake error on a VHost listener is POSTed to this URL as a structured honeypot event (e.g. https://aquaduct.dev/api/darkforest/ingest). Tunnel traffic is unaffected.")
-	serverCmd.Flags().String("honeypot-ingest-secret", "", "Shared secret for the honeypot ingest endpoint (X-Darkforest-Secret header). Also read from $WEFT_HONEYPOT_INGEST_SECRET.")
-	serverCmd.Flags().String("honeypot-dst-host", "", "dst_host label sent with each emitted honeypot event (defaults to os.Hostname).")
 }

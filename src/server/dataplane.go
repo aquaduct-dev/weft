@@ -12,7 +12,6 @@ import (
 	"strings"
 	"sync"
 
-	"github.com/aquaduct-dev/weft/src/honeypot"
 	"github.com/aquaduct-dev/weft/src/internal/constants"
 	proxy "github.com/aquaduct-dev/weft/src/proxy"
 	"github.com/aquaduct-dev/weft/types"
@@ -231,14 +230,6 @@ func (d *TunnelDataplane) GetProxyCounters() map[string]ProxyCounters {
 		}
 	}
 	return res
-}
-
-// SetHoneypotEmitter installs the emitter that publishes one structured
-// honeypot event per unmatched-host HTTP request and per failed TLS
-// handshake across every VHost listener this dataplane manages. Pass nil to
-// disable. Safe to call concurrently with traffic.
-func (d *TunnelDataplane) SetHoneypotEmitter(em *honeypot.Emitter) {
-	d.proxyManager.VHostProxyManager.SetHoneypotEmitter(em)
 }
 
 func (d *TunnelDataplane) SetACMEEmail(email string) {
