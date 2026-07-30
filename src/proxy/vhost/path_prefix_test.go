@@ -46,6 +46,46 @@ func TestPathMatcher_SegmentAware(t *testing.T) {
 	}
 }
 
+// TestFindRoute_LongestPrefixWins proves Gateway-API precedence: among routes
+// on one host, the longest matching PathPrefix wins REGARDLESS of the order the
+// tunnels registered — so a "/charts" route is chosen over a "/" catch-all
+// whether it registered first or last. Ties fall back to registration order.
+func TestFindRoute_LongestPrefixWins(t *testing.T) {
+	p := &VHostProxy{}
+	app := &Route{Matchers: []Matcher{&PathMatcher{Prefix: "/"}}}
+	charts := &Route{Matchers: []Matcher{&PathMatcher{Prefix: "/charts/"}}}
+
+	cases := []struct {
+		name   string
+		routes []*Route
+		path   string
+		want   *Route
+	}{
+		// The bug repro: catch-all registered FIRST must not shadow /charts.
+		{"appFirst_chartsPath", []*Route{app, charts}, "/charts/9/1/1.png", charts},
+		{"chartsFirst_chartsPath", []*Route{charts, app}, "/charts/9/1/1.png", charts},
+		{"exactCharts", []*Route{app, charts}, "/charts", charts},
+		// Non-/charts paths still fall to the catch-all, either order.
+		{"appFirst_otherPath", []*Route{app, charts}, "/courses/x", app},
+		{"chartsFirst_health", []*Route{charts, app}, "/healthz", app},
+		// Sibling that shares the prefix textually but not by segment → catch-all.
+		{"chartsSibling", []*Route{charts, app}, "/chartsabc", app},
+	}
+	for _, c := range cases {
+		got := p.findRoute(mustReq(t, c.path), c.routes)
+		if got != c.want {
+			t.Errorf("%s: findRoute(%q) picked the wrong route", c.name, c.path)
+		}
+	}
+	// A single-route host is unaffected (backward compatibility).
+	if got := p.findRoute(mustReq(t, "/anything"), []*Route{app}); got != app {
+		t.Error("single catch-all route should still match")
+	}
+	if got := p.findRoute(mustReq(t, "/other"), []*Route{charts}); got != nil {
+		t.Error("a non-matching single route should return nil, not a false match")
+	}
+}
+
 // TestPathPrefixModifier_SegmentAware proves the F-7 fix on the strip side:
 // "/apifoo/x" no longer becomes "/foo/x", and "/api/../admin" doesn't reach
 // upstream as "/../admin".

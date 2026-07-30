@@ -886,13 +886,39 @@ func (p *VHostProxy) ServeHTTP(w *meter.MeteredResponseWriter, r *meter.MeteredR
 	// Unmatched host — fall through to the default 404 handler.
 	p.defaultHandler.ServeHTTP(w, r)
 }
-func (p *VHostProxy) findRoute(r *http.Request, routes []*Route) *Route {
-	for _, route := range routes {
-		if route.Matches(r) {
-			return route
+// pathSpecificity returns the length of this route's longest path-prefix
+// matcher (0 if it has none, i.e. a catch-all). Used to order overlapping
+// routes on one host by Gateway-API longest-prefix precedence.
+func (route *Route) pathSpecificity() int {
+	best := 0
+	for _, m := range route.Matchers {
+		if pm, ok := m.(*PathMatcher); ok {
+			if n := len(strings.TrimRight(pm.Prefix, "/")); n > best {
+				best = n
+			}
 		}
 	}
-	return nil
+	return best
+}
+
+// findRoute returns the matching route with the MOST SPECIFIC path prefix, per
+// the Gateway-API precedence rule that a longer PathPrefix wins over a shorter
+// one — so a "/charts" route is chosen over a "/" catch-all regardless of the
+// order the tunnels registered. Registration order only breaks ties between
+// equally-specific routes, preserving prior behavior for those.
+func (p *VHostProxy) findRoute(r *http.Request, routes []*Route) *Route {
+	var best *Route
+	bestSpec := -1
+	for _, route := range routes {
+		if !route.Matches(r) {
+			continue
+		}
+		if spec := route.pathSpecificity(); spec > bestSpec {
+			bestSpec = spec
+			best = route
+		}
+	}
+	return best
 }
 
 func (p *VHostProxy) hasTLS() bool {
