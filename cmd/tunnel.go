@@ -13,6 +13,7 @@ import (
 	"os"
 	"os/signal"
 	"sync"
+	"time"
 
 	"strconv"
 	"strings"
@@ -128,7 +129,11 @@ var tunnelCmd = &cobra.Command{
 	},
 }
 
-func startTunnel(serverIP, connectionSecret, localStr, remoteStr, tunnelName string, retries int, tlsCertPEM, tlsKeyPEM []byte) (func(), error) {
+// startTunnelOnce performs a single registration: login, /connect, bring up the
+// WireGuard device, and start a health monitor. onGone is invoked if the server
+// later reports it has no such tunnel; see startTunnel for the retry loop built
+// on top of it.
+func startTunnelOnce(serverIP, connectionSecret, localStr, remoteStr, tunnelName string, retries int, tlsCertPEM, tlsKeyPEM []byte, onGone func()) (func(), error) {
 	localURL, err := url.Parse(localStr)
 	if err != nil {
 		return nil, fmt.Errorf("invalid local URL: %w", err)
@@ -243,10 +248,11 @@ func startTunnel(serverIP, connectionSecret, localStr, remoteStr, tunnelName str
 
 	// Create HealthMonitor for adaptive healthcheck with sliding window failure tracking
 	monitor := client.NewHealthMonitor(client.HealthMonitorConfig{
-		Client:     httpClient,
-		HealthURL:  healthURL,
-		TunnelName: tunnelName,
-		MaxRetries: retries,
+		Client:       httpClient,
+		HealthURL:    healthURL,
+		TunnelName:   tunnelName,
+		MaxRetries:   retries,
+		OnTunnelGone: onGone,
 	})
 	go monitor.Start()
 
@@ -274,6 +280,110 @@ func startTunnel(serverIP, connectionSecret, localStr, remoteStr, tunnelName str
 	}
 
 	return cleanup, nil
+}
+
+// startTunnel establishes the tunnel and keeps it registered for the life of
+// the process.
+//
+// The server's janitor drops any tunnel whose healthchecks go stale for more
+// than ~15s, and it answers a subsequent healthcheck with 404. That used to be
+// fatal, so a single bastion hiccup killed every tunnel client at once and they
+// only came back because their supervisor restarted the process — expensive
+// under Kubernetes (CrashLoopBackOff, an image re-pull per restart) and simply
+// terminal for anyone running `weft tunnel` by hand. Here we re-register
+// instead, with backoff, until it takes or we are shut down.
+func startTunnel(serverIP, connectionSecret, localStr, remoteStr, tunnelName string, retries int, tlsCertPEM, tlsKeyPEM []byte) (func(), error) {
+	const maxBackoff = 30 * time.Second
+
+	var (
+		mu      sync.Mutex
+		current func()
+		stopped bool
+	)
+
+	var connect func() error
+
+	reconnect := func() {
+		mu.Lock()
+		if stopped {
+			mu.Unlock()
+			return
+		}
+		teardown := current
+		current = nil
+		mu.Unlock()
+
+		// Drop the local WireGuard device and monitor before re-registering so
+		// we don't leak a device per reconnect. The server has already
+		// forgotten this tunnel, so the /shutdown in here is a no-op.
+		if teardown != nil {
+			teardown()
+		}
+
+		backoff := time.Second
+		for attempt := 1; ; attempt++ {
+			mu.Lock()
+			done := stopped
+			mu.Unlock()
+			if done {
+				return
+			}
+
+			if err := connect(); err != nil {
+				log.Warn().Err(err).
+					Str("tunnel", tunnelName).
+					Int("attempt", attempt).
+					Dur("retry_in", backoff).
+					Msg("Re-registration failed; retrying")
+				time.Sleep(backoff)
+				if backoff *= 2; backoff > maxBackoff {
+					backoff = maxBackoff
+				}
+				continue
+			}
+
+			log.Info().Str("tunnel", tunnelName).Int("attempt", attempt).Msg("Tunnel re-registered")
+			return
+		}
+	}
+
+	connect = func() error {
+		cleanup, err := startTunnelOnce(serverIP, connectionSecret, localStr, remoteStr,
+			tunnelName, retries, tlsCertPEM, tlsKeyPEM,
+			// The monitor stops its own loop once this fires, so hand the
+			// retry work to a fresh goroutine and let it return.
+			func() { go reconnect() })
+		if err != nil {
+			return err
+		}
+
+		mu.Lock()
+		if stopped {
+			// Shut down while we were connecting - don't leave it dangling.
+			mu.Unlock()
+			cleanup()
+			return nil
+		}
+		current = cleanup
+		mu.Unlock()
+		return nil
+	}
+
+	if err := connect(); err != nil {
+		return nil, err
+	}
+
+	return func() {
+		mu.Lock()
+		stopped = true
+		teardown := current
+		current = nil
+		mu.Unlock()
+
+		if teardown != nil {
+			teardown()
+		}
+	}, nil
 }
 
 func init() {

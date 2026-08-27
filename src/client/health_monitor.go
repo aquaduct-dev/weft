@@ -40,6 +40,17 @@ type HealthMonitorConfig struct {
 	// OnFatal is called with a reason when a permanent failure occurs.
 	// If nil, log.Fatal is used. Provided for testability.
 	OnFatal func(reason string)
+
+	// OnTunnelGone is called when the server reports it has no such tunnel
+	// (HTTP 404). That is not a permanent condition: it is what the server's
+	// janitor leaves behind after pruning a tunnel whose healthchecks went
+	// stale, and the correct response is to register again rather than die.
+	// The monitor stops its loop after invoking this, leaving the caller to
+	// re-establish and start a fresh monitor.
+	//
+	// If nil, a 404 is treated as permanent (the historical behavior), so
+	// library callers that do not know how to re-register keep failing fast.
+	OnTunnelGone func()
 }
 
 // HealthMonitor performs adaptive healthchecks with sliding window failure tracking.
@@ -172,8 +183,28 @@ func (h *HealthMonitor) doHealthcheck() bool {
 			h.mu.Unlock()
 			return false // Success, not fatal
 
-		case http.StatusUnauthorized, http.StatusNotFound:
-			// Permanent failures - tunnel doesn't exist or auth invalid
+		case http.StatusNotFound:
+			// The server has no record of this tunnel. Nearly always this is
+			// the janitor having pruned us after our healthchecks went stale
+			// (a server hiccup of >15s is enough), which is recoverable: the
+			// WireGuard config is void but the credentials are still good, so
+			// re-running /connect restores service.
+			//
+			// Treating this as fatal meant every client on a bastion dropped
+			// together on any stall and only came back because a supervisor
+			// restarted the process.
+			if h.cfg.OnTunnelGone != nil {
+				log.Warn().
+					Str("tunnel", h.cfg.TunnelName).
+					Msg("Server no longer knows this tunnel; re-registering")
+				h.cfg.OnTunnelGone()
+				return true // stop this monitor; the new registration starts its own
+			}
+			isPermanentFailure = true
+			failureReason = fmt.Sprintf("server returned %d", resp.StatusCode)
+
+		case http.StatusUnauthorized:
+			// Auth is genuinely invalid - not something a retry fixes.
 			isPermanentFailure = true
 			failureReason = fmt.Sprintf("server returned %d", resp.StatusCode)
 
