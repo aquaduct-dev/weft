@@ -1,0 +1,5 @@
+<!-- docdaemon ts:2026-10-09T01:40:09Z hash:11b9b771d7797564 model:openrouter/qwen/qwen3.7-flash -->
+## TL;DR
+This file contains Ginkgo/Gomega integration tests for the ACME redirect package’s network utility functions and HTTP redirection logic.
+
+It verifies `DescendingPeerIPs` sorts IPs by byte order and handles lookup failures, ensuring deterministic peer selection. It validates `LocalIPs` correctly filters out loopback addresses from local interfaces. The `IsLocalIP` tests confirm proper IP equality handling, including IPv4-mapped IPv6 addresses. Finally, it tests `PostACMERedirect` against a mock TLS server to ensure correct POST behavior, error propagation on 4xx responses, and connection failure handling. The `RegisterRedirectsLoop` test ensures the background goroutine respects context cancellation immediately. These tests rely on stubbing `lookupIP` and `interfaceAddrs` to isolate network-dependent logic from the actual system state.

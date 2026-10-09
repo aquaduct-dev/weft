@@ -1,0 +1,5 @@
+<!-- docdaemon ts:2026-10-09T01:40:52Z hash:85051520009f6c2d model:openrouter/qwen/qwen3.7-flash -->
+## TL;DR
+This script validates that the Weft tunnel correctly rewrites request paths from a remote prefix to an upstream endpoint.
+
+It orchestrates three processes: a Python HTTP server, the Weft server, and the Weft tunnel client. The Python server acts as the backend, responding only to `/create`. The test generates a connection secret for authentication between the server and tunnel. It then starts the tunnel with a mapping that expects requests at `/api/v1` on the tunnel side to be forwarded as `/` to the upstream. Finally, it sends a request to `http://127.0.0.1:<tunnel_port>/api/v1/create` with the appropriate Host header and verifies the response is "ok", confirming path rewriting functionality.

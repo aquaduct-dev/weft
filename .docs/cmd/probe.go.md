@@ -1,0 +1,5 @@
+<!-- docdaemon ts:2026-10-09T01:40:00Z hash:5ce7158fac008180 model:openrouter/qwen/qwen3.7-flash -->
+## TL;DR
+This file defines the `probe` CLI command to verify server connectivity for ACME challenges.
+
+The `probeCmd` function implements a cobra command that checks if a host can respond to an ACME challenge. It accepts an optional domain argument and supports binding to a specific IP address or network interface. If no domain is provided, it defaults to the bind IP or discovers the public IP. When a `bind-interface` flag is set, it temporarily assigns the specified IP to that interface using `netlink`, performs the probe, and then removes the address upon completion. The core logic delegates to `vhost.NewVHostProxyManager` to spawn a proxy instance and calls `CanPassACMEChallenge`. Errors during interface manipulation or probing result in fatal logs and exit codes.

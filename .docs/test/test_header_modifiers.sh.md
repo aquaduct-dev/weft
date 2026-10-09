@@ -1,0 +1,5 @@
+<!-- docdaemon ts:2026-10-09T01:41:00Z hash:31b52bd365c082fa model:openrouter/qwen/qwen3.7-flash -->
+## TL;DR
+This script validates that the Weft tunnel correctly applies header modification rules (add, delete, set) during proxying.
+
+It orchestrates a test environment consisting of a Python HTTP upstream, a Weft server, and a Weft tunnel to verify header manipulation logic. The script starts these components in sequence, ensuring ports are free and services are ready before proceeding. It then sends a specific `curl` request through the tunnel with known headers (`X-Forwarded-For`, no `Authorization`) to trigger the modifier rules defined in the local URL fragment. Finally, it inspects the upstream log to confirm that `Forwarded: true` was added, `X-Forwarded-For` was removed, and `Authorization: auth` was inserted, exiting with success or failure based on these checks.
