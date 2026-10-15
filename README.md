@@ -150,9 +150,10 @@ Checks if the server can answer an ACME challenge for the given domain.
  - `--bind-ip`: IP to bind the probe listener to.
 
 **One-off Proxy:**
-`weft proxy [src url] [dst url]`
-Starts a standalone proxy between two URLs.
- - `--proxy-name`: Logical name for the proxy.
+`weft proxy [src url] [dst url] [[src url] [dst url] ...]`
+Starts standalone proxies between pairs of URLs in one process, with no server or WireGuard in the path. Several `https` destinations can share a port and are routed by hostname.
+ - `--proxy-name`: Logical name for the proxy (single pair only).
+ - `--tls-cert`, `--tls-key`: Serve `https` destinations with this PEM certificate and key instead of obtaining one through ACME. Useful behind private DNS, where ACME cannot reach the proxy (weft-operator's `WeftLocalDNSReflector` uses this).
 
 ## Under the Hood
 

@@ -147,6 +147,10 @@ func (m *PathPrefixModifier) Apply(w http.ResponseWriter, r *http.Request) bool 
 	// duplicate slashes, and strips trailing slashes (we re-add a leading "/"
 	// below).
 	cleaned := path.Clean(r.URL.Path)
+	// path.Clean also drops a trailing slash, which is significant to many
+	// backends: a container registry answers "/v2" with a redirect to
+	// "/v2/", so stripping it sends clients round a redirect loop.
+	trailingSlash := len(r.URL.Path) > 1 && strings.HasSuffix(r.URL.Path, "/")
 	r.URL.Path = cleaned
 
 	prefix := strings.TrimRight(m.Prefix, "/")
@@ -163,6 +167,9 @@ func (m *PathPrefixModifier) Apply(w http.ResponseWriter, r *http.Request) bool 
 	}
 	if !strings.HasPrefix(r.URL.Path, "/") {
 		r.URL.Path = "/" + r.URL.Path
+	}
+	if trailingSlash && !strings.HasSuffix(r.URL.Path, "/") {
+		r.URL.Path += "/"
 	}
 	return false
 }

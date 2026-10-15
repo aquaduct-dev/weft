@@ -260,7 +260,7 @@
     "@@rules_oci+//oci:extensions.bzl%oci": {
       "general": {
         "bzlTransitiveDigest": "BeV0V5iyEfuPmG0ie2+GOgfkG7+UM3feYqzQ+i1pP/4=",
-        "usagesDigest": "F9GFzpQ6u3UWv2dYOwlhJyHuzyGSYvFF//Q64ao33l4=",
+        "usagesDigest": "wMfI4sNIbiDtb0cgPv892TF8DuKNFLWnjAt6DS+zv94=",
         "recordedFileInputs": {},
         "recordedDirentsInputs": {},
         "envVariables": {},
@@ -423,12 +423,12 @@
           }
         },
         "moduleExtensionMetadata": {
-          "explicitRootModuleDirectDeps": [
+          "explicitRootModuleDirectDeps": [],
+          "explicitRootModuleDirectDevDeps": [
             "alpine",
             "alpine_linux_amd64",
             "alpine_linux_arm64_v8"
           ],
-          "explicitRootModuleDirectDevDeps": [],
           "useAllRepos": "NO",
           "reproducible": false
         },

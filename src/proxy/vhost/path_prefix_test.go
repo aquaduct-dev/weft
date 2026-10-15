@@ -106,12 +106,37 @@ func TestPathPrefixModifier_SegmentAware(t *testing.T) {
 		{"/api/../admin", "/admin"},
 		// Already-clean dot-segment.
 		{"/api/./users", "/users"},
+		// A trailing slash survives cleaning (registries redirect "/v2"
+		// to "/v2/", so dropping it loops).
+		{"/api/v2/", "/v2/"},
+		{"/api/users/", "/users/"},
 	}
 	for _, c := range cases {
 		req := mustReq(t, c.in)
 		mod.Apply(nil, req)
 		if req.URL.Path != c.want {
 			t.Errorf("in=%q: out=%q, want %q", c.in, req.URL.Path, c.want)
+		}
+	}
+}
+
+// TestPathPrefixModifier_RootPrefixKeepsTrailingSlash covers the common "/"
+// route (every Gateway-generated tunnel): paths pass through unchanged,
+// trailing slash included.
+func TestPathPrefixModifier_RootPrefixKeepsTrailingSlash(t *testing.T) {
+	mod := &PathPrefixModifier{Prefix: "/"}
+	for in, want := range map[string]string{
+		"/":                "/",
+		"/v2/":             "/v2/",
+		"/v2":              "/v2",
+		"/v2/e2e/blobs/x/": "/v2/e2e/blobs/x/",
+		"/a//b/":           "/a/b/",
+		"/a/../b/":         "/b/",
+	} {
+		req := mustReq(t, in)
+		mod.Apply(nil, req)
+		if req.URL.Path != want {
+			t.Errorf("in=%q: out=%q, want %q", in, req.URL.Path, want)
 		}
 	}
 }

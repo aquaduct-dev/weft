@@ -167,3 +167,9 @@ sh_test(
     srcs = ["test_mitm.sh"],
     deps = [":lib"],
 )
+
+sh_test(
+    name = "test_https_proxy_static_tls",
+    srcs = ["test_https_proxy_static_tls.sh"],
+    deps = [":lib"],
+)

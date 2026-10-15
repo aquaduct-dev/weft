@@ -24,7 +24,11 @@ bazel_dep(
 )
 bazel_dep(name = "rules_shell", version = "0.6.1")
 
-go_sdk = use_extension("@rules_go//go:extensions.bzl", "go_sdk")
+# The Go SDK and base images are only this module's own business: marking
+# them dev_dependency lets other modules (weft-operator's e2e tests)
+# bazel_dep on weft and build //:weft with their own toolchain, without
+# colliding on the "go_sdk"/"alpine" repo names.
+go_sdk = use_extension("@rules_go//go:extensions.bzl", "go_sdk", dev_dependency = True)
 go_sdk.from_file(go_mod = "//:go.mod")
 go_sdk.download(
     name = "go_sdk",
@@ -32,7 +36,7 @@ go_sdk.download(
 )
 use_repo(go_sdk, "go_sdk")
 
-register_toolchains("@go_sdk//:all")
+register_toolchains("@go_sdk//:all", dev_dependency = True)
 
 go_deps = use_extension("@gazelle//:extensions.bzl", "go_deps")
 go_deps.from_file(go_mod = "//:go.mod")
@@ -55,7 +59,7 @@ use_repo(
     "org_golang_x_crypto",
 )
 
-oci = use_extension("@rules_oci//oci:extensions.bzl", "oci")
+oci = use_extension("@rules_oci//oci:extensions.bzl", "oci", dev_dependency = True)
 
 # A multi-arch base image with variants, note that it won't work with just "linux/arm64"
 oci.pull(
