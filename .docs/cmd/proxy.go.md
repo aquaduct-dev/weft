@@ -1,13 +1,16 @@
-<!-- docdaemon ts:2026-10-09T01:40:02Z hash:e0c5236312d5c8b6 model:openrouter/qwen/qwen3.7-flash -->
+<!-- docdaemon ts:2026-10-15T20:41:53Z hash:d16c91319d14e8c3 model:openrouter/qwen/qwen3.7-flash -->
 ## TL;DR
-This file defines the `proxy` subcommand for the CLI, enabling users to create a temporary proxy between two URLs.
+This file implements the `weft proxy` CLI command to run local source-to-destination proxies within a single process.
 
 ### Purpose
-The `proxyCmd` Cobra command facilitates one-off proxying from a source URL to a destination URL. It handles argument parsing, URL validation, and lifecycle management of the proxy instance.
+The `proxy.go` file defines the Cobra command for creating one-off URL proxies without involving a weft server or WireGuard. It supports multiple src/dst pairs and optional static TLS termination via provided certificate files, falling back to ACME if no static certs are given.
 
-### Key Functions
-*   **`init`**: Registers the `proxy` command with the root command and adds the `--proxy-name` flag.
-*   **`Run`**: The main execution logic. It parses the source and destination URLs, generates a default name using SHA-256 if not provided, starts the proxy via `proxy.NewProxyManager`, and blocks until a shutdown signal (SIGINT/SIGTERM) is received.
+### Key Components
+*   **`proxyCmd`**: The main Cobra command structure. It validates that arguments are provided in even-numbered pairs (src, dst).
+*   **`readTLSPair`**: Helper function that loads PEM-encoded certificate and key files from disk based on `--tls-cert` and `--tls-key` flags. It ensures both paths are provided together or neither is.
+*   **`init`**: Registers flags (`proxy-name`, `tls-cert`, `tls-key`) and attaches the command to the root CLI.
 
-### Integration
-This file acts as the entry point for the proxy feature within the application's CLI structure, delegating actual proxy operations to the `github.com/aquaduct-dev/weft/src/proxy` package.
+### Behavior
+1.  **Proxy Creation**: Iterates through argument pairs, parsing URLs and generating unique names (SHA256 hash of src|dst) unless a specific `--proxy-name` is set for a single pair.
+2.  **TLS Handling**: Passes loaded cert/key bytes to `proxy.NewProxyManager().StartProxy`. If nil, the underlying proxy uses ACME.
+3.  **Lifecycle Management**: Starts all proxies, then blocks on SIGINT/SIGTERM signals. Upon signal receipt, it gracefully closes all active proxies before exiting.

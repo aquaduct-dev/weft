@@ -1,46 +1,43 @@
-<!-- docdaemon ts:2026-10-09T01:48:05Z hash:066c9db614d6f168 model:openrouter/qwen/qwen3.7-flash -->
+<!-- docdaemon ts:2026-10-15T20:43:06Z hash:f60e37faa415821c model:openrouter/qwen/qwen3.7-flash -->
 ## TL;DR
-This directory defines the command-line interface for the Weft proxy application using Cobra.
+The `cmd` package defines the Weft CLI entry point, aggregating subcommands for server management, tunneling, and proxying.
 
 ## Overview
-The `cmd` package serves as the entry point for the Weft binary, translating user intent into specific operational modes. It aggregates core functionality including server management, tunnel creation, and network probing into a cohesive CLI structure. By delegating heavy lifting to internal packages like `auth`, `proxy`, and `server`, it maintains a clean separation between interface logic and business rules.
+This directory serves as the primary interface for interacting with the Weft system via the command line. It implements a Cobra-based command tree that handles global configuration, authentication flows, and lifecycle management for various network operations. By centralizing argument parsing and signal handling here, it keeps business logic isolated in internal packages while providing a consistent user experience.
 
 ## Deep Dive
-### Root Command Structure
-`root.go` establishes the base `weft` command, initializing the global logging subsystem via `logging.Init()`. It handles persistent flags such as `--verbose`, which toggates debug-level WireGuard logs. The `Execute()` function orchestrates the command tree execution, ensuring fatal errors are logged via `zerolog` before exit.
+### Root Configuration
+The `root.go` file establishes the base `weft` command, initializing the logging subsystem and managing global flags like verbosity. It acts as the execution hub, delegating to specific subcommands while ensuring consistent error reporting via zerolog.
 
-### Server Lifecycle
-`server.go` implements the `server` subcommand, responsible for starting the HTTPS listener. It includes logic to discover public IPs via Hetzner services or local interface scanning, with optional strict binding validation. The command manages graceful shutdowns and supports writing connection secrets to files for client configuration.
+### Server Management
+`server.go` implements the `server` command, responsible for starting the Weft HTTP/HTTPS service. It handles IP discovery, binding to network interfaces using netlink, and graceful shutdowns. This command also manages secret generation and Cloudflare token integration for DNS challenges.
 
-### Tunnel Management
-`tunnel.go` handles persistent connections between local and remote endpoints. It authenticates users, generates WireGuard keys, and initiates tunnels via the `/connect` API. A background health monitor ensures connectivity, while signal handlers trigger cleanup routines to notify the server and close devices.
+### Tunnel Operations
+`tunnel.go` and `list.go` handle persistent WireGuard tunnels. The `tunnel` command authenticates users, generates keys, and maintains health monitors for local-to-remote connections. Conversely, `list.go` retrieves active tunnel statistics from the server, formatting them for display.
 
 ### Proxying and Probing
-`proxy.go` enables temporary one-off proxying between URLs, blocking until interrupted by SIGINT/SIGTERM. `probe.go` verifies ACME challenge connectivity, optionally manipulating network interfaces via `netlink` to bind specific IPs. `list.go` retrieves active tunnel statistics from the server, formatting output as a human-readable table.
+`proxy.go` enables one-off source-to-destination proxies without a full server instance, supporting static TLS or ACME. `probe.go` verifies server connectivity for ACME challenges, optionally manipulating network interfaces to bind specific IPs during validation.
 
 ## Key Interfaces
-- `rootCmd`: The primary Cobra command instance defining the application root.
-- `Execute()`: Main entry point that runs the command tree and handles errors.
-- `serverCmd`: Cobra command for initializing and running the Weft server.
-- `tunnelCmd`: Cobra command for establishing and managing persistent tunnels.
-- `proxyCmd`: Cobra command for creating temporary URL proxies.
-- `probeCmd`: Cobra command for testing ACME challenge reachability.
-- `listCmd`: Cobra command for listing active tunnel statistics.
+- `Execute()`: Main entry point for CLI execution.
+- `rootCmd`: Base Cobra command with global flag registration.
+- `serverCmd`: Command handler for starting the Weft server.
+- `tunnelCmd`: Command handler for establishing and managing tunnels.
+- `proxyCmd`: Command handler for running ephemeral proxies.
+- `listCmd`: Command handler for listing active tunnels.
+- `probeCmd`: Command handler for ACME challenge verification.
 
 ## Dependencies
 - github.com/spf13/cobra (CLI framework)
 - github.com/rs/zerolog (Structured logging)
-- github.com/aquaduct-dev/weft/src/auth (Authentication logic)
-- github.com/aquaduct-dev/weft/src/proxy (Proxy implementation)
-- github.com/aquaduct-dev/weft/src/server (Server implementation)
-- github.com/aquaduct-dev/weft/src/tunnel (Tunnel management)
 - github.com/vishvananda/netlink (Network interface manipulation)
+- Internal auth, client, proxy, server, and tunnel packages
 
 ## Subcomponents
-- BUILD.bazel: Bazel build target definition.
-- root.go: Base command and global flag handling.
-- server.go: Server initialization and IP discovery.
-- tunnel.go: Persistent tunnel lifecycle management.
-- proxy.go: Temporary proxy creation.
+- root.go: Global CLI setup and logging initialization.
+- server.go: Server startup, IP discovery, and signal handling.
+- tunnel.go: Persistent tunnel creation and health monitoring.
+- list.go: Active tunnel retrieval and display.
+- proxy.go: Ephemeral source-to-destination proxy management.
 - probe.go: ACME challenge connectivity verification.
-- list.go: Active tunnel status retrieval.
+- BUILD.bazel: Bazel build target definition.

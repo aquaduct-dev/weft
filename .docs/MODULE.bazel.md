@@ -1,22 +1,20 @@
-<!-- docdaemon ts:2026-10-09T01:40:03Z hash:2a9b078aabe78ace model:openrouter/qwen/qwen3.7-flash -->
+<!-- docdaemon ts:2026-10-15T20:41:53Z hash:d30167a4f2b1aaf4 model:openrouter/qwen/qwen3.7-flash -->
 ## TL;DR
-This file defines the Bazel module configuration, external dependencies, and container image rules for the `aquaduct_weft` project.
+This file defines the Bazel module configuration for `aquaduct_weft`, declaring external dependencies and configuring Go and OCI toolchains.
 
 ### Purpose
-`MODULE.bazel` serves as the root manifest for Bazel’s bzlmod system. It declares the module name (`aquaduct_weft`) and version, then registers all necessary toolchains and third-party repositories required to build Go binaries and OCI containers without a legacy `WORKSPACE` file.
+`MODULE.bazel` serves as the root manifest for the Bazel module system (bzlmod). It declares the module name, version, and all direct dependencies required to build the project without a legacy `WORKSPACE` file.
 
-### Key Components
+### Dependencies
+The file imports several rules via `bazel_dep`:
+- **rules_oci**: Enables container image building and pulling.
+- **rules_go & gazelle**: Provides the Go build system and dependency management.
+- **rules_pkg & rules_shell**: Supports packaging and shell script execution.
+- **tar.bzl**: Assists with tar archive operations.
 
-**External Dependencies**
-The file imports several critical Bazel rules via `bazel_dep`:
-*   **Build Rules**: `rules_go`, `gazelle`, `rules_pkg`, `rules_shell`, and `tar.bzl`.
-*   **Containerization**: `rules_oci` enables building multi-architecture container images.
+### Toolchain Configuration
+Go and base images are marked as `dev_dependency`. This isolates their repository names (`go_sdk`, `alpine`) from consuming modules, allowing downstream projects like `weft-operator` to use their own versions without collision.
 
-**Go SDK Configuration**
-It configures the Go toolchain using `use_extension` from `@rules_go`. The SDK is pinned to version `1.25.4` and sourced from the local `go.mod` file. The resulting `go_sdk` repository is registered as a toolchain.
-
-**Go Dependencies**
-Using Gazelle’s extension, direct Go dependencies are resolved from `//:go.mod`. These are explicitly listed in `use_repo` to ensure reproducible builds. The list includes libraries for JWT handling, logging (zerolog), CLI parsing (cobra), testing (ginkgo/gomega), networking (quic-go, netlink), and WireGuard integration.
-
-**OCI Base Images**
-The `rules_oci` extension pulls a multi-architecture Alpine Linux base image. It supports both `linux/amd64` and `linux/arm64/v8` platforms, ensuring the final container can run on diverse hardware architectures.
+1.  **Go SDK**: Configured via `@rules_go//go:extensions.bzl` using `//:go.mod` and downloading version `1.25.4`.
+2.  **Go Dependencies**: Managed by Gazelle's extension. Direct dependencies are explicitly listed in `use_repo` to ensure reproducible builds.
+3.  **OCI Base Image**: Pulls Alpine Linux (`sha256:...`) for both `linux/amd64` and `linux/arm64/v8` platforms.

@@ -1,51 +1,48 @@
-<!-- docdaemon ts:2026-10-09T01:41:35Z hash:0d4174f91dc75c91 model:openrouter/qwen/qwen3.7-flash -->
+<!-- docdaemon ts:2026-10-15T20:42:13Z hash:c75231ff5418508e model:openrouter/qwen/qwen3.7-flash -->
 ## TL;DR
-This directory implements a multi-host reverse proxy with dynamic TLS termination, ACME automation, and HTTP/3 support.
+This directory implements a name-based virtual host reverse proxy with automatic TLS management, ACME challenge coordination, and HTTP/3 support.
 
 ## Overview
-The `vhost` package serves as the network edge for the proxy infrastructure, terminating TLS and routing traffic to upstream services based on virtual host rules. It supports HTTP/1.1, HTTP/2, and HTTP/3 (QUIC), providing automatic certificate management via Let's Encrypt ACME challenges. The module ensures high availability through peer redirect mechanisms and maintains accurate network metrics across all supported protocols.
+The `vhost` package provides a robust infrastructure for hosting multiple domains on a single IP address, handling both HTTP and HTTPS traffic. It integrates Let's Encrypt automation via ACME, ensuring certificates are issued and renewed without manual intervention. The module also supports distributed certificate issuance through peer-to-peer redirection and offers detailed metrics for network traffic monitoring across HTTP/1.1, HTTP/2, and HTTP/3 protocols.
 
 ## Deep Dive
 ### Virtual Host Routing
-`VHostProxyManager` orchestrates multiple proxies, mapping incoming requests to specific routes using path prefixes, headers, and methods. The longest matching prefix wins, ensuring precise control over sub-path routing. Requests are forwarded via `httputil.ReverseProxy`, with optional WireGuard-aware transport selection.
+`VHostProxyManager` orchestrates multiple `VHostProxy` instances, each managing routes for specific hostnames. Requests are dispatched using `PathMatcher` and `HeaderMatcher`, prioritizing the longest matching path prefix to adhere to Gateway-API precedence rules. The system supports plain HTTP and TLS termination, dynamically injecting certificates as they become available.
 
-### ACME Automation & Peer Redirects
-Automatic certificate issuance is handled by integrating with `autocert`. To prevent split-brain scenarios during DNS propagation, the system uses a leader-fallback strategy. If a peer registers itself as the authoritative responder for a host, other nodes redirect ACME challenge requests to that peer. This coordination prevents race conditions and ensures successful validation regardless of which node receives the initial query.
+### ACME Automation & Redirection
+Automatic certificate issuance is handled by `AddHostWithACME`, which binds port 80, probes reachability, and fetches certificates asynchronously. In distributed clusters, `acme_redirect.go` coordinates HTTP-01 challenges among peers. It uses a leader-fallback strategy: if a peer is registered for a host, requests are redirected there; otherwise, it falls back to the highest-IP node or local handling, preventing split-brain scenarios during renewal.
 
-### Metering Infrastructure
-Network traffic volume is tracked at both connection and application layers. For HTTP/1.1 and HTTP/2, `countingConn` wraps `net.Conn` to increment atomic counters on I/O operations. HTTP/3 metering operates at the application layer via `countingResponseWriter`, intercepting body writes since QUIC lacks per-request connection hooks. Global metrics aggregate these counts for monitoring.
+### Metering & Transport
+The embedded `meter` package tracks byte-level metrics for all connections. For HTTP/1.1 and HTTP/2, it wraps `net.Conn` to count I/O operations. For HTTP/3 (QUIC), it instruments the application layer since per-request connection hooks are unavailable. Additionally, `WGAwareRoundTripper` ensures internal WireGuard addresses are routed through the userspace network stack, with failure tracking to trigger tunnel cleanup.
 
 ### Error Handling
-A custom `httpErrorLogWriter` filters noisy TLS handshake errors from standard net/http logs, sending them to debug level while surfacing other server errors as warnings. This reduces log spam without hiding critical issues.
+Custom logging via `errorlog.go` filters noisy TLS handshake errors from `net/http`, logging them at debug level while surfacing other server errors as warnings. This reduces log spam for internet-exposed ports while maintaining visibility into critical failures.
 
 ## Key Interfaces
-- `VHostProxy`: Manages routes per hostname, handling TCP and UDP listeners.
-- `VHostProxyManager`: Orchestrates multiple proxies, ACME issuance, and peer redirects.
-- `Route`: Combines matchers (path, header) and modifiers (redirects).
-- `AddHostWithACME`: Registers a host for automatic Let's Encrypt issuance.
-- `CanPassACMEChallenge`: Validates DNS resolution and firewall accessibility.
-- `NewMeteredServer`: Creates an http.Server configured for connection-level metering.
-- `MeteredHTTPHandler`: Adapter tracking per-request metrics and aggregating global counters.
-- `countingConn`: net.Conn wrapper incrementing atomic counters on I/O.
-- `countingResponseWriter`: Intercepts header/body writes for HTTP/3 metering.
+- `VHostProxy`: Manages routes per hostname, handling request matching and modification.
+- `VHostProxyManager`: Orchestrates multiple proxies, manages ACME cache, and handles peer redirections.
+- `WGAwareRoundTripper`: Custom transport routing internal WireGuard addresses through a userspace stack.
+- `NewMeteredServer`: Creates an `http.Server` configured to extract connection counters from context.
+- `countingConn`: A `net.Conn` wrapper that increments atomic counters on I/O operations.
+- `countingResponseWriter`: Implements `http.ResponseWriter` to intercept and track header/body writes.
 
 ## Dependencies
-- github.com/aquaduct-dev/weft/src/proxy/vhost/meter
-- golang.org/x/crypto/acme/autocert
-- github.com/quic-go/quic-go
-- github.com/google/ginkgo/v2
-- github.com/onsi/gomega
-- go.uber.org/zap (zerolog integration)
+- `github.com/aquaduct-dev/weft/src/proxy/vhost/meter` (internal metering package)
+- `golang.org/x/crypto/acme/autocert` (Let's Encrypt integration)
+- `github.com/quic-go/quic-go` (HTTP/3 support)
+- `go.uber.org/zap` / `github.com/rs/zerolog` (structured logging)
+- `github.com/onsi/ginkgo/v2`, `github.com/onsi/gomega` (testing frameworks)
 
 ## Subcomponents
-- acme_redirect.go: Coordinates HTTP-01 ACME challenge redirection among cluster peers.
-- errorlog.go: Custom http.ErrorLog writer filtering TLS handshake noise.
-- vhost.go: Core implementation of VHostProxy and VHostProxyManager.
-- meter/: HTTP request/response metering for HTTP/1.1, 2, and 3.
-- acme_redirect_test.go: Unit tests for ACME challenge redirection logic.
-- certificates_test.go: Tests for ListCertificates parsing and filtering.
-- path_prefix_test.go: Tests for segment-aware path matching and stripping.
-- probe_test.go: Tests for ACME challenge validation and host registration.
-- vhost_race_test.go: Concurrency regression tests for data races.
-- vhost_suite_test.go: Ginkgo test suite initialization.
-- vhost_test.go: Integration tests for routing, TLS, and transport logic.
+- `BUILD.bazel`: Bazel build configuration for library and test targets.
+- `vhost.go`: Core implementation of virtual host proxying and route management.
+- `acme_redirect.go`: Coordinates ACME challenge redirection among cluster peers.
+- `errorlog.go`: Custom error log writer filtering TLS handshake noise.
+- `meter/`: Directory implementing HTTP request/response metering for all protocols.
+- `vhost_test.go`: Ginkgo integration tests for routing and TLS management.
+- `vhost_race_test.go`: Concurrency regression tests for thread-safety.
+- `vhost_suite_test.go`: Ginkgo test suite initialization.
+- `acme_redirect_test.go`: Unit tests for ACME challenge redirection logic.
+- `certificates_test.go`: Tests for certificate cache parsing and filtering.
+- `path_prefix_test.go`: Tests for segment-aware path matching and normalization.
+- `probe_test.go`: Tests for ACME challenge validation and security guards.

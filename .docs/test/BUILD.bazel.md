@@ -1,14 +1,5 @@
-<!-- docdaemon ts:2026-10-09T01:40:55Z hash:307489ffb1427abf model:openrouter/qwen/qwen3.7-flash -->
+<!-- docdaemon ts:2026-10-15T20:41:50Z hash:46a692fae609866d model:openrouter/qwen/qwen3.7-flash -->
 ## TL;DR
-This file defines the Bazel build targets for the shell-based test suite and shared library utilities.
+This file defines the Bazel build targets for the shell-based test suite and shared library.
 
-It configures `sh_library` to provide common testing infrastructure via `lib.sh`, including runtime dependencies like the `weft` binary. The bulk of the file declares individual `sh_test` targets, each mapping a specific shell script to its execution environment.
-
-Tests are categorized by functionality:
-- **Protocol Tunnels**: TCP, HTTP, HTTPS, and UDP tunneling logic.
-- **Proxy Modes**: TCP, HTTP, and UDP proxy implementations.
-- **Feature Tests**: Path rewriting, header modifiers, redirects, matchers, and retries.
-- **Billing & Reporting**: Metrics collection, multi-tunnel reporting, and interrupt handling.
-- **Security & Health**: MITM support, secret enforcement, probes, and graceful shutdown.
-
-Most tests depend on `:lib` for shared helpers. Some tests (e.g., `test_tcp_tunnel`, `test_http_proxy`) inject the `PROTO` environment variable to parameterize behavior.
+It configures `sh_library` to provide common utilities via `lib.sh` and the `//:weft` data dependency. It then declares a series of `sh_test` targets, each executing specific shell scripts to verify tunneling, proxying, routing, and billing logic. Tests are parameterized using the `PROTO` environment variable (tcp, http, https, udp) where applicable. The `test_https_tunnel` target explicitly includes `test_tcp_tunnel.sh` in its data dependencies, likely for shared helper functions or fixtures. All tests depend on the `:lib` target for shared code.

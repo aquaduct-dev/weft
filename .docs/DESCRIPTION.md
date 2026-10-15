@@ -1,45 +1,49 @@
-<!-- docdaemon ts:2026-10-09T01:48:57Z hash:e7d744c257344349 model:openrouter/qwen/qwen3.7-flash -->
+<!-- docdaemon ts:2026-10-15T20:43:38Z hash:b0f643c0a6f8d588 model:openrouter/qwen/qwen3.7-flash -->
 ## TL;DR
-This directory serves as the root of the Weft project, defining the build system, CI/CD pipelines, and entry points for a WireGuard-based Layer 4/Layer 7 proxy.
+This directory serves as the root of the Weft project, defining the build system, CI/CD pipelines, and entry points for the Layer 4/Layer 7 tunnelling proxy.
 
 ## Overview
-The repository root orchestrates the development lifecycle using Bazel for reproducible builds across Linux, Windows, and macOS. It integrates GitHub Actions to automate testing, multi-architecture containerization, and release publishing. The structure separates CLI logic (`cmd`), core business rules (`src`), and infrastructure wrappers (`wireguard`) to maintain modularity.
+The repository root orchestrates the development lifecycle using Bazel for reproducible builds across Linux, Windows, and macOS. It integrates GitHub Actions to automate testing, multi-architecture container publishing, and release management. The structure separates CLI logic, core networking services, and infrastructure tooling into distinct sub-packages while maintaining a unified build graph.
 
 ## Deep Dive
 ### Build Configuration
-`BUILD.bazel` and `MODULE.bazel` define the Go toolchain, external dependencies, and cross-compilation targets. Gazelle manages dependency synchronization, while `rules_oci` handles multi-arch image indexing. Scripts in `scripts/` enforce pre-commit checks and stabilize build metadata via Git hashes.
+`MODULE.bazel` and `BUILD.bazel` define the Go module dependencies and cross-compilation rules. Gazelle manages dependency synchronization, while `go_cross_binary` targets produce platform-specific executables. The configuration isolates toolchain versions to prevent collisions with downstream consumers.
+
+### CI/CD Automation
+The `.github/workflows` directory contains `test.yml` for continuous integration and `release.yml` for distribution. Tests run against the entire workspace using Bazelisk, leveraging cache optimization for speed. Releases trigger multi-platform builds, sanity checks, and pushes to the GitHub Container Registry (GHCR).
+
+### Development Tooling
+Scripts in `scripts/` enforce code quality and build stability. `setup-pre-commit-hook.sh` ensures BUILD files are synchronized via Gazelle before commits. `workspace_status.sh` provides stable Git metadata to Bazel, enabling effective artifact caching during incremental development.
 
 ### Application Entry Points
-`main.go` delegates execution to the `cmd` package, which implements the Cobra CLI framework. This includes subcommands for server management, tunnel creation, and health probing. The `container/` directory defines Bazel rules to package these binaries into Alpine-based OCI images for GHCR distribution.
-
-### Core Implementation
-The `src/` directory contains the proxy logic, including HTTP routing, WireGuard device management, and ACME certificate handling. Security is enforced through zero-trust authentication and AES-GCM encryption. The `test/` directory provides Bash-based integration tests that validate traffic forwarding, billing metrics, and security constraints against mock servers.
+`main.go` initializes the Cobra-based CLI defined in `cmd/`. This entry point delegates argument parsing and signal handling to the command tree, keeping business logic isolated in the `src/` package. The `container/` directory defines OCI image rules for packaging these binaries.
 
 ## Key Interfaces
-- `Execute()`: Main entry point for the CLI command tree.
-- `UserspaceDevice`: Wrapper for managing WireGuard TUN interfaces and network binding.
-- `Server`: Central coordinator for HTTP routes, peer state, and background workers.
-- `Client`: Library struct for programmatic tunnel interaction and health monitoring.
-- `ProxyManager`: Controller for creating and managing TCP/UDP/HTTP proxy tunnels.
+- `Execute()`: Main entry point for CLI execution in `cmd/root.go`.
+- `test.yml`: CI workflow for validation and testing.
+- `release.yml`: Release workflow for packaging and distribution.
+- `weft_lib`: Core Bazel library target compiling `main.go`.
+- `setup-pre-commit-hook.sh`: Script for installing Git pre-commit hooks.
+- `workspace_status.sh`: Script for emitting stable build metadata.
 
 ## Dependencies
-- Bazel and Bazelisk for build management
-- Go 1.25.4 (via `go.mod`)
-- GitHub Actions Cache and OIDC tokens
-- `rules_go`, `gazelle`, `rules_oci` for Bazel extensions
-- `cobra`, `zerolog`, `quic-go`, `netlink` for Go runtime
+- Bazel and Bazelisk for build management.
+- Java 17 (Temurin) for Bazel execution environment.
+- GitHub Actions Cache actions for performance optimization.
+- Go 1.25.4 and associated rules (rules_go, gazelle).
+- rules_oci for container image building.
 
 ## Subcomponents
-- `.github/workflows/test.yml`
-- `.github/workflows/release.yml`
-- `BUILD.bazel`
-- `MODULE.bazel`
-- `README.md`
-- `cmd/`
-- `container/`
-- `main.go`
-- `scripts/`
-- `src/`
-- `test/`
-- `types/`
-- `wireguard/`
+- .github/workflows/test.yml
+- .github/workflows/release.yml
+- BUILD.bazel
+- MODULE.bazel
+- README.md
+- main.go
+- cmd/
+- container/
+- scripts/
+- src/
+- test/
+- types/
+- wireguard/
