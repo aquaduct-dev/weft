@@ -7,7 +7,7 @@ This package provides the foundational building blocks required for stable tunne
 
 ## Deep Dive
 ### Static Configuration Defaults
-The `constants` package acts as the single source of truth for network topology. It defines human-readable string representations for the default peer subnet (`10.1.0.0/16`) and server IP, alongside pre-parsed `netip` types. These parsed variables are initialized at package load time using `MustParse` functions, which panic on malformed input. This design shifts validation to startup, ensuring that any downstream component accessing these values receives valid, ready-to-use network addresses without handling parse errors. Additionally, `WGPrivateKeyRedacted` provides a safe placeholder for logging, guaranteeing that actual private keys are never exposed in error messages or logs.
+The `constants` package acts as the single source of truth for network topology. It defines human-readable string representations for the default peer subnet (`10.1.0.0/16`) and server IP, alongside pre-parsed `netip` types. These parsed variables are initialized at package load time using `MustParse` functions, which panic on malformed input. This design shifts validation to startup, ensuring that any downstream component accessing these values receives valid, ready-to-use network addresses without handling parse errors.
 
 ### Failure Tracking and Network Utilities
 The `util` package implements a sliding window counter via `FailureTracker` to mitigate transient upstream errors. By recording failure timestamps, it prevents premature tunnel teardowns during brief restarts or outages, resetting only after a threshold is exceeded or manually upon success. Complementary functions like `EnsurePort` inject standard defaults (80/443) into URLs while rejecting ambiguous schemes, and `ParsePort` extracts integer ports with strict validation. `RewriteHost` allows safe hostname updates while preserving existing port configurations, ensuring consistency in proxy operations.
@@ -15,7 +15,6 @@ The `util` package implements a sliding window counter via `FailureTracker` to m
 ## Key Interfaces
 - `DefaultSubnetString`: Default CIDR notation for the WireGuard peer subnet.
 - `DefaultServerIPString`: Default IP address assigned to the server interface.
-- `WGPrivateKeyRedacted`: Placeholder string for safe logging practices.
 - `DefaultSubnet`: Pre-parsed `netip.Prefix` for the default subnet.
 - `DefaultServerIP`: Pre-parsed `netip.Addr` for the default server IP.
 - `type FailureTracker struct`: Sliding window counter for upstream dial failures.

@@ -10,7 +10,6 @@ The `constants` package centralizes default values used across the application t
 ### Constants
 - **`DefaultSubnetString`**: The default CIDR notation for the WireGuard peer subnet (`10.1.0.0/16`).
 - **`DefaultServerIPString`**: The default IP address assigned to the server interface within the subnet.
-- **`WGPrivateKeyRedacted`**: A placeholder string used exclusively for logging purposes to prevent accidental exposure of actual private keys. Never use this value for cryptographic operations.
 
 ### Variables
 - **`DefaultSubnet`**: A pre-parsed `netip.Prefix` derived from `DefaultSubnetString`. This variable is initialized at package load time using `netip.MustParsePrefix`, ensuring that any parsing errors occur during startup rather than at runtime.

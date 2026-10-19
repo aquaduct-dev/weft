@@ -8,9 +8,6 @@ const (
 
 	// DefaultServerIPString is the default IP assigned to the server in the WireGuard network.
 	DefaultServerIPString = "10.1.0.1"
-
-	// WGPrivateKeyRedacted is used for logging to avoid leaking secrets.
-	WGPrivateKeyRedacted = "private_key=<redacted>"
 )
 
 var (
