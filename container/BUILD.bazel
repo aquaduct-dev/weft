@@ -1,3 +1,4 @@
+load("@rules_go//go:def.bzl", "go_test")
 load("@rules_oci//oci:defs.bzl", "oci_image", "oci_image_index", "oci_push")
 load("@rules_pkg//pkg:tar.bzl", "pkg_tar")
 
@@ -42,4 +43,22 @@ oci_push(
     image = ":weft_image",
     remote_tags = ["latest"],
     repository = "ghcr.io/aquaduct-dev/weft",
+)
+
+# Offline check of what weft_image_push publishes: reads the built OCI layouts
+# and verifies each platform's config architecture, entrypoint, and that the
+# entrypoint binary in the layers is an ELF for the right machine type.
+go_test(
+    name = "container_test",
+    srcs = ["image_test.go"],
+    args = [
+        "-amd64_layout=$(rootpath :weft_image_amd64)",
+        "-arm64_layout=$(rootpath :weft_image_arm64_v8)",
+        "-index_layout=$(rootpath :weft_image)",
+    ],
+    data = [
+        ":weft_image",
+        ":weft_image_amd64",
+        ":weft_image_arm64_v8",
+    ],
 )
