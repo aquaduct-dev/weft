@@ -358,7 +358,7 @@ func (p *ProxyManager) StartProxy(srcURL *url.URL, dstURL *url.URL, proxyName st
 		}
 
 		if err := newProxy.StartProxy(srcURL, dstURL, device, bindIp); err != nil {
-			return newProxy, err
+			return nil, err
 		}
 		p.proxies[proxyName] = newProxy
 		return newProxy, nil
@@ -376,7 +376,7 @@ func (p *ProxyManager) StartProxy(srcURL *url.URL, dstURL *url.URL, proxyName st
 		}
 
 		if err := newProxy.StartProxy(srcURL, dstURL, device, bindIp); err != nil {
-			return newProxy, err
+			return nil, err
 		}
 		p.proxies[proxyName] = newProxy
 		return newProxy, nil

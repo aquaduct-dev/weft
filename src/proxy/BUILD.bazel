@@ -29,5 +29,6 @@ go_test(
     deps = [
         "@com_github_onsi_ginkgo_v2//:ginkgo",
         "@com_github_onsi_gomega//:gomega",
+        "@com_zx2c4_golang_wireguard//tun/netstack",
     ],
 )
