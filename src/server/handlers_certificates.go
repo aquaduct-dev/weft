@@ -8,6 +8,8 @@ import (
 	"fmt"
 	"net/http"
 
+	"github.com/rs/zerolog/log"
+
 	"github.com/aquaduct-dev/weft/types"
 )
 
@@ -25,7 +27,12 @@ func (s *Server) CertificatesHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	failures := s.Dataplane.ListACMEFailures()
+	if len(failures) > 0 {
+		log.Debug().Int("certificates", len(certs)).Int("acme_failures", len(failures)).Msg("certificates: reporting hosts with failed ACME issuance")
+	}
+
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusOK)
-	_ = json.NewEncoder(w).Encode(types.CertificatesResponse{Certificates: certs})
+	_ = json.NewEncoder(w).Encode(types.CertificatesResponse{Certificates: certs, ACMEFailures: failures})
 }

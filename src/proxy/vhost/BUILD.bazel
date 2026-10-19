@@ -26,6 +26,7 @@ go_test(
     name = "vhost_test",
     srcs = [
         "acme_redirect_test.go",
+        "acme_failure_test.go",
         "certificates_test.go",
         "path_prefix_test.go",
         "probe_test.go",
@@ -42,5 +43,6 @@ go_test(
         "@com_github_onsi_gomega//:gomega",
         "@com_github_quic_go_quic_go//http3",
         "@com_github_rs_zerolog//log",
+        "@org_golang_x_crypto//acme/autocert",
     ],
 )

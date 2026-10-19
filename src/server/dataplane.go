@@ -246,6 +246,12 @@ func (d *TunnelDataplane) ListCertificates() ([]types.CertInfo, error) {
 	return d.proxyManager.VHostProxyManager.ListCertificates()
 }
 
+// ListACMEFailures returns the per-host last error from background ACME
+// issuance (empty when every host's latest attempt succeeded).
+func (d *TunnelDataplane) ListACMEFailures() []types.ACMEFailure {
+	return d.proxyManager.VHostProxyManager.ACMEFailures()
+}
+
 // RegisterACMERedirect forwards the peer redirect registration to the vhost
 // manager. The /acme-redirect HTTP handler must verify the peer IP is in DNS
 // for host before calling this — this layer is just plumbing.
