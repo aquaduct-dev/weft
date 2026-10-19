@@ -283,6 +283,12 @@ type VHostProxyManager struct {
 	// doesn't contend with the bulk of the manager's state.
 	redirects   map[string]peerRedirect
 	redirectsMu sync.Mutex
+
+	// acmeFailures holds the last error from background ACME issuance per
+	// host (set by recordACMEFailure, cleared on a later success, read by
+	// ACMEFailures for GET /certificates). Guarded by acmeFailuresMu.
+	acmeFailures   map[string]types.ACMEFailure
+	acmeFailuresMu sync.Mutex
 }
 
 func NewVHostProxyManager() *VHostProxyManager {
@@ -401,6 +407,45 @@ func (v *VHostProxyManager) ListCertificates() ([]types.CertInfo, error) {
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].Host < out[j].Host })
 	return out, nil
+}
+
+// recordACMEFailure logs a failed background ACME issuance at error level and
+// remembers it as the host's last error so ACMEFailures can report it.
+func (v *VHostProxyManager) recordACMEFailure(host, stage string, err error) {
+	log.Error().Err(err).Str("host", host).Str("stage", stage).Msg("ACME: background certificate issuance failed")
+	v.acmeFailuresMu.Lock()
+	defer v.acmeFailuresMu.Unlock()
+	if v.acmeFailures == nil {
+		v.acmeFailures = make(map[string]types.ACMEFailure)
+	}
+	v.acmeFailures[host] = types.ACMEFailure{
+		Host:  host,
+		Error: fmt.Sprintf("%s: %v", stage, err),
+		Time:  time.Now().UTC(),
+	}
+}
+
+// clearACMEFailure forgets a host's last ACME error after a successful issuance.
+func (v *VHostProxyManager) clearACMEFailure(host string) {
+	v.acmeFailuresMu.Lock()
+	defer v.acmeFailuresMu.Unlock()
+	if _, ok := v.acmeFailures[host]; ok {
+		log.Info().Str("host", host).Msg("ACME: issuance succeeded; clearing previous failure")
+		delete(v.acmeFailures, host)
+	}
+}
+
+// ACMEFailures returns every host whose latest background ACME issuance
+// failed, sorted by host. An empty slice means no outstanding failures.
+func (v *VHostProxyManager) ACMEFailures() []types.ACMEFailure {
+	v.acmeFailuresMu.Lock()
+	defer v.acmeFailuresMu.Unlock()
+	out := make([]types.ACMEFailure, 0, len(v.acmeFailures))
+	for _, f := range v.acmeFailures {
+		out = append(out, f)
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].Host < out[j].Host })
+	return out
 }
 
 // firstLeafCertificate returns the first X.509 CERTIFICATE parsed from a PEM
@@ -787,13 +832,13 @@ func (p *VHostProxy) AddHostWithACME(cfg RouteConfig) (VHostCloser, *meter.Meter
 			Target: &url.URL{Scheme: "http", Host: cfg.Host + ":80"},
 		})
 		if err != nil {
-			log.Warn().AnErr("AddHostWithACME: AddHost error", err)
+			log.Warn().Err(err).Str("host", cfg.Host).Msg("AddHostWithACME: AddHost error")
 			return VHostCloser{}, acmeHandler, err
 		}
 		err = proxy.Start()
 		if err != nil {
 			closer.Close()
-			log.Warn().AnErr("AddHostWithACME: Start error", err)
+			log.Warn().Err(err).Str("host", cfg.Host).Msg("AddHostWithACME: Start error")
 			return VHostCloser{}, acmeHandler, err
 		}
 
@@ -806,12 +851,12 @@ func (p *VHostProxy) AddHostWithACME(cfg RouteConfig) (VHostCloser, *meter.Meter
 			// we cancel it once issuance returns (success or failure).
 			redirectCtx, cancelRedirect := context.WithCancel(context.Background())
 			defer cancelRedirect()
-			go acme.RegisterRedirectsLoop(redirectCtx, cfg.Host, acme.DefaultPeerPort)
+			go registerRedirectsLoopFn(redirectCtx, cfg.Host, acme.DefaultPeerPort)
 
-			helper := acme.NewACMEHelper(p.manager.acmeManager)
-			cert, err := helper.WaitForCertificate(context.Background(), cfg.Host)
+			log.Debug().Str("host", cfg.Host).Str("proxy", cfg.ProxyName).Msg("VHost: waiting for ACME certificate in background")
+			cert, err := waitForCertificateFn(context.Background(), p.manager.acmeManager, cfg.Host)
 			if err != nil {
-				log.Error().Err(err).Str("host", cfg.Host).Msg("VHost: failed to obtain ACME certificate in time")
+				p.manager.recordACMEFailure(cfg.Host, "obtain certificate", err)
 				p.manager.Cleanup(cfg.ProxyName)
 				return
 			}
@@ -831,10 +876,11 @@ func (p *VHostProxy) AddHostWithACME(cfg RouteConfig) (VHostCloser, *meter.Meter
 			p.device = cfg.Device
 			log.Debug().Str("host", cfg.Host).Msg("VHost: ACME certificate ready; starting TLS listener")
 			if err := p.Start(); err != nil {
-				log.Warn().Str("host", cfg.Host).Msg("Could not start TLS proxy!")
+				p.manager.recordACMEFailure(cfg.Host, "start TLS listener", err)
 				p.manager.Cleanup(cfg.ProxyName)
 				return
 			}
+			p.manager.clearACMEFailure(cfg.Host)
 		}()
 	} else {
 		// Fallback: start Serve() so HTTP challenge endpoint is available.
@@ -893,6 +939,7 @@ func (p *VHostProxy) ServeHTTP(w *meter.MeteredResponseWriter, r *meter.MeteredR
 	// Unmatched host — fall through to the default 404 handler.
 	p.defaultHandler.ServeHTTP(w, r)
 }
+
 // pathSpecificity returns the length of this route's longest path-prefix
 // matcher (0 if it has none, i.e. a catch-all). Used to order overlapping
 // routes on one host by Gateway-API longest-prefix precedence.
@@ -1171,6 +1218,13 @@ func (p *VHostProxy) GetTLSConfig(host string) *tls.Config {
 var (
 	lookupIP             = net.LookupIP
 	probeACMEChallengeFn = probeACMEChallenge
+	// waitForCertificateFn blocks until autocert has a certificate for host.
+	waitForCertificateFn = func(ctx context.Context, m *autocert.Manager, host string) (*tls.Certificate, error) {
+		return acme.NewACMEHelper(m).WaitForCertificate(ctx, host)
+	}
+	// registerRedirectsLoopFn keeps peer ACME challenge redirects registered
+	// until ctx is cancelled.
+	registerRedirectsLoopFn = acme.RegisterRedirectsLoop
 )
 
 // rrPassThresholdPercent is the minimum fraction of public-IPv4 records that

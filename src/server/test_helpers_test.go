@@ -11,7 +11,8 @@ import (
 // testDataplane is a minimal Dataplane implementation for handler tests that do
 // not exercise WireGuard or proxy plumbing.
 type testDataplane struct {
-	counters map[string]ProxyCounters
+	counters     map[string]ProxyCounters
+	acmeFailures []types.ACMEFailure
 }
 
 func newTestDataplane() *testDataplane {
@@ -33,6 +34,9 @@ func (d *testDataplane) SetACMEEmail(email string)             {}
 func (d *testDataplane) SetCertsCachePath(path string)         {}
 func (d *testDataplane) ListCertificates() ([]types.CertInfo, error) {
 	return []types.CertInfo{}, nil
+}
+func (d *testDataplane) ListACMEFailures() []types.ACMEFailure {
+	return d.acmeFailures
 }
 func (d *testDataplane) RegisterACMERedirect(host, peerIP string) error {
 	return nil

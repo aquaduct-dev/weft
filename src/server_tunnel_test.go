@@ -324,7 +324,7 @@ var _ = Describe("ServerTunnel integration (Ginkgo) - separate file", func() {
 
 		// Start new server with usage reporting
 		tunnelSrv = server.NewServer(controlPort, "127.0.0.1", "", "http://mock.usage", "")
-		
+
 		// Inject mock client
 		tunnelSrv.UsageReporter.Client = &http.Client{
 			Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
@@ -339,7 +339,7 @@ var _ = Describe("ServerTunnel integration (Ginkgo) - separate file", func() {
 				}, nil
 			}),
 		}
-		
+
 		go tunnelSrv.ListenAndServeTLS("", "")
 
 		// Login again

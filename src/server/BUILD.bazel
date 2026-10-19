@@ -41,6 +41,7 @@ go_test(
         "dataplane_endpoint_wipe_test.go",
         "handlers_acme_redirect_test.go",
         "handlers_auth_test.go",
+        "handlers_certificates_test.go",
         "handlers_metrics_test.go",
         "handlers_tunnel_test.go",
         "handlers_version_test.go",

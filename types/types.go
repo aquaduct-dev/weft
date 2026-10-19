@@ -81,9 +81,24 @@ type CertInfo struct {
 	NotAfter  time.Time `json:"not_after"`
 }
 
+// ACMEFailure records the most recent failed asynchronous ACME issuance for a
+// host. Issuance runs in the background after the tunnel is set up, so this is
+// how an operator learns that a host never got its certificate. It is cleared
+// once a later issuance for the same host succeeds.
+type ACMEFailure struct {
+	// Host is the hostname whose certificate could not be obtained.
+	Host string `json:"host"`
+	// Error is the error text returned by the ACME helper or TLS listener.
+	Error string `json:"error"`
+	// Time is when the failure was recorded.
+	Time time.Time `json:"time"`
+}
+
 // CertificatesResponse is the body of GET /certificates.
 type CertificatesResponse struct {
 	Certificates []CertInfo `json:"certificates"`
+	// ACMEFailures lists hosts whose latest background ACME issuance failed.
+	ACMEFailures []ACMEFailure `json:"acme_failures,omitempty"`
 }
 
 // TunnelUsage represents the usage statistics for a specific tunnel for reporting.
