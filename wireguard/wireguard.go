@@ -20,9 +20,7 @@ import (
 	"golang.zx2c4.com/wireguard/wgctrl/wgtypes"
 )
 
-// UserspaceDevice represents a WireGuard device running in userspace.
-//
-// This file also exposes a package-level flag `Verbose` that should be
+// Verbose is a package-level flag that should be
 // set by the caller when the --verbose CLI flag is present. When `Verbose` is
 // true the internal wireguard logger is created at LogLevelVerbose; otherwise
 // it is created at LogLevelError to suppress verbose WireGuard logs.
