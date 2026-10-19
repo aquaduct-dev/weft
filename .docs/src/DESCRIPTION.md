@@ -56,10 +56,12 @@ The `proxy` package manages TCP, UDP, and HTTP/HTTPS virtual host proxies, integ
 *   `server/`
 *   `tunnel/`
 *   `version/`
-*   `wireguard/`
-*   `types/`
 *   `BUILD.bazel`
+
+Co-located integration tests (package `server_test`, not production code):
 *   `server_connectivity_test.go`
 *   `server_eviction_repro_test.go`
 *   `server_tunnel_suite_test.go`
 *   `server_tunnel_test.go`
+
+The `wireguard/` and `types/` packages live at the repository root, not under `src/`.
