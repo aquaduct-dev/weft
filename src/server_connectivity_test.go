@@ -27,15 +27,15 @@ import (
 
 var _ = Describe("Server Connectivity Checks", func() {
 	var (
-		cancel       context.CancelFunc
-		backendLn    net.Listener
-		backendPort  int
-		backendSrv   *http.Server
-		tunnelSrv    *server.Server
-		controlPort  int
-		remotePort   int
-		token        string
-		privateKey   wgtypes.Key
+		cancel      context.CancelFunc
+		backendLn   net.Listener
+		backendPort int
+		backendSrv  *http.Server
+		tunnelSrv   *server.Server
+		controlPort int
+		remotePort  int
+		token       string
+		privateKey  wgtypes.Key
 	)
 
 	BeforeEach(func() {
@@ -56,9 +56,9 @@ var _ = Describe("Server Connectivity Checks", func() {
 		var tunnelLn net.Listener
 		tunnelLn, controlPort = openPort()
 		tunnelLn.Close() // we only needed the free port number
-		
+
 		tunnelSrv = server.NewServer(controlPort, "127.0.0.1", "", "", "")
-		
+
 		go tunnelSrv.ListenAndServeTLS("", "")
 
 		// Generate a new private key.
@@ -117,8 +117,9 @@ var _ = Describe("Server Connectivity Checks", func() {
 		backendLn.Close()
 
 		By("waiting for tunnel removal due to connectivity failure")
-		// The server checks every 10s. It needs 3 consecutive failures.
-		// So roughly 30s. We set timeout to 45s.
+		// The test sends no healthchecks, so the server's janitor removes the
+		// tunnel once it has not been seen for 3 sweep intervals (5s each,
+		// see server.NewServer): roughly 15-20s. The 60s timeout leaves headroom.
 		Eventually(func() bool {
 			req := httptest.NewRequest("GET", "http://127.0.0.1/list", nil)
 			req.Header.Set("Authorization", "Bearer "+token)
