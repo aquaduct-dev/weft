@@ -9,8 +9,9 @@ package acme
 import "net"
 
 // SwapLookupIPForTest replaces the package-level lookupIP seam with a closure
-// driven by hostsToIPs (host → list of dotted-decimal addresses). It returns
-// the previous function so the caller can restore it via RestoreLookupIPForTest.
+// driven by hostsToIPs (host → list of dotted-decimal addresses). Entries that
+// net.ParseIP rejects are silently skipped. It returns the previous function so
+// the caller can restore it via RestoreLookupIPForTest.
 //
 // Production code does not call this — it remains on net.LookupIP.
 func SwapLookupIPForTest(hostsToIPs map[string][]string) func(string) ([]net.IP, error) {
@@ -41,8 +42,9 @@ func RestoreLookupIPForTest(prev func(string) ([]net.IP, error)) {
 }
 
 // SwapInterfaceAddrsForTest replaces the interfaceAddrs seam to report the
-// supplied dotted-decimal addresses as if bound to local interfaces. Returns
-// the previous function for restoration via RestoreInterfaceAddrsForTest.
+// supplied dotted-decimal addresses as if bound to local interfaces. Entries
+// that net.ParseIP rejects are silently skipped. Returns the previous function
+// for restoration via RestoreInterfaceAddrsForTest.
 func SwapInterfaceAddrsForTest(localAddrs []string) func() ([]net.Addr, error) {
 	prev := interfaceAddrs
 	addrs := make([]net.Addr, 0, len(localAddrs))
