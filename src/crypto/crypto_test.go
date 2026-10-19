@@ -2,6 +2,9 @@ package crypto_test
 
 import (
 	"bytes"
+	"crypto/x509"
+	"encoding/pem"
+	"net"
 	"testing"
 
 	. "github.com/onsi/ginkgo/v2"
@@ -69,5 +72,29 @@ var _ = Describe("GenerateCert", func() {
 
 		Expect(bytes.Contains(certPEM, []byte("BEGIN CERTIFICATE"))).To(BeTrue())
 		Expect(bytes.Contains(keyPEM, []byte("BEGIN RSA PRIVATE KEY")) || bytes.Contains(keyPEM, []byte("BEGIN PRIVATE KEY"))).To(BeTrue())
+	})
+
+	It("puts commonName, localhost and the additional IPs in the SANs", func() {
+		certPEM, _, err := crypto.GenerateCert("example.test", []string{"192.0.2.7", "2001:db8::7"})
+		Expect(err).ToNot(HaveOccurred())
+		block, _ := pem.Decode(certPEM)
+		Expect(block).ToNot(BeNil())
+		cert, err := x509.ParseCertificate(block.Bytes)
+		Expect(err).ToNot(HaveOccurred())
+		GinkgoWriter.Printf("DNSNames=%v IPAddresses=%v\n", cert.DNSNames, cert.IPAddresses)
+
+		Expect(cert.DNSNames).To(ConsistOf("example.test", "localhost"))
+		ips := []string{}
+		for _, ip := range cert.IPAddresses {
+			ips = append(ips, ip.String())
+		}
+		Expect(ips).To(ContainElements("192.0.2.7", "2001:db8::7", net.IPv4zero.String(), "127.0.0.1"))
+	})
+
+	It("rejects an additional IP that does not parse", func() {
+		certPEM, keyPEM, err := crypto.GenerateCert("example.test", []string{"192.0.2.7", "not-an-ip"})
+		Expect(err).To(MatchError(ContainSubstring(`invalid additional IP "not-an-ip"`)))
+		Expect(certPEM).To(BeNil())
+		Expect(keyPEM).To(BeNil())
 	})
 })

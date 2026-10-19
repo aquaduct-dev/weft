@@ -21,19 +21,21 @@ import (
 	"time"
 )
 
-// encrypt encrypts plaintext using a key-derived AES-GCM key.
-// Returns ciphertext with nonce prepended.
-func Encrypt(key, text string) ([]byte, error) {
-	hasher := sha256.New()
-	hasher.Write([]byte(key))
-	sha := hasher.Sum(nil)
-
-	block, err := aes.NewCipher(sha)
+// newGCM derives an AES-256 key by hashing key with SHA-256 and returns an
+// AES-GCM AEAD for it. Encrypt and Decrypt must derive the key the same way.
+func newGCM(key string) (cipher.AEAD, error) {
+	sha := sha256.Sum256([]byte(key))
+	block, err := aes.NewCipher(sha[:])
 	if err != nil {
 		return nil, err
 	}
+	return cipher.NewGCM(block)
+}
 
-	aesgcm, err := cipher.NewGCM(block)
+// encrypt encrypts plaintext using a key-derived AES-GCM key.
+// Returns ciphertext with nonce prepended.
+func Encrypt(key, text string) ([]byte, error) {
+	aesgcm, err := newGCM(key)
 	if err != nil {
 		return nil, err
 	}
@@ -49,16 +51,7 @@ func Encrypt(key, text string) ([]byte, error) {
 
 // decrypt decrypts ciphertext produced by encrypt (nonce prepended).
 func Decrypt(key string, ciphertext []byte) ([]byte, error) {
-	hasher := sha256.New()
-	hasher.Write([]byte(key))
-	sha := hasher.Sum(nil)
-
-	block, err := aes.NewCipher(sha)
-	if err != nil {
-		return nil, err
-	}
-
-	aesgcm, err := cipher.NewGCM(block)
+	aesgcm, err := newGCM(key)
 	if err != nil {
 		return nil, err
 	}
@@ -79,6 +72,8 @@ func Decrypt(key string, ciphertext []byte) ([]byte, error) {
 
 // GenerateCert creates a new self-signed X.509 certificate and private key.
 // It includes the provided commonName and additional IPs in the SAN extension.
+// An entry in additionalIps that is not a valid IP address is an error, so a
+// caller never gets a certificate silently missing an IP it asked for.
 func GenerateCert(commonName string, additionalIps []string) ([]byte, []byte, error) {
 	priv, err := rsa.GenerateKey(rand.Reader, 2048)
 	if err != nil {
@@ -90,9 +85,11 @@ func GenerateCert(commonName string, additionalIps []string) ([]byte, []byte, er
 	}
 	netIps := []net.IP{}
 	for _, ip := range additionalIps {
-		if addr, err := netip.ParseAddr(ip); err == nil {
-			netIps = append(netIps, net.IP(addr.AsSlice()))
+		addr, err := netip.ParseAddr(ip)
+		if err != nil {
+			return nil, nil, fmt.Errorf("invalid additional IP %q: %w", ip, err)
 		}
+		netIps = append(netIps, net.IP(addr.AsSlice()))
 	}
 	netIps = append(netIps, net.IPv4zero, net.IPv4(127, 0, 0, 1))
 	template := &x509.Certificate{
