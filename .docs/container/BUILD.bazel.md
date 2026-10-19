@@ -1,7 +1,9 @@
-<!-- docdaemon ts:2026-10-09T01:40:05Z hash:7293ef3c36aecf60 model:openrouter/qwen/qwen3.7-flash -->
+<!-- docdaemon ts:2026-10-19T23:25:45Z hash:58977c05d7df5394 model:openrouter/qwen/qwen3.7-flash -->
 ## TL;DR
-This file defines the Bazel build rules for packaging and publishing multi-architecture container images for the Weft application.
+This file defines the Bazel build rules for constructing, indexing, and pushing multi-architecture OCI container images for the `weft` binary.
 
-It orchestrates the creation of OCI-compliant images by first archiving the compiled binaries into tarballs via `pkg_tar`. Two distinct architectures are supported: AMD64 and ARM64 (v8). Each architecture has a corresponding `oci_image` target (`weft_image_amd64` and `weft_image_arm64_v8`) that uses an Alpine Linux base image and includes the specific binary tarball. The binary keeps its Bazel output name, so the AMD64 entrypoint is `/usr/bin/weft` and the ARM64 entrypoint is `/usr/bin/weft_arm64`.
+The build process creates separate `pkg_tar` targets for `amd64` and `arm64` architectures, packaging the compiled binaries into `/usr/bin`. These tars are combined with Alpine Linux base images via `oci_image` to produce platform-specific container images (`weft_image_amd64` and `weft_image_arm64_v8`). An `oci_image_index` aggregates these into a single multi-arch manifest named `weft_image`.
 
-These individual images are combined into a single manifest list, `weft_image`, using `oci_image_index`, enabling support for multiple platforms within one image reference. Finally, the `weft_image_push` (`oci_push`) rule is configured to publish this multi-arch index to the GitHub Container Registry (`ghcr.io/aquaduct-dev/weft`) with the `latest` tag. This setup ensures that consumers can pull the correct binary variant based on their host architecture without manual intervention.
+The `oci_push` rule publishes this index to `ghcr.io/aquaduct-dev/weft` with the `latest` tag.
+
+A `go_test` target (`container_test`) performs offline validation of the built images. It verifies that the OCI layout configurations match expected OS/architecture pairs, confirms the entrypoint is set correctly, and ensures the entrypoint binary exists in the layers as a valid ELF executable for the target machine type. This test was introduced to catch configuration mismatches before pushing to a registry.

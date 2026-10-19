@@ -1,11 +1,7 @@
-<!-- docdaemon ts:2026-10-09T01:40:50Z hash:76750c0632be7f24 model:openrouter/qwen/qwen3.7-flash -->
+<!-- docdaemon ts:2026-10-19T23:25:59Z hash:2209a222998c3312 model:openrouter/qwen/qwen3.7-flash -->
 ## TL;DR
-This file defines the Bazel build rules for the `tunnel` Go library.
+This file defines the Bazel build targets for the `tunnel` Go package, exposing the library and its tests to the rest of the repository.
 
-It configures the `go_library` target named `tunnel`, specifying `tunnel.go` as the source and setting the import path to `github.com/aquaduct-dev/weft/src/tunnel`. The library is marked public, allowing other packages in the repository to depend on it.
+The `go_library` target builds the core tunneling logic from `tunnel.go`. It is marked public, allowing other packages to depend on it. The library relies on internal utilities (`//src/internal/util`), proxy logic (`//src/proxy`), shared types (`//types`), and WireGuard integration (`//wireguard`). It also imports external dependencies for structured logging via `zerolog` and WireGuard configuration management via `wgctrl`.
 
-The build depends on several internal and external packages:
-- **Internal dependencies**: `//src/internal/util`, `//src/proxy`, `//types`, and `//wireguard`. These suggest the tunnel implementation interacts with utility functions, proxy logic, type definitions, and WireGuard-specific functionality.
-- **External dependencies**: `@com_github_rs_zerolog//log` for structured logging and `@com_zx2c4_golang_wireguard_wgctrl//wgtypes` for WireGuard type handling.
-
-This configuration ensures that the `tunnel` package is correctly compiled and linked within the larger Weft project structure, facilitating modular development and dependency management via Bazel.
+The `go_test` target compiles `tunnel_test.go`, embedding the main library to facilitate unit testing. Recent changes to this module focused on refining IP resolution logic, specifically ensuring that server endpoints are correctly resolved rather than relying on stale placeholder values like loopback addresses.

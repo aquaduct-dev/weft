@@ -1,32 +1,15 @@
-<!-- docdaemon ts:2026-10-09T01:40:36Z hash:87075c9e562259cb model:openrouter/qwen/qwen3.7-flash -->
+<!-- docdaemon ts:2026-10-19T23:25:56Z hash:a46a23d7a115a3b3 model:openrouter/qwen/qwen3.7-flash -->
 ## TL;DR
-This file implements the `TunnelDataplane` struct, which manages WireGuard device state and proxies traffic for individual peer tunnels.
+This file implements the core tunneling dataplane, managing WireGuard peer state and HTTP/TCP/UDP proxy lifecycle.
 
-### Purpose
-The `TunnelDataplane` acts as the central coordinator for a single WireGuard interface. It handles the lifecycle of the underlying userspace device, maintains peer configurations incrementally to preserve learned endpoints, and delegates proxy management (TCP/UDP/HTTP) to an embedded `ProxyManager`.
+### `TunnelDataplane`
+The main struct holding the WireGuard device, private key, and a `ProxyManager`. It coordinates between network tunnels and application-level proxies.
 
-### Key Types and Functions
+### Key Functions
 
-#### `TunnelDataplane` Struct
-Holds the WireGuard device instance, private key, listen port, and proxy manager. It ensures thread-safe updates via a mutex.
-
-#### `NewTunnelDataplane`
-Initializes the dataplane by creating a new WireGuard device on the specified port and binding IP. It sets up the proxy manager with cleanup handlers.
-
-#### `UpdateWireGuardConfig`
-Synchronizes the device's peers with the desired set. It performs incremental add/remove operations rather than a full rebuild to prevent wiping learned roaming endpoints for active peers.
-
-#### `StartProxy`
-Creates a network proxy for a specific peer request. It determines the protocol (TCP, UDP, HTTP, HTTPS), generates a random local port, and configures source/destination URLs based on the request modifiers. For HTTPS, it optionally injects custom certificates.
-
-#### `CloseProxy`
-Terminates a named proxy instance managed by the proxy manager.
-
-#### `GetProxyCounters`
-Returns byte transmission and reception statistics for all active proxies.
-
-#### ACME/TLS Management
-- `SetACMEEmail`: Configures the email for Let's Encrypt certificate issuance.
-- `SetCertsCachePath`: Sets the directory for caching TLS certificates.
-- `ListCertificates`: Returns metadata for cached certificates.
-- `RegisterACMERedirect`: Registers a peer IP for ACME challenge redirection for a specific host.
+*   **`NewTunnelDataplane`**: Initializes the WireGuard device and proxy manager. Sets up cleanup hooks for graceful shutdown.
+*   **`UpdateWireGuardConfig`**: Incrementally reconciles WireGuard peers. Instead of replacing all peers (which discards learned roaming endpoints), it adds new peers and removes departed ones to maintain connectivity stability during churn.
+*   **`StartProxy`**: Creates a proxy instance for a specific tunnel request. It determines the protocol (TCP, UDP, HTTP, HTTPS) and configures source/destination URLs. For HTTPS, it optionally injects custom TLS certificates if provided in the request.
+*   **`CloseProxy`**: Terminates a named proxy instance.
+*   **`GetProxyCounters`**: Returns traffic statistics (Tx/Rx bytes) for all active proxies.
+*   **ACME/Certificate Management**: Methods like `SetACMEEmail`, `ListCertificates`, and `RegisterACMERedirect` delegate to the underlying VHost proxy manager to handle TLS certificate issuance, caching, and ACME challenge redirection.

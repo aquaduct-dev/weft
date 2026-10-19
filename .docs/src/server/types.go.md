@@ -1,31 +1,12 @@
-<!-- docdaemon ts:2026-10-09T01:40:49Z hash:85c37a787a8c770c model:openrouter/qwen/qwen3.7-flash -->
+<!-- docdaemon ts:2026-10-19T23:25:59Z hash:e56b5bb12814af28 model:openrouter/qwen/qwen3.7-flash -->
 ## TL;DR
-This file defines the core data structures and interfaces for managing WireGuard tunnel peers, IP allocation, and network dataplane operations.
+This file defines the core data structures and interfaces for managing WireGuard peers, IP allocation, and proxy state in the server.
 
-### Purpose
-`types.go` establishes the contract between the server's control plane and its networking components. It abstracts peer state management and dataplane interactions to ensure thread-safe operation and clear separation of concerns.
+### Peer Management
+The `Peer` struct holds client metadata, including the WireGuard public key, assigned internal IP, and routing details (`ProxiedUpstream`, `DstURL`). The `TunnelStore` interface manages peer lifecycle and IP address pools. It includes atomic operations like `CreatePeer` to prevent IP leaks during concurrent connection requests, ensuring that only one peer is created per tunnel name while safely allocating a unique IP.
 
-### Key Types
+### Networking & Proxying
+The `Dataplane` interface abstracts the underlying networking components. It handles synchronization of WireGuard configurations via `UpdateWireGuardConfig` and manages proxy listeners through `StartProxy` and `CloseProxy`. It also exposes metrics via `GetProxyCounters` and provides access to the underlying device and private key.
 
-#### `Peer`
-Represents a connected tunnel client. It stores:
-- **Identity**: The WireGuard public key (`PublicKey`).
-- **Network**: Assigned internal IP (`IP`) and proxy port (`TunnelProxyPort`).
-- **Routing**: Source (`ProxiedUpstream`) and destination (`DstURL`) URLs for traffic forwarding.
-
-#### `TunnelStore`
-An interface for managing peer lifecycle and IP address pools. Implementations must be thread-safe.
-- **CRUD Operations**: `GetPeer`, `SetPeer`, `DeletePeer`, `GetAllPeers`.
-- **State Tracking**: `GetLastSeen`, `SetLastSeen`, `DeleteLastSeen` for monitoring active tunnels.
-- **IP Management**: `GetFreeIP` and `ReleaseIP` handle dynamic IP assignment from an internal pool.
-- **Atomic Creation**: `CreatePeer` ensures that concurrent connection requests for the same tunnel name do not leak IPs by atomically checking existence, allocating an IP, and storing the peer via a factory function.
-
-#### `Dataplane`
-An interface for interacting with the underlying network infrastructure.
-- **WireGuard Sync**: `UpdateWireGuardConfig` synchronizes device state with current peers.
-- **Proxy Management**: `StartProxy` and `CloseProxy` manage listener lifecycles. `GetProxyCounters` provides traffic statistics.
-- **Device Access**: `GetDevice` and `GetPrivateKey` expose low-level WireGuard components.
-- **ACME Integration**: `RegisterACMERedirect` handles HTTP challenge redirections for certificate validation, requiring prior DNS validation by the caller.
-
-#### `ProxyCounters`
-Holds cumulative byte counts (`Tx`, `Rx`) and a unique `InstanceId` for each active proxy instance.
+### ACME Integration
+Recent updates added support for automated TLS certificate management. `Dataplane` now includes methods to set ACME email and cache paths, list cached certificates, and track issuance failures. The `RegisterACMERedirect` method facilitates peer-to-peer ACME challenge redirects, allowing the server to route validation requests to specific peers based on DNS configuration.

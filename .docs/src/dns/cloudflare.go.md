@@ -1,20 +1,10 @@
-<!-- docdaemon ts:2026-10-09T01:40:18Z hash:6bbae79e028e4d1f model:openrouter/qwen/qwen3.7-flash -->
+<!-- docdaemon ts:2026-10-19T23:25:43Z hash:4eaffa11eb37e5a3 model:openrouter/qwen/qwen3.7-flash -->
 ## TL;DR
-This file provides a function to update Cloudflare DNS records for a specific hostname.
+This file manages Cloudflare DNS record updates for a specific hostname.
 
-## Purpose
-The `UpdateRecord` function manages DNS entries in Cloudflare by replacing existing records with new ones and logging the change via a TXT record. It is designed to ensure that a given hostname points to a specific IP address while maintaining an audit trail.
+The `UpdateRecord` function synchronizes DNS state by removing all existing records for a given hostname and creating new A and TXT records pointing to a target IP. It uses the Cloudflare API token passed as an argument to authenticate requests.
 
-## Key Function
-### `UpdateRecord(token, hostname, targetIP)`
-Updates DNS records for `hostname` to point to `targetIP`.
-
-1. **Authentication**: Initializes the Cloudflare client using the provided API token.
-2. **Zone Resolution**: Identifies the correct zone by picking the longest zone name that `hostname` equals or ends in on a label boundary (via `findZone`), ignoring case and a trailing dot.
-3. **Cleanup**: Deletes all existing DNS records (A, CNAME, etc.) associated with the exact `hostname`.
-4. **Creation**:
-   - Creates a new **A record** pointing to `targetIP` with a TTL of 120 seconds and proxy disabled.
-   - Creates a **TXT record** containing a timestamped message indicating the update.
-
-## Integration
-This module interacts directly with the Cloudflare API v4. It requires a valid Cloudflare API token with zone edit permissions. Errors are wrapped and returned, making it suitable for use in higher-level services that handle error reporting or retries.
+Key behaviors include:
+- **Zone Resolution**: The `findZone` helper identifies the correct Cloudflare zone by matching the hostname against available zones, preferring the longest matching domain suffix (e.g., `bar.com` over `com` for `foo.bar.com`). It handles case-insensitivity and trailing dots correctly.
+- **Cleanup**: Before creating new records, it deletes all pre-existing DNS records associated with the hostname, regardless of type.
+- **Record Creation**: It creates an A record with a short TTL (120s) and proxy disabled, followed by a TXT record containing a timestamped update message.

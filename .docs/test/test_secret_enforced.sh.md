@@ -1,15 +1,14 @@
-<!-- docdaemon ts:2026-10-09T01:40:57Z hash:00dd485c8dc283a9 model:openrouter/qwen/qwen3.7-flash -->
+<!-- docdaemon ts:2026-10-19T23:26:03Z hash:536cc3aef33770b8 model:openrouter/qwen/qwen3.7-flash -->
 ## TL;DR
-This script validates that the Weft server enforces connection secrets by verifying log output and testing tunnel connectivity with correct and incorrect credentials.
+This script validates that the Weft server enforces connection secrets by verifying log output and testing tunnel authentication success and failure paths.
 
 ### Purpose
-The file automates end-to-end testing of the `--connection-secret` feature in the Weft server. It ensures that unauthorized connections are rejected and authorized connections succeed, while confirming that secret handling is visible in server logs for debugging or auditing purposes.
+The test ensures that the `--connection-secret` flag correctly restricts access to the Weft server. It generates a random secret, starts the server with it, and then verifies two scenarios:
+1.  **Logging:** The server logs the presence of the connection secret.
+2.  **Authentication:** A tunnel using an incorrect secret fails immediately with a "login failed" error, while a tunnel using the correct secret establishes successfully.
 
-### Key Functions
-- **Server Initialization**: Starts the Weft server in the background using a randomly generated 32-character alphanumeric connection secret.
-- **Log Verification**: Checks `server.log` to ensure the string "Connection Secret" and the specific secret value are present, validating logging behavior.
-- **Unauthorized Access Test**: Attempts to establish a tunnel using a hardcoded wrong secret (`wrong-secret`). The test expects this command to fail immediately.
-- **Authorized Access Test**: Establishes a tunnel using the valid generated secret. The process runs in the background, and its survival after a short sleep confirms successful authentication and tunnel setup.
-
-### Integration
-This test relies on helper functions from `lib.sh`, such as `find_free_port` for dynamic port allocation and `cleanup` for resource teardown via a trap. It uses `$WEFT_BIN` to invoke the binary under test and writes logs to `$LOGDIR`.
+### Key Behaviors
+*   **Setup:** Generates a 32-character alphanumeric secret and finds a free port. Starts the server in the background, logging to `$LOGDIR/server.log`.
+*   **Log Verification:** Checks `server.log` for the string "Connection Secret" and the specific generated secret value. This check was added to ensure visibility into secret handling during startup.
+*   **Negative Test (Wrong Secret):** Runs the tunnel command with a hardcoded wrong secret. It expects a non-zero exit code (specifically checking against timeout hang `124`) and a "login failed" message in the logs. Previous versions failed due to unbound variable errors in cleanup traps; this version uses `timeout` to prevent hangs and tracks PIDs for proper cleanup.
+*   **Positive Test (Correct Secret):** Runs the tunnel command with the valid secret. It verifies the process remains alive after a short sleep, indicating successful authentication. The PID is tracked in the `pids` array for cleanup on exit.

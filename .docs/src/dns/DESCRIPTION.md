@@ -1,24 +1,26 @@
-<!-- docdaemon ts:2026-10-09T01:41:53Z hash:7d4f47c4fa9d1067 model:openrouter/qwen/qwen3.7-flash -->
+<!-- docdaemon ts:2026-10-19T23:27:10Z hash:75bae7ca00637835 model:openrouter/qwen/qwen3.7-flash -->
 ## TL;DR
-The `dns` directory provides a Go library for managing Cloudflare DNS records with structured logging.
+This directory implements Cloudflare DNS record synchronization with robust zone resolution logic.
 
 ## Overview
-This module serves as the DNS abstraction layer for the Weft project, isolating Cloudflare-specific logic to allow consistent interaction with DNS services. It ensures that hostnames point to specific IP addresses while maintaining an audit trail through TXT records. The library leverages the Cloudflare Go SDK and Zerolog for reliable API communication and structured logging.
+The `dns` package provides a library for managing DNS records within the Cloudflare ecosystem. It handles the lifecycle of DNS entries by removing existing records and creating new A and TXT records for a specified hostname. The module ensures precise zone selection to prevent accidental modifications to unrelated domains.
 
 ## Deep Dive
-### Cloudflare Integration
-The core functionality resides in `cloudflare.go`, which implements the `UpdateRecord` function. This function authenticates with Cloudflare using an API token and resolves the correct zone by finding the longest zone name that the hostname equals or ends in (on a label boundary). It then performs a cleanup phase, deleting every existing DNS record of any type (A, AAAA, CNAME, TXT, MX, ...) whose name is exactly the target hostname, to prevent conflicts. Finally, it creates a new A record pointing to the specified IP address with a 120-second TTL and proxy disabled. To maintain an audit trail, it also creates a TXT record containing a timestamped message indicating the update action.
+### Zone Resolution
+The core challenge in this module is identifying the correct Cloudflare zone for a given hostname. Previous implementations used simple suffix matching, which incorrectly associated subdomains like `notexample.com` with the `example.com` zone. The current `findZone` function enforces strict label-boundary matching. It requires an exact match or a suffix prefixed with a dot (e.g., `.example.com`), ensuring case-insensitivity and handling trailing dots correctly. This prevents cross-zone pollution during updates.
 
-### Error Handling and Logging
-Errors from the Cloudflare API are wrapped and returned, allowing higher-level services to handle retries or reporting appropriately. Structured logging is handled via Zerolog, ensuring that DNS operations are traceable within the application's logs.
+### Record Synchronization
+The primary operation, `UpdateRecord`, synchronizes DNS state for a specific hostname. It first cleans up all pre-existing records associated with that hostname, regardless of type, to ensure a clean slate. It then creates a new A record pointing to a target IP with a short TTL of 120 seconds and proxy disabled. Finally, it adds a TXT record containing a timestamped update message for auditability. This approach guarantees idempotency and consistency in DNS state.
 
 ## Key Interfaces
-- `UpdateRecord(token, hostname, targetIP)`: Updates DNS records for a hostname to point to a target IP.
+- `UpdateRecord(hostname, targetIP string, token string) error`: Synchronizes DNS records for a hostname using the provided API token.
+- `findZone(hostname string, zones []cloudflare.Zone) string`: Resolves the correct zone ID based on strict label-boundary matching.
 
 ## Dependencies
-- Cloudflare Go SDK: Provides the underlying client for interacting with Cloudflare's DNS API.
-- Zerolog: Used for structured logging within the DNS module.
+- `github.com/cloudflare/cloudflare-go`: Official Cloudflare Go SDK for API interactions.
+- `github.com/rs/zerolog`: Structured logging library.
 
 ## Subcomponents
-- `BUILD.bazel`: Defines the Bazel build rules for the `dns` Go library.
-- `cloudflare.go`: Implements the logic for updating Cloudflare DNS records.
+- `cloudflare.go`: Core implementation of DNS record updates and zone resolution.
+- `cloudflare_test.go`: Unit tests for zone resolution logic.
+- `BUILD.bazel`: Bazel build configuration for the Go library and tests.

@@ -1,34 +1,37 @@
-<!-- docdaemon ts:2026-10-09T01:42:03Z hash:0b86cd881dc0f37c model:openrouter/qwen/qwen3.7-flash -->
+<!-- docdaemon ts:2026-10-19T23:27:09Z hash:784c67270870838e model:openrouter/qwen/qwen3.7-flash -->
 ## TL;DR
-The `auth` package implements a zero-trust challenge-response authentication flow using AES-GCM encryption and JWT management for secure tunnel connections.
+The `auth` package implements zero-trust authentication, handling challenge-response login, JWT lifecycle management, and AES-GCM encryption for secure tunnel connections.
 
 ## Overview
-This directory handles the critical security handshake required to establish trusted tunnels between clients and servers. It extracts complex login logic from the main command entry point to ensure modularity and testability. The system relies on TLS fingerprint pinning and shared connection secrets to verify identity without traditional password storage. By automating JWT renewal and certificate verification, it maintains persistent, secure sessions with minimal developer overhead.
+This module orchestrates the initial handshake between the client and server, ensuring that only authorized clients can establish encrypted tunnels. It manages the exchange of cryptographic challenges, validates server certificates to prevent man-in-the-middle attacks, and maintains valid JSON Web Tokens (JWTs) for subsequent API requests. By separating cryptographic logic from CLI orchestration, it provides a reusable library for secure connectivity.
 
 ## Deep Dive
-### Authentication Flow
-The core logic resides in `GetToken` and `Login`. `GetToken` performs the cryptographic exchange: it decrypts a server challenge using a SHA-256 derived key from the `connectionSecret`, encrypts the response, and retrieves a signed JWT alongside the server's certificate. `Login` orchestrates this by verifying the server certificate against a custom pool (optionally pinned via `PinnedFingerprint`) and returning an `http.Client` configured for automatic token refresh.
+### Challenge-Response Login
+Authentication begins with `GetToken`, which performs a challenge-response exchange against `/login`. The client decrypts a server-provided challenge using a shared connection secret, encrypts the response, and retrieves a signed JWT along with an encrypted server certificate. This ensures that only parties possessing the secret can complete the handshake.
 
-### Cryptography and Security
-Security is enforced through AES-GCM encryption for all challenge-response payloads. Nonces are randomly generated and prepended to ciphertexts to prevent replay attacks. The `fingerprintVerifier` acts as a TLS hook, validating the server's leaf certificate hash against a pre-shared value (`PinnedFingerprint`). If no pin is set, the system falls back to standard verification or insecure modes depending on configuration, though pinning is recommended for production.
+### Certificate Verification
+To mitigate MITM risks during the initial TLS handshake, the package supports optional out-of-band TLS pinning via `PinnedFingerprint`. If set, the client verifies the server's leaf certificate SHA-256 hash before proceeding. Additionally, the server's certificate is returned encrypted in the login response, allowing the client to verify its authenticity after decryption using the connection secret.
 
-### Token Management
-The `WithJWT` middleware wraps `http.RoundTripper` implementations to inject Bearer tokens into outgoing requests. It proactively detects tokens expiring within one minute and triggers a refresh callback before the request fails. This ensures seamless session continuity without manual intervention. Error messages are annotated with client and server version details via `annotateWithVersions` to simplify debugging version mismatches during the handshake.
+### JWT Transport Management
+The `WithJWT` function wraps `http.RoundTripper` to inject Bearer tokens into outgoing requests. It includes automatic refresh logic: if a token has less than one minute remaining, it triggers a re-authentication. Robust error handling ensures that malformed tokens or parse failures force a refresh rather than crashing the process, maintaining stability in the hot path.
+
+### Cryptographic Helpers
+Utility functions `Encrypt` and `Decrypt` use AES-GCM with keys derived from the connection secret via SHA-256. These secure the challenge exchange and certificate payload, ensuring confidentiality and integrity of sensitive data during transmission.
 
 ## Key Interfaces
-- `GetToken`: Executes the challenge-response login sequence and returns a JWT and server certificate.
-- `Login`: Orchestrates full setup, verifies certificates, and returns an authenticated `http.Client`.
-- `WithJWT`: Middleware that injects Bearer tokens and handles automatic renewal for expiring tokens.
-- `Encrypt` / `Decrypt`: Helper functions performing AES-GCM encryption/decryption using SHA-256 derived keys.
-- `PinnedFingerprint`: Global variable storing the expected SHA-256 hash of the server's leaf certificate.
+- `GetToken`: Executes the challenge-response login and returns a JWT and encrypted certificate.
+- `Login`: Orchestrates full setup, verifying certificates and returning an authenticated `http.Client`.
+- `WithJWT`: An `http.RoundTripper` wrapper for automatic Bearer token injection and renewal.
+- `PinnedFingerprint`: Global variable for optional TLS pinning during initial handshake.
+- `Encrypt` / `Decrypt`: Helper functions for AES-GCM encryption/decryption using derived keys.
 
 ## Dependencies
-- `//src/version`: Provides versioning information for error annotation and compatibility checks.
-- `@com_github_golang_jwt_jwt_v4//:jwt`: Handles JWT parsing, validation, and signing.
+- `//src/version`: Provides client/server version information for debugging mismatches.
+- `@com_github_golang_jwt_jwt_v4//:jwt`: Handles JWT parsing, validation, and claim extraction.
 - `@com_github_rs_zerolog//log`: Provides structured logging for authentication events and errors.
 
 ## Subcomponents
-- `BUILD.bazel`: Defines build rules for the Go library and its tests.
-- `auth.go`: Core implementation of authentication, cryptography, and HTTP middleware.
-- `auth_test.go`: Unit tests for JWT renewal logic and version-aware error handling.
-- `fingerprint_test.go`: Unit tests for TLS certificate pinning and verification.
+- `auth.go`: Core authentication logic, crypto helpers, and HTTP transport wrapper.
+- `auth_test.go`: Unit tests for JWT expiry handling, version annotation, and transport behavior.
+- `fingerprint_test.go`: Tests for TLS fingerprint pinning and certificate verification.
+- `BUILD.bazel`: Bazel build rules defining the library and test targets.

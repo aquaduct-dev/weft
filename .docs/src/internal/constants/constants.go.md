@@ -1,19 +1,21 @@
-<!-- docdaemon ts:2026-10-09T01:40:19Z hash:002ab193c8bdfb75 model:openrouter/qwen/qwen3.7-flash -->
+<!-- docdaemon ts:2026-10-19T23:25:49Z hash:745b75a90cb9b8ad model:openrouter/qwen/qwen3.7-flash -->
 ## TL;DR
-This file defines static configuration constants and pre-parsed network addresses for the WireGuard subsystem.
+This file defines the default network configuration constants for the WireGuard interface.
 
-## Purpose
-The `constants` package centralizes default values used across the application to ensure consistency in network configuration. It provides both string representations for human-readable defaults and parsed `netip` types for efficient programmatic use, avoiding repeated parsing overhead at runtime.
+### Purpose
+The `constants` package provides immutable defaults for the internal WireGuard setup. It ensures that the subnet and server IP address are consistent across the application by exposing both human-readable string representations and pre-parsed `netip` types.
 
-## Key Definitions
+### Key Definitions
 
-### Constants
-- **`DefaultSubnetString`**: The default CIDR notation for the WireGuard peer subnet (`10.1.0.0/16`).
-- **`DefaultServerIPString`**: The default IP address assigned to the server interface within the subnet.
+**String Constants**
+*   `DefaultSubnetString`: The CIDR notation for the default WireGuard subnet (`10.1.0.0/16`).
+*   `DefaultServerIPString`: The specific IP address assigned to the server within that subnet (`10.1.0.1`).
 
-### Variables
-- **`DefaultSubnet`**: A pre-parsed `netip.Prefix` derived from `DefaultSubnetString`. This variable is initialized at package load time using `netip.MustParsePrefix`, ensuring that any parsing errors occur during startup rather than at runtime.
-- **`DefaultServerIP`**: A pre-parsed `netip.Addr` derived from `DefaultServerIPString`. Similarly initialized via `netip.MustParseAddr` for immediate availability.
+**Parsed Variables**
+*   `DefaultSubnet`: A `netip.Prefix` parsed from `DefaultSubnetString`. This is used for programmatic subnet checks.
+*   `DefaultServerIP`: A `netip.Addr` parsed from `DefaultServerIPString`. This is used for direct IP comparisons.
 
-## Usage Notes
-These variables are intended for read-only access by other packages configuring the WireGuard tunnel. Because they rely on `MustParse` functions, the package initialization will panic if the hardcoded strings are malformed, making them suitable for immutable configuration defaults.
+### Implementation Details
+The parsed variables (`DefaultSubnet`, `DefaultServerIP`) are initialized at package load time using `netip.MustParse...`. This guarantees that any invalid configuration in the string constants will cause an immediate panic during startup, rather than failing silently or later in the execution flow.
+
+Historically, this package also exposed a redacted private key constant for logging safety. That constant was removed because it was no longer used after the `sanitizeConfig` function was eliminated. Current tests verify that `DefaultServerIP` correctly resides within `DefaultSubnet`.

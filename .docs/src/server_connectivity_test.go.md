@@ -1,5 +1,11 @@
-<!-- docdaemon ts:2026-10-09T01:40:46Z hash:cd50a46e068b0ef1 model:openrouter/qwen/qwen3.7-flash -->
+<!-- docdaemon ts:2026-10-19T23:25:57Z hash:c41265832fe1d6d7 model:openrouter/qwen/qwen3.7-flash -->
 ## TL;DR
-This file contains Ginkgo integration tests verifying that the server automatically removes tunnels when their backend endpoints become unreachable.
+This file tests the server’s automatic tunnel eviction when a backend becomes unreachable.
 
-It sets up a mock backend HTTP server and a tunnel server instance, authenticates to obtain a token, and establishes a WireGuard tunnel. The test suite validates the lifecycle of the tunnel by confirming its presence in the server's list immediately after connection. It then simulates a backend failure by closing the listener and server, waiting (up to 60 seconds) for the server's janitor to evict it, and finally asserting that the tunnel is removed from the active list. Because the test sends no healthchecks, the janitor (5-second sweeps, stale after 3 intervals) removes the tunnel roughly 15-20 seconds after it was last seen.
+It sets up an isolated environment with a mock HTTP backend and a test server instance to verify connectivity health checks. The `BeforeEach` block initializes a free port for the backend, generates a WireGuard keypair, and authenticates to obtain a valid JWT token.
+
+The primary test case, "removes tunnel when backend is unreachable", validates the janitor’s cleanup logic:
+1. It establishes a tunnel by sending a connect request and starting the client-side device.
+2. It confirms the tunnel appears in the server’s list via `ListHandler`.
+3. It stops the backend listener to simulate failure.
+4. It waits for the tunnel to disappear from the list, accounting for the janitor’s 5-second sweep interval and the three-interval eviction threshold (~15-20s).

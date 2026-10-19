@@ -1,5 +1,10 @@
-<!-- docdaemon ts:2026-10-09T01:40:48Z hash:7bfe1d32fb184619 model:openrouter/qwen/qwen3.7-flash -->
+<!-- docdaemon ts:2026-10-19T23:25:58Z hash:b09354be36b0fbd3 model:openrouter/qwen/qwen3.7-flash -->
 ## TL;DR
-This file contains Ginkgo integration tests that validate HTTP, HTTPS, and TCP tunneling capabilities of the server.
+This file contains Ginkgo integration tests that validate the server’s ability to tunnel HTTP, HTTPS, and TCP traffic through a WireGuard interface.
 
-The test suite spins up an in-process `server.Server` alongside a dummy backend to verify end-to-end connectivity. It uses `openPort` to allocate ephemeral ports for isolation and `auth.GetToken` with `Eventually` to handle startup race conditions. Key scenarios include forwarding HTTP/HTTPS traffic through WireGuard tunnels and verifying usage reporting via a mock HTTP client. The tests also ensure DNS updates trigger correctly when Cloudflare credentials are configured and that domain resolution functions as expected.
+It spins up an in-process `server.Server` alongside a dummy backend, authenticates using generated WireGuard keys, and verifies end-to-end connectivity. Key behaviors tested include:
+
+*   **Protocol Tunneling**: Validates `http>http`, `http>https`, and `tcp>tcp` forwarding via the `tunnel.Tunnel` function.
+*   **Security Enforcement**: Confirms that the `/connect` endpoint binds the tunnel name to the JWT subject (F-3), preventing cross-tunnel authorization.
+*   **Feature Verification**: Checks usage reporting to a mock endpoint and DNS updates when Cloudflare tokens are configured.
+*   **Robustness**: Uses `Eventually` assertions to handle race conditions during server startup and connection establishment.

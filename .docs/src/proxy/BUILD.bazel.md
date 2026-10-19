@@ -1,7 +1,7 @@
-<!-- docdaemon ts:2026-10-09T01:40:20Z hash:f5f627b0e560c46f model:openrouter/qwen/qwen3.7-flash -->
+<!-- docdaemon ts:2026-10-19T23:25:50Z hash:24e4009c4d299bf1 model:openrouter/qwen/qwen3.7-flash -->
 ## TL;DR
-This Bazel build file defines the Go library and test targets for the `proxy` package.
+This file defines the Bazel build targets for the `proxy` Go package, including its library sources and associated test suite.
 
-The `go_library` target compiles `proxy.go` and `types.go` into a library named `proxy`. It exposes the package publicly, allowing other modules to depend on it via its import path `github.com/aquaduct-dev/weft/src/proxy`. The library relies on internal constants and utilities, sub-packages for virtual host handling and metering, WireGuard integration, and external dependencies for logging (`zerolog`) and TCP/IP adapter functionality (`gonet`).
+The `go_library` target builds the core proxy logic from `proxy.go` and `types.go`. It exposes the package publicly and depends on internal constants, utilities, virtual host management (`vhost`, `vhost/meter`), WireGuard integration, and logging via Zerolog. The gVisor adapter is included to support network stack operations.
 
-The `go_test` target builds the test suite using Ginkgo and Gomega. It embeds the main library code and depends on the testing frameworks to execute `proxy_suite_test.go` and `proxy_test.go`.
+The `go_test` target runs tests using Ginkgo and Gomega. It embeds the main library and adds dependencies for testing the WireGuard netstack implementation. Recent changes addressed a panic in `WGAwareUDPConn.ReadFromUDP` when reading from a closed connection, ensuring proper error handling instead of crashing during session termination.

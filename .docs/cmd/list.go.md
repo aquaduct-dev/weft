@@ -1,17 +1,7 @@
-<!-- docdaemon ts:2026-10-09T01:40:01Z hash:ffb74ac0707809b2 model:openrouter/qwen/qwen3.7-flash -->
+<!-- docdaemon ts:2026-10-19T23:25:44Z hash:75304bf5eecdced2 model:openrouter/qwen/qwen3.7-flash -->
 ## TL;DR
-This file implements the `weft list` CLI command to retrieve and display active tunnels from a Weft server.
+This file implements the `weft list` CLI command to retrieve and display active tunnels from a server.
 
-### Purpose
-The `listCmd` Cobra command authenticates with a specified server, retrieves tunnel statistics via the `/list` endpoint, and formats the output as a table. It handles connection setup, error reporting, and optional human-readable byte formatting.
+The `listCmd` Cobra command parses an optional server URL, defaulting port 9092 if omitted. It extracts credentials from the URL's userinfo component to authenticate via `auth.Login`, exchanging them for a JWT. The command then POSTs to the server’s `/list` endpoint. If the server returns a non-OK status, the response body is printed to stderr before exiting.
 
-### Key Components
-- **`listCmd`**: The primary Cobra command definition. It parses the server URL, extracts credentials from the userinfo component, and performs an HTTP POST to fetch JSON data.
-- **`formatBytes`**: Helper function that converts byte counts into human-readable strings (e.g., "1.2 KiB").
-- **`init`**: Registers the `--human-readable` (`-l`) flag and adds the command to the root CLI.
-
-### Workflow
-1. **Authentication**: Uses `auth.Login` with the server host and user-provided secret to obtain a JWT client.
-2. **Request**: Sends a POST request to `<server>/list`.
-3. **Processing**: Parses the JSON response into a map of tunnel info, sorts tunnels by ID in reverse order, and prints them using `tabwriter`.
-4. **Error Handling**: Logs fatal errors for invalid URLs, login failures, or non-OK HTTP status codes, printing the error body to stderr.
+On success, the JSON response is unmarshaled into a map of tunnel information. Results are sorted by tunnel ID in reverse alphabetical order and displayed in a tabular format using `tabwriter`. A `--human-readable` (shorthand `-l`) flag allows byte counts to be formatted as KiB/MiB/GiB instead of raw integers.

@@ -1,21 +1,7 @@
-<!-- docdaemon ts:2026-10-09T01:40:11Z hash:5206e9b2fa910909 model:openrouter/qwen/qwen3.7-flash -->
+<!-- docdaemon ts:2026-10-19T23:26:04Z hash:8fc8193a75526510 model:openrouter/qwen/qwen3.7-flash -->
 ## TL;DR
-This file defines the Bazel build targets for the ACME protocol handling and testing logic within the `src/acme` package.
+This file defines the Bazel build targets for the ACME package, which handles certificate acquisition and peer-to-peer challenge redirection.
 
-### Purpose
-The `BUILD.bazel` file configures the Go build rules for the `acme` module, which manages ACME (Automatic Certificate Management Environment) operations, likely involving certificate automation via `autocert`. It separates production code from test suites to ensure clean dependency management and efficient CI/CD pipelines.
+The `go_library` target compiles `acme.go`, `acme_redirect.go`, and `testing_helpers.go`. It exposes the package publicly and depends on `zerolog` for structured logging and `autocert` for TLS certificate management. Recent changes introduced event logging for certificate lifecycle auditing (cache hits, issuance start/success/failure) and logic for redirecting challenges to peers based on leader election and peer availability.
 
-### Build Targets
-
-#### `go_library` (`:acme`)
-Defines the main library target for the package.
-- **Sources**: Compiles `acme.go`, `acme_redirect.go`, and `testing_helpers.go`. Note that `testing_helpers.go` is included in the main library, suggesting it contains utilities used by both production code and tests.
-- **Dependencies**: Relies on `zerolog` for logging and `golang.org/x/crypto/acme/autocert` for ACME client functionality.
-- **Visibility**: Marked as public, allowing other packages in the repository to import this library.
-
-#### `go_test` (`:acme_test`)
-Defines the test suite for the package.
-- **Sources**: Runs tests defined in `acme_redirect_test.go` and `acme_test.go`.
-- **Embedding**: Embeds the `:acme` library target, granting tests access to internal package symbols.
-- **Test Framework**: Depends on Ginkgo v2 and Gomega, indicating a BDD-style testing approach.
-- **Timeout**: Configured with a "short" timeout, implying these tests are expected to run quickly without external network latency or heavy computation.
+The `go_test` target runs tests using Ginkgo and Gomega, embedding the library under test. It verifies behaviors such as skipping dead higher peers during registration and declaring leadership when no higher peer responds. The test suite uses specific network seams (e.g., 127.0.0.3 for live peers, 127.0.0.4 for dead ones) to validate these fallback mechanisms.

@@ -1,7 +1,9 @@
-<!-- docdaemon ts:2026-10-09T01:40:33Z hash:ed8bc5d23c05a81c model:openrouter/qwen/qwen3.7-flash -->
+<!-- docdaemon ts:2026-10-19T23:25:56Z hash:06a43d80038928e6 model:openrouter/qwen/qwen3.7-flash -->
 ## TL;DR
-This file defines the Bazel build rules for the `server` Go package and its associated unit tests.
+This file defines the Bazel build targets for the Weft server package, including its library sources and associated test suite.
 
-The `go_library` target compiles the core server logic, including HTTP handlers for ACME, authentication, certificates, health checks, metrics, tunnels, and versioning. It also includes supporting modules like the dataplane, janitor, middleware, store, types, and usage reporter. The library depends on internal packages (`acme`, `crypto`, `dns`, `proxy`, `version`) and external libraries for JWT handling, logging, and WireGuard management.
+The `go_library` target compiles the core server logic located in `src/server`. It exposes the package as `github.com/aquaduct-dev/weft/src/server` with public visibility, allowing other modules to depend on it. The library integrates several internal subsystems: ACME certificate management (`//src/acme`), cryptographic utilities (`//src/crypto`), DNS resolution (`//src/dns`), proxying logic (`//src/proxy`), and WireGuard tunnel handling (`//wireguard`). It also relies on external dependencies for JWT authentication (`jwt`) and structured logging (`zerolog`).
 
-The `go_test` target runs the corresponding test suite by embedding the main library. Tests cover endpoint wiping, handler behaviors, janitor logic, store operations, and usage reporting. Test dependencies mirror the library's core requirements but exclude some broader network-related deps like `acme` and `dns` unless explicitly needed for specific test cases.
+Key source files include `server.go` for the main entry point, `handlers_*.go` for HTTP endpoint implementations (auth, certificates, metrics, tunnels), and `store.go` for state management. Recent security hardening efforts are reflected in the dependency graph and code structure, specifically addressing constant-time comparisons for secrets and escaping Prometheus label values to prevent injection attacks. Additionally, the integration of ACME failure reporting ensures that background issuance errors are logged and stored rather than silently ignored.
+
+The `go_test` target builds the test suite by embedding the `:server` library. It includes tests for all handler endpoints, the dataplane wipe logic, and the janitor process. The test dependencies mirror the production dependencies but exclude the full proxy stack, focusing instead on crypto, versioning, and wireguard types to ensure isolated unit testing.

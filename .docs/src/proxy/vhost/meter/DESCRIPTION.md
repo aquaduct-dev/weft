@@ -1,36 +1,36 @@
-<!-- docdaemon ts:2026-10-09T01:41:12Z hash:168acc73d89c4bd7 model:openrouter/qwen/qwen3.7-flash -->
+<!-- docdaemon ts:2026-10-19T23:26:24Z hash:88c9b2dce8c9f75f model:openrouter/qwen/qwen3.7-flash -->
 ## TL;DR
-This directory implements HTTP request and response metering for HTTP/1.1, HTTP/2, and HTTP/3 protocols.
+This package provides HTTP server components that accurately track byte traffic for both completed and in-flight requests across HTTP/1.1, HTTP/2, and HTTP/3 protocols.
 
 ## Overview
-The `meter` package provides infrastructure to measure network traffic volume (bytes transmitted/received) for HTTP servers. It supports standard HTTP/1.1 and HTTP/2 over TLS, ensuring accurate counting even when connections are wrapped by TLS layers or multiplexed. For HTTP/3, it adapts to the lack of per-request connection hooks by instrumenting at the application layer.
+The `meter` module implements a transparent byte-metering layer for the proxy vhost system. It wraps standard HTTP servers to intercept connections and request/response streams, ensuring accurate usage reporting even during long-running transfers or streaming scenarios. By supporting multiple protocol versions, it allows the proxy to enforce consistent billing and monitoring policies regardless of client negotiation capabilities.
 
 ## Deep Dive
 ### Connection-Level Metering (HTTP/1.1 & HTTP/2)
-For HTTP/1.1 and HTTP/2, metering relies on wrapping `net.Conn`. The `countingConn` type increments atomic counters on every `Read` and `Write` operation. `MeteredServer` injects this logic via `ConnContext` and listener wrapping. `ServeTLSCounted` places the counter beneath the TLS layer, allowing HTTP/2 negotiation while measuring on-wire bytes accurately.
+For TCP-based protocols, the package uses a `countingListener` to wrap raw `net.Conn` objects with `countingConn`. This wrapper atomically tallies bytes read (`bytesRx`) and written (`bytesTx`). To support HTTP/2, `ServeTLSCounted` places the counter beneath TLS termination, allowing `net/http` to correctly negotiate ALPN protocols while still tracking encrypted traffic volume. The `asCountingConn` helper safely extracts counters from connection chains, using a bounded loop to prevent infinite recursion on cyclic wrappers.
 
 ### Application-Layer Metering (HTTP/3)
-HTTP/3 over QUIC lacks a `net.Conn` per request, preventing standard connection-level metering. This module wraps handlers to count Request (Rx) and Response (Tx) bytes at the application layer. `countingResponseWriter` intercepts status codes, headers, and body writes, aggregating totals into atomic counters upon completion.
+HTTP/3 over QUIC lacks per-request `net.Conn` hooks, so metering occurs at the application layer. `MeteredHTTPHandler.ServeHTTPMetered` instruments requests by wrapping the request body in a `countingReadCloser` and the response writer in a `countingResponseWriter`. This approach approximates header sizes and tracks body writes, aggregating totals into atomic counters upon completion. It supports streaming via `http.Flusher` delegation without altering byte counts.
 
-### Metrics Aggregation
-Global metrics (`BytesTx`, `BytesRx`, `BytesTotal`) are tracked using a `sync.Map` for active connections. Per-request wrappers like `MeteredRequest` and `MeteredResponseWriter` expose total bytes read/written via `TotalSize()` and `BytesWritten()`, enabling granular monitoring alongside aggregate statistics.
+### Active Request Tracking
+To fix under-reporting for long-lived requests, the handler maintains an active connection map (`sync.Map`). Metrics now sum bytes from both completed requests and in-flight transfers, ensuring real-time accuracy.
 
 ## Key Interfaces
-- `NewMeteredServer`: Creates an `http.Server` configured to extract connection counters from context.
-- `MeteredHTTPHandler`: Adapter that tracks per-request metrics and aggregates them into global counters.
-- `countingConn`: A `net.Conn` wrapper that increments atomic counters on I/O operations.
-- `countingResponseWriter`: Implements `http.ResponseWriter` to intercept and track header/body writes.
-- `asCountingConn`: Safely unwraps nested connections (e.g., through `*tls.Conn`) to retrieve the underlying `*countingConn`.
+- `MeteredServer`: Wraps `http.Server` to provide TLS counting and context injection.
+- `MeteredHTTPHandler`: Aggregates traffic metrics and exposes `BytesRx()`/`BytesTx()`.
+- `countingConn`: Wraps `net.Conn` to track raw byte I/O.
+- `countingResponseWriter`: Implements `http.ResponseWriter` to capture header and body sizes.
+- `NewMeteredServer`: Constructor that injects connection context functions.
 
 ## Dependencies
-- `github.com/aquaduct-dev/weft/src/proxy/vhost/meter` (internal import path)
-- `ginkgo_v2`, `gomega` (testing frameworks)
-- `quic-go` (HTTP/3 support)
+- `github.com/quic-go/quic-go`: For HTTP/3 QUIC support.
+- `ginkgo_v2`, `gomega`: Testing framework.
+- Standard library: `net/http`, `crypto/tls`, `sync`, `io`.
 
 ## Subcomponents
-- `BUILD.bazel`: Bazel build configuration for library and test targets.
 - `meter.go`: Core implementation for HTTP/1.1 and HTTP/2 metering.
-- `meter_http2_test.go`: Integration tests for HTTP/2 negotiation and ACME support.
-- `meter_http3.go`: Application-layer metering for HTTP/3/QUIC.
-- `meter_http3_test.go`: Unit and integration tests for HTTP/3 metering.
-- `meter_test.go`: Ginkgo-based integration tests for general metering behavior.
+- `meter_http3.go`: Application-layer metering for HTTP/3.
+- `BUILD.bazel`: Bazel build configuration for library and tests.
+- `meter_test.go`: Integration tests for server and handler behavior.
+- `meter_http2_test.go`: End-to-end tests for HTTP/2 negotiation and ACME support.
+- `meter_http3_test.go`: Unit and round-trip tests for HTTP/3 metering.

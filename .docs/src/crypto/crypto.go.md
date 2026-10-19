@@ -1,22 +1,9 @@
-<!-- docdaemon ts:2026-10-09T01:40:16Z hash:1d46ab07df92c954 model:openrouter/qwen/qwen3.7-flash -->
+<!-- docdaemon ts:2026-10-19T23:25:45Z hash:6da684a2aa31c14e model:openrouter/qwen/qwen3.7-flash -->
 ## TL;DR
-This file provides cryptographic utilities for encrypting login challenge data and generating self-signed certificates.
+This file provides cryptographic utilities for the login challenge exchange, including symmetric encryption and self-signed certificate generation.
 
-### Purpose
-The `crypto` package supports the server's login challenge exchange by handling symmetric encryption and certificate generation. It ensures secure communication through AES-GCM and facilitates local testing or internal service-to-service auth via generated X.509 certificates.
+### Symmetric Encryption
+The `Encrypt` and `Decrypt` functions use AES-256 in GCM mode to provide authenticated encryption. The input key is hashed with SHA-256 to derive a 256-bit key via the shared `newGCM` helper. Nonces are generated randomly and prepended to the ciphertext. Decryption validates the ciphertext length before processing.
 
-### Key Functions
-
-#### `Encrypt(key, text string) ([]byte, error)`
-Derives a 256-bit AES key from the input `key` string using SHA-256. It encrypts `text` using AES-GCM with a random nonce, returning the ciphertext with the nonce prepended.
-
-#### `Decrypt(key string, ciphertext []byte) ([]byte, error)`
-Reverses `Encrypt`. It derives the same AES key from `key`, extracts the nonce from the beginning of `ciphertext`, and decrypts the remaining bytes. Returns an error if the ciphertext is too short or decryption fails.
-
-#### `GenerateCert(commonName string, additionalIps []string) ([]byte, []byte, error)`
-Generates a new RSA private key (2048-bit) and a corresponding self-signed X.509 certificate. The certificate includes:
-- **Subject**: Uses `commonName`.
-- **Validity**: Valid for 10 years, starting 30 days in the past.
-- **SANs**: DNS names `commonName` and "localhost"; IP addresses from `additionalIps` plus the IPv4 zero address and 127.0.0.1. An entry in `additionalIps` that does not parse as an IP returns an error.
-- **Usage**: Server authentication.
-Returns PEM-encoded certificate and private key bytes.
+### Certificate Generation
+`GenerateCert` creates a self-signed X.509 certificate and RSA private key (2048-bit). It configures the certificate for server authentication (`ExtKeyUsageServerAuth`) with a validity period of approximately ten years, starting thirty days in the past. The Subject Alternative Name (SAN) extension includes the provided `commonName`, "localhost", and any valid IPs from `additionalIps`. Invalid IP strings cause an immediate error rather than silently dropping entries.

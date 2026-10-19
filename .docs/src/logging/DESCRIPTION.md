@@ -1,25 +1,28 @@
-<!-- docdaemon ts:2026-10-09T01:41:55Z hash:2a1a78eebe63d8de model:openrouter/qwen/qwen3.7-flash -->
+<!-- docdaemon ts:2026-10-19T23:27:08Z hash:3f0ef532236123d2 model:openrouter/qwen/qwen3.7-flash -->
 ## TL;DR
-The `logging` package provides a centralized entry point for configuring application-wide structured logging using the `zerolog` library.
+The `logging` package centralizes application-wide logging configuration using zerolog, adapting output formats based on the environment.
 
 ## Overview
-This directory initializes and manages the global logger instance, ensuring consistent output formatting and severity levels across the entire application. It abstracts away the complexity of setting up console versus JSON outputs based on the deployment environment, allowing other components to simply import the package and begin logging immediately. By centralizing this configuration, the package guarantees that all log messages adhere to a uniform standard defined at startup.
+This directory provides a unified entry point for configuring the global logger used throughout the Weft application. It ensures consistent log formatting and severity levels across all components by initializing the `github.com/rs/zerolog/log` instance during startup. The package automatically switches between human-readable console output for development and structured JSON logs for production environments.
 
 ## Deep Dive
-### Initialization and Configuration
-The core responsibility of this package is the `Init` function, which must be called early in the application lifecycle. This function accepts a `zerolog.Level` argument to define the minimum severity threshold for logs. Internally, it checks the `WEFT_ENV` environment variable to determine the output format. If the environment is not set to `"prod"`, the logger switches to a human-readable console format with RFC3339 timestamps written to `os.Stderr`. In production, it retains the default JSON formatter for machine-parseable logs. The function also calls `zerolog.SetGlobalLevel` to enforce the specified severity filter globally.
+### Initialization Strategy
+The core logic resides in the `Init` function, which must be called early in the application lifecycle. It configures the global zerolog instance to ensure all subsequent log calls adhere to the specified settings. This approach prevents inconsistent logging behavior that might arise if individual packages configured their own loggers independently.
 
-### Global Logger Management
-`Init` replaces the package-level `log.Logger` from `github.com/rs/zerolog/log`, so every component that logs through that global (`log.Info()`, `log.Debug()`, ...) picks up the console format. Components that build their own `zerolog.Logger` with `zerolog.New` keep their own writer and format; only the level set by `zerolog.SetGlobalLevel` applies to them as well. This eliminates the need for individual packages to manage their own logger instances or configuration logic, reducing boilerplate and potential inconsistencies in log output.
+### Environment-Aware Formatting
+The package inspects the `WEFT_ENV` environment variable to determine the output format. When `WEFT_ENV` is not set to `"prod"`, the logger outputs human-readable text to `os.Stderr` with RFC3339 timestamps. In production, it retains the default JSON formatter, ensuring machine-parseable logs for aggregation systems. This distinction supports developer experience while maintaining operational efficiency in production.
+
+### Level Enforcement
+Regardless of the format, `Init` sets the global minimum log level via `zerolog.SetGlobalLevel`. Any messages below this threshold are discarded immediately. This allows operators to control verbosity globally without modifying code in dependent packages. Tests verify that both console and JSON modes correctly respect these level constraints.
 
 ## Key Interfaces
-- `func Init(level zerolog.Level)`: Configures the global logger with the specified level and environment-aware formatting.
+- `Init(level zerolog.Level)`: Configures the global logger with the specified severity level and environment-appropriate formatting.
 
 ## Dependencies
-- `github.com/aquaduct-dev/weft/src/logging` (internal package reference)
-- `github.com/rs/zerolog` (external structured logging library)
-- `os` (standard library for stderr output)
+- `github.com/rs/zerolog`: Provides the underlying structured logging engine.
+- `os`: Used for accessing standard error streams.
 
 ## Subcomponents
-- `BUILD.bazel`: Bazel build rules defining the Go library target.
-- `logging.go`: Implementation of the initialization and global logger setup.
+- `logging.go`: Core implementation of the initialization logic.
+- `logging_test.go`: Unit tests for environment-based configuration and level enforcement.
+- `BUILD.bazel`: Bazel build targets for the library and its tests.

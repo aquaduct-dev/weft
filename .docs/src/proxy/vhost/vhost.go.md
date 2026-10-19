@@ -1,14 +1,9 @@
-<!-- docdaemon ts:2026-10-15T20:41:53Z hash:3cc0bba0da0c5ce4 model:openrouter/qwen/qwen3.7-flash -->
+<!-- docdaemon ts:2026-10-19T23:25:57Z hash:aa6d5bf4fb9fee18 model:openrouter/qwen/qwen3.7-flash -->
 ## TL;DR
-This file implements a name-based virtual host reverse proxy with support for HTTP/2, HTTP/3, and automatic TLS certificate management via ACME.
+This file implements a name-based virtual host reverse proxy with optional TLS termination, ACME certificate management, and HTTP/3 support.
 
-### Core Components
-- **VHostProxy**: Manages routes per hostname, handling request matching (`PathMatcher`, `HeaderMatcher`) and modification (`RedirectModifier`, `PathPrefixModifier`). It supports both plain HTTP and TLS termination.
-- **VHostProxyManager**: Orchestrates multiple proxies, manages the ACME certificate cache, and handles peer-to-peer challenge redirections for distributed ACME issuance.
-- **WGAwareRoundTripper**: A custom `http.RoundTripper` that routes requests to internal WireGuard addresses (`10.1.*`) through a userspace network stack when constructed with a non-nil WireGuard device (otherwise it uses `http.DefaultTransport`), with failure tracking to trigger tunnel cleanup on sustained dial errors.
+`VHostProxy` manages routing for multiple hosts on a single port, supporting both plain HTTP and HTTPS. It uses `Route` structs containing `Matcher` (path, header, query, method) and `Modifier` (header injection, redirection, path stripping) components to direct traffic. The proxy automatically strips configured path prefixes from upstream requests while preserving segment boundaries.
 
-### Key Functions
-- **AddHost/AddHostWithTLS/AddHostWithACME**: Register reverse proxy routes. `AddHostWithACME` binds port 80, probes reachability, and asynchronously fetches certificates before enabling HTTPS.
-- **Start**: Initializes TCP listeners (and optional UDP for HTTP/3). Configures ALPN negotiation for h2/h3 and sets up TLS `GetCertificate` logic to serve cached or ACME-managed certs.
-- **CanPassACMEChallenge**: Validates DNS resolution and probes public IPv4 endpoints for ACME HTTP-01 readiness, supporting round-robin DNS with a configurable success threshold.
-- **ServeHTTP/findRoute**: Dispatches incoming requests to the most specific matching route based on path prefix length, adhering to Gateway-API precedence rules.
+TLS handling is flexible: static certificates are provided via `AddHostWithTLS`, while dynamic issuance is handled by `AddHostWithACME`. The latter probes the host's public IP to ensure ACME HTTP-01 reachability before binding port 80, then waits for the certificate in the background before enabling the TLS listener. The system supports round-robin DNS by requiring a majority of resolved IPs to pass the probe.
+
+HTTP/2 is enabled by default for TLS listeners, and HTTP/3 (QUIC) is served on a separate UDP listener for public addresses. Internal WireGuard routes remain on HTTP/1.1. Route selection prioritizes the longest matching path prefix to prevent catch-all routes from shadowing specific ones.

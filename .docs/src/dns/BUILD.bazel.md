@@ -1,14 +1,12 @@
-<!-- docdaemon ts:2026-10-09T01:40:16Z hash:ea5b6151872017a1 model:openrouter/qwen/qwen3.7-flash -->
+<!-- docdaemon ts:2026-10-19T23:25:44Z hash:3a6b0aaf2aeb8776 model:openrouter/qwen/qwen3.7-flash -->
 ## TL;DR
-This file defines the Bazel build rules for the `dns` Go library, which provides DNS resolution capabilities using Cloudflare and Zerolog.
+This file defines the Bazel build targets for the DNS provider library, specifically configuring the Go library and its associated tests.
 
-### Purpose
-The `BUILD.bazel` file configures the `go_library` target named `dns`. It compiles `cloudflare.go` into a reusable Go package located at `github.com/aquaduct-dev/weft/src/dns`. The target is marked public to allow other packages in the repository to depend on it.
+### Build Configuration
+The `go_library` target named `dns` compiles `cloudflare.go` into a public package at `github.com/aquaduct-dev/weft/src/dns`. It depends on the Cloudflare Go SDK (`@com_github_cloudflare_cloudflare_go`) and the Zerolog logging library (`@com_github_rs_zerolog`).
 
-### Dependencies
-The library relies on two external dependencies:
-- **Cloudflare Go SDK**: Provides the underlying client for interacting with Cloudflare's DNS API.
-- **Zerolog**: Used for structured logging within the DNS module.
+### Testing
+The `go_test` target `dns_test` runs tests from `cloudflare_test.go`, embedding the main library code. It also links against the Cloudflare SDK to facilitate integration or unit testing of DNS operations.
 
-### Integration
-This module serves as the DNS abstraction layer for the Weft project. By isolating Cloudflare-specific logic in `cloudflare.go`, it allows the rest of the application to interact with DNS services through a consistent interface while leveraging Cloudflare's infrastructure.
+### Contextual Notes
+Recent updates to this module addressed zone matching logic in `UpdateRecord`. The previous implementation used a simple suffix check that incorrectly matched subdomains (e.g., `notexample.com` against `example.com`). The current codebase implements `findZone`, which enforces exact matches or strict label-boundary suffixes (prefixed with `.`), ignoring case and trailing dots. This ensures precise zone selection during record updates.

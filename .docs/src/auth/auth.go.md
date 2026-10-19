@@ -1,21 +1,14 @@
-<!-- docdaemon ts:2026-10-09T01:40:12Z hash:21c966bbed7b1acb model:openrouter/qwen/qwen3.7-flash -->
+<!-- docdaemon ts:2026-10-19T23:26:04Z hash:8ba3ae2431ac4c8e model:openrouter/qwen/qwen3.7-flash -->
 ## TL;DR
-This package implements a challenge-response authentication flow with AES-GCM encryption to obtain and manage JWT tokens for secure tunnel connections.
+This package implements the zero-trust authentication flow, handling challenge-response login, JWT management, and AES-GCM encryption for secure tunnel connections.
 
-## Purpose
-Extracted from `cmd/tunnel.go`, this file handles the zero-trust login sequence, including TLS fingerprint pinning, certificate exchange, and automatic JWT renewal. It ensures that only clients possessing the correct connection secret can authenticate with the server.
+### Key Components
 
-## Key Components
+*   **`GetToken`**: Executes the challenge-response login against `/login`. It decrypts the server's challenge using the `connectionSecret`, encrypts the response, and retrieves a signed JWT and the server's encrypted certificate.
+*   **`Login`**: Orchestrates the full setup by calling `GetToken`, verifying the decrypted server certificate, and returning an `http.Client` configured with automatic JWT refresh via `WithJWT`.
+*   **`WithJWT`**: A `http.RoundTripper` wrapper that injects Bearer tokens into requests and automatically refreshes them if they are nearing expiration (less than 1 minute remaining).
+*   **`Encrypt` / `Decrypt`**: Helper functions using AES-GCM with keys derived from the connection secret via SHA-256. Used to secure the challenge exchange and the server certificate payload.
+*   **`PinnedFingerprint`**: An optional global variable for out-of-band TLS pinning during the initial handshake to prevent MITM attacks before certificate verification is established.
 
-### Authentication Flow
-- **`GetToken`**: Executes the core login logic. It fetches an encrypted challenge, decrypts it using the `connectionSecret`, encrypts the response, and retrieves a signed JWT and the server's certificate.
-- **`Login`**: Orchestrates the full setup by calling `GetToken`, verifying the server certificate against a custom pool, and returning an `http.Client` configured with automatic token refresh.
-- **`WithJWT`**: Wraps an `http.RoundTripper` to inject Bearer tokens into requests. It automatically detects expiring tokens (within 1 minute) and triggers a refresh via the provided callback.
-
-### Cryptography
-- **`Encrypt` / `Decrypt`**: Helper functions using AES-GCM. The key is derived by hashing the `connectionSecret` with SHA-256. Nonces are randomly generated for encryption and prepended to ciphertext.
-- **`PinnedFingerprint`**: An optional global variable for out-of-band TLS certificate verification during the initial handshake.
-
-### Utilities
-- **`fingerprintVerifier`**: A TLS hook that validates the server's leaf certificate hash against `PinnedFingerprint`.
-- **`annotateWithVersions`**: Enhances error messages with client and server version details to aid debugging version mismatches.
+### Integration
+This file was extracted from `cmd/tunnel.go` to separate CLI orchestration from cryptographic logic. It relies on `src/version` to annotate login errors with client/server version mismatches, aiding in debugging connectivity issues.

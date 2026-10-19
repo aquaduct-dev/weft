@@ -1,12 +1,14 @@
-<!-- docdaemon ts:2026-10-09T01:41:05Z hash:5823116accf12341 model:openrouter/qwen/qwen3.7-flash -->
+<!-- docdaemon ts:2026-10-19T23:26:02Z hash:51efc545207d4202 model:openrouter/qwen/qwen3.7-flash -->
 ## TL;DR
-This file defines the Go structs for API request and response payloads, including tunnel configuration, health checks, certificate metadata, and usage statistics.
+This file defines the shared data structures for API requests, responses, and internal state used by the tunnel proxy server.
 
-The `types` package serves as the contract layer for the HTTP API, ensuring type-safe serialization of JSON bodies. It groups related data structures into logical categories:
+### API Payloads
+*   **ConnectRequest**: Defines parameters for establishing a tunnel, including routing rules (`RemotePath`, `RemoteQuery`), request modifiers (header manipulation, redirects), and optional TLS termination credentials (`CertificatePEM`, `PrivateKeyPEM`). The `TunnelName` defaults to a hash if omitted.
+*   **ConnectResponse**: Returns server-side connection details, including the WireGuard port and assigned proxy port.
+*   **HealthcheckRequest/Response**: Simple diagnostic endpoints where the server echoes back the client's message field.
 
-*   **Tunnel Management**: `ConnectRequest` and `ConnectResponse` carry tunnel establishment (keys, port, protocol, hostname, tunnel name; WireGuard addresses and ports in the response). `ConnectRequest` also carries HTTP routing and rewriting for the server's proxy (`RemotePath`, `RemoteQuery`, `RemoteFragment`, `RemoteModifiers`) and an optional `CertificatePEM`/`PrivateKeyPEM` pair the server uses to terminate TLS for that tunnel's `Hostname`.
-*   **Health & Status**: `HealthcheckRequest` and `HealthcheckResponse` provide simple status reporting mechanisms.
-*   **Certificates**: `CertInfo` and `CertificatesResponse` expose details about cached TLS certificates, such as validity periods (`NotBefore`, `NotAfter`) and issuers.
-*   **Usage Metrics**: `TunnelUsage` and `UsageReport` aggregate byte-level traffic statistics (TX/RX) per tunnel instance.
+### Certificate Management
+*   **CertificatesResponse**: Aggregates cached TLS certificate metadata (`CertInfo`) and recent ACME issuance failures (`ACMEFailure`). This supports the `/certificates` endpoint, allowing operators to monitor cert validity and debug background issuance errors.
 
-These types are used by the server's HTTP handlers to decode incoming requests and encode responses, decoupling business logic from wire format details.
+### Telemetry
+*   **UsageReport/TunnelUsage**: Tracks per-tunnel byte transfer statistics (`BytesTx`, `BytesRx`) for reporting purposes.

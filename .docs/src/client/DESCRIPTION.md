@@ -1,37 +1,37 @@
-<!-- docdaemon ts:2026-10-09T01:42:09Z hash:697aee4f73f69aca model:openrouter/qwen/qwen3.7-flash -->
+<!-- docdaemon ts:2026-10-19T23:27:13Z hash:ecf968003f665148 model:openrouter/qwen/qwen3.7-flash -->
 ## TL;DR
-The `client` package provides a Go library for programmatically managing Weft server tunnels and monitoring their health status.
+This directory provides the Go client library for managing Weft server tunnels and monitoring their health status.
 
 ## Overview
-This directory contains the core client-side logic for interacting with the Weft administrative API. It handles authentication via JWTs, manages tunnel lifecycle operations such as listing and shutdown, and implements an adaptive health monitoring loop to ensure connectivity stability. The code ensures secure communication through TLS and robust error handling with exponential backoff.
+The `client` package exposes programmatic access to administrative HTTP endpoints, allowing external tools to list active tunnels or trigger shutdowns. It handles authentication via JWTs obtained through a challenge-response flow and manages TLS connections securely. Additionally, it includes an adaptive health monitor that ensures connectivity by adjusting retry intervals based on server responses.
 
 ## Deep Dive
 ### Client Initialization and Authentication
-The `Client` struct encapsulates connection details, including the server URL and target tunnel name. Initialization in `NewClient` parses the URL, assigns default ports, and extracts credentials. Authentication is lazy; `ensureAuth` invokes the `auth` package to obtain a JWT scoped to either generic admin rights or a specific tunnel. This design minimizes overhead until an API call is required.
+The `Client` struct encapsulates connection details, including the server URL and tunnel scope. The `NewClient` function parses the URL, assigns a default port if missing, and extracts the connection secret from user info. Authentication is lazy; `ensureAuth` calls the `auth` package to obtain a JWT scoped to either a specific tunnel or generic admin operations. This design prevents unnecessary network calls until an action is required.
 
 ### Tunnel Management
-Administrative actions are performed via HTTP POST requests. `ListTunnels` retrieves active tunnel metrics (TX/RX bytes) from the `/list` endpoint using the generic admin context. `Shutdown` targets a specific tunnel defined at initialization, sending a request to `/shutdown`. Both functions validate prerequisites, such as ensuring a tunnel name exists before attempting scoped shutdowns.
+Administrative actions are performed via POST requests to `/list` and `/shutdown`. `ListTunnels` retrieves metrics for all active tunnels using the generic admin context. `Shutdown` targets a specific tunnel defined at initialization. A critical safety check prevents accidental global shutdowns: if no tunnel name is provided, the client refuses to send a shutdown request, ensuring that unscoped clients cannot affect other services.
 
-### Health Monitoring
-`health_monitor.go` implements an adaptive loop that pings the `/healthcheck` endpoint. It uses `HealthMonitorConfig` to define intervals and failure thresholds. Transient errors trigger exponential backoff up to a maximum interval, while permanent failures (e.g., 401/404 or certificate issues) invoke the `OnFatal` callback. When the caller leaves `OnFatal` nil it defaults to `log.Fatal`, which exits the process to prevent silent degradation; tests and embedders can supply their own handler instead. This ensures immediate detection of critical service disruptions.
+### Adaptive Health Monitoring
+The `HealthMonitor` component implements a robust loop for verifying server connectivity. It uses exponential backoff for transient errors, increasing the interval up to a maximum limit, while treating permanent failures (such as certificate errors or 404s) as fatal events. The monitor tracks consecutive and sliding-window failures to distinguish between temporary glitches and persistent issues. An `OnFatal` callback allows callers to define custom shutdown logic, defaulting to process termination to prevent silent degradation.
 
 ## Key Interfaces
-- `NewClient(weftURLStr, tunnelName string)` initializes the client with URL parsing and credential extraction.
-- `ListTunnels()` returns a map of active tunnel names to their `TunnelInfo` metrics.
-- `Shutdown()` terminates the specific tunnel associated with the client instance.
-- `NewHealthMonitor(config HealthMonitorConfig)` creates a monitor with configurable retry logic.
-- `Start()` begins the blocking health check loop with dynamic interval adjustment.
+- `NewClient(weftURLStr, tunnelName string)` initializes a new administrative client instance.
+- `ListTunnels()` returns a map of active tunnel names to their current metrics.
+- `Shutdown()` sends a termination signal to the specific tunnel associated with the client.
+- `NewHealthMonitor(config HealthMonitorConfig)` creates a monitor with configurable retry and timing parameters.
+- `Start()` begins the periodic health check loop, blocking until stopped or a fatal error occurs.
 - `Stop()` safely halts the health monitoring goroutine.
 
 ## Dependencies
 - `//src/auth`: Provides JWT generation and login utilities.
-- `//types`: Shares common type definitions used across the project.
-- `@com_github_rs_zerolog//log`: Handles structured logging.
-- `@com_github_golang_jwt_jwt_v4//:jwt`: Used for token validation in tests.
-- `@com_github_stretchr_testify//assert`: Provides assertion helpers for testing.
+- `//types`: Shares common data structures used across the project.
+- `@com_github_rs_zerolog//log`: Supplies structured logging capabilities.
+- `@com_github_golang_jwt_jwt_v4//:jwt`: Handles JWT parsing and validation in tests.
+- `@com_github_stretchr_testify//assert`: Offers assertion helpers for unit testing.
 
 ## Subcomponents
+- `client.go`: Core client implementation for tunnel management.
+- `health_monitor.go`: Adaptive health checking logic.
+- `client_test.go`: Integration tests against a mock TLS server.
 - `BUILD.bazel`: Bazel build rules for compilation and testing.
-- `client.go`: Core client library for tunnel management.
-- `client_test.go`: Integration tests for client-server interactions.
-- `health_monitor.go`: Adaptive health checking implementation.

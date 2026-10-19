@@ -1,16 +1,16 @@
-<!-- docdaemon ts:2026-10-09T01:40:09Z hash:0ee5300ef7c339b6 model:openrouter/qwen/qwen3.7-flash -->
+<!-- docdaemon ts:2026-10-19T23:26:03Z hash:f1405efde286e116 model:openrouter/qwen/qwen3.7-flash -->
 ## TL;DR
-This file provides exported test seams to mock DNS lookups and local network interface addresses for deterministic testing in other packages.
+This file provides exported test seams to inject deterministic DNS and network interface state for cross-package testing.
 
-## Purpose
-The `acme` package uses internal variables (`lookupIP`, `interfaceAddrs`) to abstract system calls. This helper file exposes functions to swap these variables at runtime, allowing tests in external packages (like `proxy/vhost`) to inject deterministic state without modifying production logic. These functions are strictly for testing and must not be used in production code.
+### Purpose
+These helpers allow tests in other packages (e.g., `src/proxy/vhost`) to control the behavior of `net.LookupIP` and local interface addresses without modifying production code. They are strictly for testing and must not be called in non-test contexts.
 
-## Functions
+### Key Functions
 
-### DNS Seams
-- **`SwapLookupIPForTest(hostsToIPs map[string][]string) func(string) ([]net.IP, error)`**: Replaces the global `lookupIP` function with a closure that returns specified IPs for given hosts. Returns the previous function for restoration. Hosts not in the map return a "no such host" error; address strings that do not parse as IPs are silently skipped.
-- **`RestoreLookupIPForTest(prev func(string) ([]net.IP, error))`**: Restores the original `lookupIP` function returned by `SwapLookupIPForTest`.
+*   **SwapLookupIPForTest**: Replaces the package-level `lookupIP` function with a closure that returns mapped IPs for specified hosts. Unparseable IP strings are silently skipped. Returns the previous function for restoration.
+*   **RestoreLookupIPForTest**: Restores the original `lookupIP` function returned by `SwapLookupIPForTest`.
+*   **SwapInterfaceAddrsForTest**: Replaces the `interfaceAddrs` seam to return a fixed list of local IP addresses as `net.IPNet` objects. Invalid IPs are ignored. Returns the previous function.
+*   **RestoreInterfaceAddrsForTest**: Restores the original `interfaceAddrs` function.
 
-### Interface Address Seams
-- **`SwapInterfaceAddrsForTest(localAddrs []string) func() ([]net.Addr, error)`**: Replaces the global `interfaceAddrs` function with a closure returning the provided IP addresses as `*net.IPNet` (strings that do not parse as IPs are silently skipped). Returns the previous function for restoration.
-- **`RestoreInterfaceAddrsForTest(prev func() ([]net.Addr, error))`**: Restores the original `interfaceAddrs` function returned by `SwapInterfaceAddrsForTest`.
+### Design Notes
+The seams support peer fallback and leader election logic by allowing tests to simulate specific network states, such as unreachable peers or specific local bindings. This enables deterministic verification of ACME redirect coordination without relying on real network conditions.

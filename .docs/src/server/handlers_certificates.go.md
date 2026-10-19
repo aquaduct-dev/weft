@@ -1,12 +1,9 @@
-<!-- docdaemon ts:2026-10-09T01:40:35Z hash:77583a3a8dd30153 model:openrouter/qwen/qwen3.7-flash -->
+<!-- docdaemon ts:2026-10-19T23:25:56Z hash:cac7ad595790e3f8 model:openrouter/qwen/qwen3.7-flash -->
 ## TL;DR
-This file implements the HTTP handler for listing cached TLS certificates and their validity windows.
+This file implements the `GET /certificates` endpoint to expose cached TLS certificates and ACME issuance status.
 
-### Purpose
-The `CertificatesHandler` exposes an endpoint to retrieve the bastion’s currently cached TLS certificates. It allows administrators to inspect which hosts have associated certificates and monitor their expiration dates via a JSON response.
+The `CertificatesHandler` method serves as the primary entry point for retrieving certificate data. It enforces HTTP GET restrictions and delegates data retrieval to the `Dataplane` interface, specifically calling `ListCertificates` for active certs and `ListACMEFailures` for recent errors.
 
-### Key Components
-- **`(*Server).CertificatesHandler`**: The primary HTTP handler function. It validates that the request method is `GET`, retrieves the certificate list from the data plane, and encodes the result as JSON using `types.CertificatesResponse`.
+The handler logs debug information when both certificates and ACME failures are present, indicating a state where some hosts have valid certs while others are experiencing issuance issues. This behavior stems from background goroutines that continue attempting ACME challenges even after initial setup, logging failures to the `VHostProxyManager` until resolved.
 
-### Integration
-This handler is registered in the server mux (see `server.go`) and requires JWT authentication, consistent with other admin endpoints. It relies on `s.Dataplane.ListCertificates()` to fetch the underlying data.
+The response is encoded as JSON using `types.CertificatesResponse`, which aggregates the list of certificates and any associated ACME failure records. The endpoint is JWT-gated, consistent with other admin routes defined in the server mux.

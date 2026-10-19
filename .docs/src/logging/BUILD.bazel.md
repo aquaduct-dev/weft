@@ -1,5 +1,9 @@
-<!-- docdaemon ts:2026-10-09T01:40:19Z hash:8757c2f08394a55f model:openrouter/qwen/qwen3.7-flash -->
+<!-- docdaemon ts:2026-10-19T23:25:49Z hash:f315991d12794c95 model:openrouter/qwen/qwen3.7-flash -->
 ## TL;DR
-This file defines the Bazel build rules for the `logging` Go package.
+This file defines the Bazel build targets for the `logging` Go package and its associated tests.
 
-It configures a `go_library` target named `logging`, exposing it publicly for consumption by other packages within the repository. The library compiles `src/logging/logging.go` and declares dependencies on two `zerolog` targets: `@com_github_rs_zerolog//:zerolog` (the core package, for `zerolog.Level` and `ConsoleWriter`) and `@com_github_rs_zerolog//log` (the global `log.Logger`). This setup ensures that any module importing `github.com/aquaduct-dev/weft/src/logging` can access the logging utilities provided by this package, leveraging `zerolog` for high-performance structured logging capabilities.
+The `go_library` target builds the core logging implementation from `logging.go`. It exposes the package publicly to allow other modules in the repository to import it via `github.com/aquaduct-dev/weft/src/logging`. The library depends on the `zerolog` and `log` packages from the external `com_github_rs_zerolog` repository, which provide the underlying structured logging capabilities.
+
+The `go_test` target runs unit tests defined in `logging_test.go`. It embeds the main library to ensure test coverage of the public API. Like the library, the test target depends on `zerolog` and `log` to facilitate testing against the actual logging implementations.
+
+Recent changes to this file reflect a tightening of documentation and test coverage for the `Init` function, specifically ensuring that both development (console output) and production (JSON logger) environments are correctly tested under different `WEFT_ENV` settings.

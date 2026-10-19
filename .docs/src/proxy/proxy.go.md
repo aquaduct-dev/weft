@@ -1,18 +1,23 @@
-<!-- docdaemon ts:2026-10-09T01:40:24Z hash:fe0da7f5f273870c model:openrouter/qwen/qwen3.7-flash -->
+<!-- docdaemon ts:2026-10-19T23:25:52Z hash:36e520cd270aa64a model:openrouter/qwen/qwen3.7-flash -->
 ## TL;DR
-This file implements the `ProxyManager` which orchestrates the lifecycle, creation, and routing of TCP, UDP, and HTTP/HTTPS virtual host proxies.
+This file defines the `ProxyManager` and concrete proxy implementations (`TCP`, `UDP`, `VHost`) that handle tunnel lifecycle, connection forwarding, and protocol translation.
 
-### Overview
-The `ProxyManager` maintains a registry of active proxies keyed by name, ensuring no duplicate names or conflicting configurations exist. It delegates specific protocol handling to `TCPProxy`, `UDPProxy`, and `VHostRouteProxy` instances, while managing shared VHost listeners via `vhost.VHostProxyManager`.
+### Core Components
 
-### Key Types & Functions
+**ProxyManager**
+Orchestrates active proxies via a name-to-`Proxy` map. It enforces uniqueness (returning `ErrProxyAlreadyExists` or `ErrProxyConflict`) and delegates HTTP/HTTPS routing to `VHostProxyManager`. The `StartProxy` method inspects source/destination schemes to instantiate the correct proxy type.
 
-*   **`ProxyManager`**: The central controller. Use `NewProxyManager()` to initialize. Call `SetBindIP()` to constrain listeners.
-*   **`StartProxy`**: The primary entry point for creating new tunnels. It parses source/destination URLs, validates constraints (ports, conflicts), and instantiates the appropriate proxy type (`tcp>tcp`, `udp>udp`, `http>http`, etc.). For HTTPS routes, it supports either explicit TLS certificates or automatic ACME issuance.
-*   **`Close`**: Terminates a named proxy and removes it from the registry.
-*   **`GetProxyCounters`**: Returns a snapshot of traffic statistics (Tx/Rx bytes) for all active proxies.
+**TCPProxy**
+Forwards TCP streams between public and target endpoints. It uses `WGAwareTCPDial` for upstream connections. To prevent premature teardown during brief outages, it employs a sliding-window failure tracker (`util.FailureTracker`); cleanup is triggered only after sustained dial failures within a configured window.
 
-### Implementation Details
-*   **TCP Proxying**: Uses `WGAwareTCPListen/Dial` to integrate with WireGuard's netstack. Includes failure tracking (`TCPDialFailureThreshold`) to automatically clean up tunnels after sustained upstream dial failures.
-*   **UDP Proxying**: Maintains per-source-address sessions in a mutex-protected map to prevent concurrent map writes. Spawns response goroutines only when a new source address is detected.
-*   **HTTP/HTTPS Routing**: Parses URL fragments for matchers (query params, headers) and modifiers (redirects). Routes requests through the VHost manager, supporting path prefix rewriting and header manipulation.
+**UDPProxy**
+Manages UDP sessions using a source-address-keyed map protected by a mutex to prevent concurrent map write panics. A dedicated response goroutine is spawned once per new source address to handle upstream reads and write responses back to the client.
+
+**VHostRouteProxy**
+Handles HTTP/HTTPS traffic by registering routes with the VHost manager. It supports ACME-based automatic TLS certificate issuance when no PEM data is provided, or explicit TLS configuration otherwise. Matchers and modifiers are parsed from URL fragments to control request routing.
+
+### Key Types & Errors
+
+*   **`ProxyManager`**: Central coordinator for all proxy instances.
+*   **`ErrProxyAlreadyExists`**, **`ErrProxyConflict`**: Sentinel errors used by callers to classify startup failures (e.g., mapping to HTTP 409).
+*   **`TCPDialFailureThreshold`**, **`TCPDialFailureWindow`**: Configuration constants controlling the resilience of TCP tunnels against transient upstream failures.

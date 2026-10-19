@@ -1,17 +1,7 @@
-<!-- docdaemon ts:2026-10-09T01:40:13Z hash:a4a16f62352503c7 model:openrouter/qwen/qwen3.7-flash -->
+<!-- docdaemon ts:2026-10-19T23:26:06Z hash:4b6af11ccd924688 model:openrouter/qwen/qwen3.7-flash -->
 ## TL;DR
-This file contains unit tests for the JWT transport renewal logic and version-aware error annotation in the `auth` package.
+This file contains unit tests for the JWT authentication transport and version mismatch error handling.
 
-### Purpose
-The tests verify that HTTP requests are automatically retried with refreshed tokens when nearing expiration, and that login errors are enriched with server version information to aid debugging.
+It verifies that `WithJWT` correctly triggers token renewal when a token is near expiry, updates internal state, and avoids redundant renewals for valid tokens. The `TestJwtExpiry` function ensures robust parsing of expiration times, preventing panics on malformed or missing claims by centralizing logic in `jwtExpiry`.
 
-### Key Components
-
-*   **`MockRoundTripper`**: A test helper implementing `http.RoundTripper` to capture the last outgoing request for inspection.
-*   **`generateToken`**: Helper to create short-lived JWTs for simulating token expiry scenarios.
-*   **`TestWithJwt_Renewal`**: Validates that `WithJWT` triggers the renewal callback exactly once when a token is close to expiring, updates the internal state, and does not renew on subsequent immediate calls.
-*   **`startVersionServer`**: Spins up an in-memory TLS server to simulate a backend service for version checking.
-*   **`TestAnnotateWithVersions_*`**: Tests the `annotateWithVersions` function (defined elsewhere) to ensure it correctly:
-    *   Reports "version mismatch" when client and server commits differ.
-    *   Reports "both at version" when they match.
-    *   Handles unreachable servers gracefully without panicking.
+Tests for `annotateWithVersions` confirm that login errors are enriched with client and server version information. It validates three scenarios: clear version mismatches, matching versions, and unreachable servers, ensuring the original error remains unwrapable via `errors.Is`.

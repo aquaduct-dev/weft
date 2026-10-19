@@ -1,38 +1,38 @@
-<!-- docdaemon ts:2026-10-09T01:41:56Z hash:99fb061748e88f4f model:openrouter/qwen/qwen3.7-flash -->
+<!-- docdaemon ts:2026-10-19T23:27:09Z hash:f801d9186cdede59 model:openrouter/qwen/qwen3.7-flash -->
 ## TL;DR
-The `acme` package manages ACME protocol interactions, certificate caching, and peer-to-peer HTTP-01 challenge coordination for automated TLS certificate management.
+This package manages ACME TLS certificate acquisition and coordinates HTTP-01 challenge redirects across a cluster of nodes.
 
 ## Overview
-This directory provides the infrastructure for automatic HTTPS via Let's Encrypt or compatible CAs. It wraps `golang.org/x/crypto/acme/autocert` to handle certificate acquisition and caching while ensuring high availability through a custom redirect mechanism in DNS round-robin deployments. The code separates core helper logic from testing utilities to maintain clean dependencies and deterministic test execution.
+The `acme` directory provides utilities for automated HTTPS certificate management using `autocert`. It ensures that certificates are available before listeners start and emits structured logs for lifecycle auditing. In distributed deployments, it solves the problem of DNS round-robin validation by allowing nodes to redirect unvalidated challenges to peers that hold the necessary key material.
 
 ## Deep Dive
-### Certificate Management
-The `ACMEHelper` struct wraps an `autocert.Manager`, providing methods to wait for certificate availability and acquire certificates on demand. `AcquireCertificate` probes the cache to distinguish between local hits and CA round-trips, emitting structured logs for observability. This ensures listeners only mount when valid certificates are present.
+### Certificate Acquisition
+The `ACMEHelper` wraps `autocert.Manager` to simplify server setup. It exposes `WaitForCertificate` to block until a cert is cached or acquired, and `AcquireCertificate` to handle the actual fetch. Structured logging distinguishes between cache hits and CA round-trips, aiding in debugging issuance failures.
 
-### Peer Coordination
-In distributed environments, ACME validators may hit nodes lacking the necessary key authorization. `RegisterRedirectsLoop` solves this by having nodes POST 301 redirects to peers with higher priority IPs. It queries DNS for A-records, attempts registration via `PostACMERedirect`, and falls back to self-leadership if all peers fail. Trust is established solely via IP verification against DNS records, using TLS without certificate validation.
+### Peer-to-Peer Redirects
+In DNS round-robin scenarios, validators may hit nodes without the `keyAuth`. The `RegisterRedirectsLoop` periodically queries DNS for A-records and POSTs to higher-priority peers to register 301 redirects. If all higher peers are unreachable, the node declares itself the leader. Trust is established via IP verification against DNS records, with TLS used only for transport (`InsecureSkipVerify`).
 
-### Testing Infrastructure
-To support deterministic integration tests, `testing_helpers.go` exposes exported functions to swap global DNS lookup and interface address resolution variables. This allows external packages to inject mock network states without modifying production code, ensuring reliable testing of network-dependent logic.
+### Test Seams
+To enable deterministic testing of network-dependent logic, `testing_helpers.go` exports functions to swap `net.LookupIP` and interface address resolution. These seams allow tests to simulate dead peers, specific local bindings, and DNS states without affecting production code.
 
 ## Key Interfaces
-*   `NewACMEHelper(m *autocert.Manager)` — Constructs an ACME helper instance.
-*   `AcquireCertificate(m *autocert.Manager, hello *tls.ClientHelloInfo)` — Fetches a TLS certificate, logging cache status.
-*   `(a *ACMEHelper) WaitForCertificate(ctx context.Context, host string)` — Blocks until a certificate is available.
-*   `RegisterRedirectsLoop` — Starts the background goroutine for peer redirect coordination.
-*   `PostACMERedirect` — Sends a registration request to a specific peer address.
-*   `SwapLookupIPForTest` / `RestoreLookupIPForTest` — Test seams for mocking DNS lookups.
-*   `SwapInterfaceAddrsForTest` / `RestoreInterfaceAddrsForTest` — Test seams for mocking network interfaces.
+- `NewACMEHelper(m *autocert.Manager)`: Constructs an ACME helper instance.
+- `AcquireCertificate(m *autocert.Manager, hello *tls.ClientHelloInfo)`: Fetches a TLS certificate, emitting log events.
+- `(a *ACMEHelper) WaitForCertificate(ctx context.Context, host string)`: Waits for a certificate to become available.
+- `RegisterRedirectsLoop(ctx context.Context)`: Starts the background loop for peer coordination.
+- `PostACMERedirect(addr, host string)`: Sends a redirect registration request to a peer.
+- `SwapLookupIPForTest(fn func(string) ([]net.IP, error))`: Replaces DNS lookup for testing.
+- `SwapInterfaceAddrsForTest(fn func() ([]net.Interface, error))`: Replaces interface enumeration for testing.
 
 ## Dependencies
-*   `zerolog` for structured logging.
-*   `golang.org/x/crypto/acme/autocert` for ACME client functionality.
-*   Ginkgo v2 and Gomega for BDD-style testing.
+- `golang.org/x/crypto/acme/autocert`
+- `github.com/rs/zerolog` (structured logging)
+- Standard library `net`, `crypto/tls`, `context`
 
 ## Subcomponents
-*   `BUILD.bazel` — Bazel build configuration.
-*   `acme.go` — Core certificate helper utilities.
-*   `acme_redirect.go` — Peer-to-peer redirect coordination logic.
-*   `acme_test.go` — Unit tests for certificate helpers.
-*   `acme_redirect_test.go` — Integration tests for redirect logic.
-*   `testing_helpers.go` — Exported test seams for network mocking.
+- `acme.go`: Core certificate acquisition logic.
+- `acme_redirect.go`: Peer coordination and redirect logic.
+- `testing_helpers.go`: Exported test seams for network simulation.
+- `acme_test.go`: Unit tests for certificate handling.
+- `acme_redirect_test.go`: Integration tests for peer coordination.
+- `BUILD.bazel`: Bazel build definitions.

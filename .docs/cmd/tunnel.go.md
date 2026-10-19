@@ -1,14 +1,12 @@
-<!-- docdaemon ts:2026-10-09T01:40:05Z hash:8792bfd50dd55fe2 model:openrouter/qwen/qwen3.7-flash -->
+<!-- docdaemon ts:2026-10-19T23:25:46Z hash:24143e8f38a6c3d4 model:openrouter/qwen/qwen3.7-flash -->
 ## TL;DR
-This file implements the `tunnel` CLI command to establish and manage persistent Weft tunnels between local and remote endpoints.
+This file implements the `tunnel` CLI command to establish and manage persistent WireGuard tunnels between local and remote endpoints.
 
-### Purpose
-It handles argument parsing, authentication with the Weft server, WireGuard key generation, and tunnel lifecycle management (start/stop). It supports multiple simultaneous tunnels and integrates health monitoring.
+The `tunnelCmd` Cobra command parses a server URL containing a connection secret, optional TLS flags, and pairs of local/remote URLs. It iterates over these pairs, invoking `startTunnel` for each to create independent tunnel instances. This design supports multi-tunnel setups, where explicit names are optional (defaulting to a SHA-256 hash of the local/remote pair).
 
-### Key Functions
-- **`init`**: Registers the `tunnel` subcommand with flags for naming, retries, TLS certificates, and server fingerprint pinning.
-- **`tunnelCmd.Run`**: Orchestrates the main flow: parses the connection URL, iterates over local/remote pairs, calls `startTunnel`, and waits for OS signals to trigger cleanup.
-- **`startTunnel`**: Authenticates via `auth.Login`, generates a WireGuard private key, sends a `ConnectRequest` to the server, creates the tunnel device, and starts a background health monitor. Returns a cleanup function that shuts down the monitor, notifies the server, and closes the device.
-
-### Integration
-Depends on `auth`, `client`, `proxy`, `tunnel`, and `wireguard` packages. Interacts with the server API at `/login`, `/connect`, `/healthcheck`, and `/shutdown`.
+Key responsibilities include:
+*   **Authentication**: Calls `auth.Login` using the connection secret from the server URL. Supports optional `--server-fingerprint` pinning for the initial handshake.
+*   **Tunnel Provisioning**: Generates a WireGuard private key, sends a `ConnectRequest` to the server's `/connect` endpoint, and receives assigned IP/port details.
+*   **Proxy Management**: Initializes a `proxy.ProxyManager` and starts the `tunnel.Tunnel` instance, optionally injecting custom TLS certificates provided via `--tls-cert` and `--tls-key`.
+*   **Health Monitoring**: Launches a background `client.HealthMonitor` with adaptive retry logic to detect connectivity failures.
+*   **Graceful Shutdown**: Registers cleanup functions that stop health checks, notify the server via `/shutdown`, and close the WireGuard device upon receiving OS signals.
