@@ -939,6 +939,7 @@ func (p *VHostProxy) ServeHTTP(w *meter.MeteredResponseWriter, r *meter.MeteredR
 	// Unmatched host — fall through to the default 404 handler.
 	p.defaultHandler.ServeHTTP(w, r)
 }
+
 // pathSpecificity returns the length of this route's longest path-prefix
 // matcher (0 if it has none, i.e. a catch-all). Used to order overlapping
 // routes on one host by Gateway-API longest-prefix precedence.

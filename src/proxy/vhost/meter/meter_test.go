@@ -12,7 +12,7 @@ import (
 	"net/http/httputil"
 	"time"
 
-    "github.com/aquaduct-dev/weft/src/proxy/vhost/meter"
+	"github.com/aquaduct-dev/weft/src/proxy/vhost/meter"
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"

@@ -39,7 +39,7 @@ type Proxy interface {
 // TCPProxy implements a transparent TCP layer-4 proxy.
 type TCPProxy struct {
 	// Listener is the underlying TCP listener.
-	Listener   net.Listener
+	Listener net.Listener
 	// Addr is the address the proxy is configured to listen on.
 	Addr       *net.TCPAddr
 	name       string
@@ -47,7 +47,7 @@ type TCPProxy struct {
 	bytesTx    atomic.Uint64
 	instanceId string
 	// cleanup is called when the tunnel destination becomes unreachable.
-	cleanup    func(tunnelName string)
+	cleanup func(tunnelName string)
 	// dialFailures tracks consecutive upstream-dial failures so a transient
 	// outage doesn't tear the tunnel down (F-9). Lazy-initialised by
 	// constructProxy via newTCPProxy / inferred default in StartProxy.
@@ -129,9 +129,9 @@ func (p *TCPProxy) Conflicts(other Proxy) bool {
 
 // UDPProxy implements a transparent UDP layer-4 proxy.
 type UDPProxy struct {
-	name       string
+	name string
 	// Conn is the underlying UDP connection (could be WireGuard-aware).
-	Conn       WGAwareUDPConn
+	Conn WGAwareUDPConn
 	// Addr is the address the proxy is configured to listen on.
 	Addr       *net.UDPAddr
 	bytesRx    atomic.Uint64
@@ -191,22 +191,22 @@ func (p *UDPProxy) BytesTotal() uint64 {
 
 // VHostRouteProxy implements a layer-7 HTTP/HTTPS proxy with virtual host routing.
 type VHostRouteProxy struct {
-	name       string
-	handler    *meter.MeteredHTTPHandler
+	name    string
+	handler *meter.MeteredHTTPHandler
 	// Closer allows shutting down the specific vhost route.
-	Closer     io.Closer
+	Closer io.Closer
 	// Host is the hostname matched by this proxy.
-	Host       string
+	Host string
 	// Port is the port matched by this proxy.
-	Port       int
+	Port int
 	// BindIp is the IP address the proxy is bound to.
-	BindIp     string
+	BindIp string
 	// IsHTTPS indicates if the proxy expects TLS traffic.
-	IsHTTPS    bool
+	IsHTTPS bool
 	// Rewrite is the path prefix rewrite rule.
-	Rewrite    string
+	Rewrite string
 	// Matchers are the rules used to select this route.
-	Matchers   map[string]string
+	Matchers map[string]string
 	// Modifiers are the rules used to transform requests on this route.
 	Modifiers  map[string]string
 	instanceId string

@@ -29,11 +29,11 @@ type ProxyManager struct {
 	// proxies maps tunnel names to their active Proxy implementation.
 	proxies map[string]Proxy
 	// bindIP constrains proxy listeners to a specific IP when set.
-	bindIP            string
+	bindIP string
 	// VHostProxyManager manages shared HTTP/HTTPS listeners for virtual hosting.
 	VHostProxyManager *vhost.VHostProxyManager
 	// Cleanup is a callback invoked when a proxy is closed.
-	Cleanup           func(tunnelName string)
+	Cleanup func(tunnelName string)
 }
 
 // NewProxyManager initializes a new ProxyManager with an empty proxy map.
