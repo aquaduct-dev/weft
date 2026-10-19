@@ -505,3 +505,34 @@ var _ = Describe("Proxy Conflicts", func() {
 	})
 
 })
+
+var _ = Describe("parseModifiers", func() {
+	parse := func(raw string) map[string]string {
+		u, err := url.Parse(raw)
+		Expect(err).NotTo(HaveOccurred())
+		mods := parseModifiers(u)
+		GinkgoWriter.Printf("parseModifiers(%q) = %v\n", raw, mods)
+		return mods
+	}
+
+	It("returns an empty map when the URL has no fragment", func() {
+		Expect(parse("http://localhost:8080/")).To(BeEmpty())
+	})
+
+	It("parses header modifiers, keeping everything after the first '='", func() {
+		Expect(parse("http://localhost:8080/#Forwarded=true&X-Forwarded-For=!del&Authorization=+auth&X-Eq=a=b")).To(Equal(map[string]string{
+			"Forwarded":       "true",
+			"X-Forwarded-For": "!del",
+			"Authorization":   "+auth",
+			"X-Eq":            "a=b",
+		}))
+	})
+
+	It("maps the bare redirect token to redirect=true", func() {
+		Expect(parse("http://localhost:8080/#redirect")).To(Equal(map[string]string{"redirect": "true"}))
+	})
+
+	It("ignores bare tokens other than redirect and empty parts", func() {
+		Expect(parse("http://localhost:8080/#bogus&&X-A=1")).To(Equal(map[string]string{"X-A": "1"}))
+	})
+})
