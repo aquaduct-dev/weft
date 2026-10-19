@@ -10,7 +10,7 @@ The `UpdateRecord` function manages DNS entries in Cloudflare by replacing exist
 Updates DNS records for `hostname` to point to `targetIP`.
 
 1. **Authentication**: Initializes the Cloudflare client using the provided API token.
-2. **Zone Resolution**: Identifies the correct zone by finding the longest matching domain suffix from the list of available zones.
+2. **Zone Resolution**: Identifies the correct zone by picking the longest zone name that `hostname` equals or ends in on a label boundary (via `findZone`), ignoring case and a trailing dot.
 3. **Cleanup**: Deletes all existing DNS records (A, CNAME, etc.) associated with the exact `hostname`.
 4. **Creation**:
    - Creates a new **A record** pointing to `targetIP` with a TTL of 120 seconds and proxy disabled.
