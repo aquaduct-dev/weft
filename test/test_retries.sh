@@ -34,7 +34,7 @@ fi
 CONN_SECRET=$(cat "$SECRET_FILE" | tr -d '\n')
 log "Found connection secret: $CONN_SECRET"
 
-# --- 2) Start weft tunnel with --retries 2 ---
+# --- 2) Start weft tunnel with --retries 3 ---
 LOCAL_PORT=$(find_free_port)
 REMOTE_PORT=$(find_free_port)
 TUNNEL_LOG="$LOGDIR/tunnel.log"
