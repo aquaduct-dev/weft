@@ -256,10 +256,16 @@ func (c countingConn) Write(b []byte) (int, error) {
 
 // asCountingConn extracts the *countingConn from c, unwrapping a *tls.Conn when
 // the counter sits beneath TLS termination (the ServeTLSCounted / HTTP/2 path).
-// Returns nil if no counter is present. The loop is bounded to avoid spinning
-// on a pathological wrapping chain.
+// maxUnwrapDepth bounds how many connection layers asCountingConn peels off.
+// Today the deepest chain is *tls.Conn -> *countingConn (two steps); the
+// extra headroom tolerates one more wrapper (e.g. TLS-in-TLS) without letting
+// a cyclic chain loop forever.
+const maxUnwrapDepth = 4
+
+// Returns nil if no counter is present. The loop is bounded by maxUnwrapDepth
+// to avoid spinning on a pathological (or cyclic) wrapping chain.
 func asCountingConn(c net.Conn) *countingConn {
-	for i := 0; i < 4 && c != nil; i++ {
+	for i := 0; i < maxUnwrapDepth && c != nil; i++ {
 		switch v := c.(type) {
 		case *countingConn:
 			return v
