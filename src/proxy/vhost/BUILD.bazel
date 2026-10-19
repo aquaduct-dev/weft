@@ -25,8 +25,8 @@ go_library(
 go_test(
     name = "vhost_test",
     srcs = [
-        "acme_redirect_test.go",
         "acme_failure_test.go",
+        "acme_redirect_test.go",
         "certificates_test.go",
         "path_prefix_test.go",
         "probe_test.go",
