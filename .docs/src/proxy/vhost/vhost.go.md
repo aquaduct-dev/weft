@@ -5,7 +5,7 @@ This file implements a name-based virtual host reverse proxy with support for HT
 ### Core Components
 - **VHostProxy**: Manages routes per hostname, handling request matching (`PathMatcher`, `HeaderMatcher`) and modification (`RedirectModifier`, `PathPrefixModifier`). It supports both plain HTTP and TLS termination.
 - **VHostProxyManager**: Orchestrates multiple proxies, manages the ACME certificate cache, and handles peer-to-peer challenge redirections for distributed ACME issuance.
-- **WGAwareRoundTripper**: A custom `http.RoundTripper` that routes requests to internal WireGuard addresses (`10.1.*`) through a userspace network stack, with failure tracking to trigger tunnel cleanup on sustained dial errors.
+- **WGAwareRoundTripper**: A custom `http.RoundTripper` that routes requests to internal WireGuard addresses (`10.1.*`) through a userspace network stack when constructed with a non-nil WireGuard device (otherwise it uses `http.DefaultTransport`), with failure tracking to trigger tunnel cleanup on sustained dial errors.
 
 ### Key Functions
 - **AddHost/AddHostWithTLS/AddHostWithACME**: Register reverse proxy routes. `AddHostWithACME` binds port 80, probes reachability, and asynchronously fetches certificates before enabling HTTPS.

@@ -16,6 +16,7 @@ import (
 	"github.com/aquaduct-dev/weft/src/proxy/vhost/meter"
 	"github.com/onsi/ginkgo/v2"
 	"github.com/onsi/gomega"
+	"github.com/quic-go/quic-go/http3"
 	"github.com/rs/zerolog/log"
 )
 
@@ -217,5 +218,49 @@ var _ = ginkgo.Describe("WGAwareRoundTripper", func() {
 		defer resp.Body.Close()
 		body, _ := io.ReadAll(resp.Body)
 		gomega.Expect(string(body)).To(gomega.Equal("ok"))
+	})
+})
+
+var _ = ginkgo.Describe("VHostProxy Alt-Svc", func() {
+	serve := func(vp *VHostProxy) *http.Response {
+		req := httptest.NewRequest("GET", "http://example.test/", nil)
+		rawRec := httptest.NewRecorder()
+		rec := meter.MeteredResponseWriter{ResponseWriter: rawRec}
+		vp.ServeHTTP(&rec, meter.NewMeteredRequestForTest(req))
+		res := rawRec.Result()
+		ginkgo.GinkgoWriter.Printf("status=%d Alt-Svc=%q\n", res.StatusCode, res.Header.Values("Alt-Svc"))
+		return res
+	}
+
+	ginkgo.It("advertises h3 on the proxy's port only while HTTP/3 is listening", func() {
+		up := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.Write([]byte("ok"))
+		}))
+		defer up.Close()
+		u, err := url.Parse(up.URL)
+		gomega.Expect(err).ToNot(gomega.HaveOccurred())
+
+		vp := NewVHostProxy(VHostKey{Port: 8443}, NewVHostProxyManager())
+		vp.mu.Lock()
+		vp.routes["example.test"] = []*Route{{
+			Handler: meter.MakeMeteredHTTPHandler(httputil.NewSingleHostReverseProxy(u)),
+		}}
+		vp.mu.Unlock()
+
+		res := serve(vp)
+		res.Body.Close()
+		gomega.Expect(res.StatusCode).To(gomega.Equal(http.StatusOK))
+		gomega.Expect(res.Header.Values("Alt-Svc")).To(gomega.BeEmpty())
+
+		// Mark HTTP/3 as up without opening a UDP socket; ServeHTTP only
+		// checks that the h3 server is present.
+		vp.mu.Lock()
+		vp.h3 = &http3.Server{}
+		vp.mu.Unlock()
+
+		res = serve(vp)
+		res.Body.Close()
+		gomega.Expect(res.StatusCode).To(gomega.Equal(http.StatusOK))
+		gomega.Expect(res.Header.Values("Alt-Svc")).To(gomega.Equal([]string{`h3=":8443"; ma=2592000`}))
 	})
 })
