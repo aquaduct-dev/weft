@@ -43,11 +43,11 @@ var listCmd = &cobra.Command{
 	Args:  cobra.MaximumNArgs(1),
 	Run: func(cmd *cobra.Command, args []string) {
 		weftURL, err := url.Parse(args[0])
-		if weftURL.Port() == "" {
-			weftURL.Host = weftURL.Host + ":9092"
-		}
 		if err != nil {
 			log.Fatal().Err(err).Msg("Invalid weft URL")
+		}
+		if weftURL.Port() == "" {
+			weftURL.Host = weftURL.Host + ":9092"
 		}
 		client, err := auth.Login(weftURL.Host, weftURL.User.String(), "list-client")
 		if err != nil {
