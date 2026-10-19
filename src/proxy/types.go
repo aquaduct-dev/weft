@@ -311,7 +311,10 @@ func (w *WGAwareUDPConn) ReadFromUDP(b []byte) (int, *net.UDPAddr, error) {
 		return w.netConn.ReadFromUDP(b)
 	}
 	n, addr, err := w.goNetConn.ReadFrom(b)
-	return n, addr.(*net.UDPAddr), err
+	// gonet returns a nil net.Addr on error (e.g. the conn was closed), and a
+	// single-value assertion on a nil interface panics, so use comma-ok.
+	udpAddr, _ := addr.(*net.UDPAddr)
+	return n, udpAddr, err
 }
 
 func (w *WGAwareUDPConn) Write(b []byte) (int, error) {

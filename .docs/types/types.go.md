@@ -4,7 +4,7 @@ This file defines the Go structs for API request and response payloads, includin
 
 The `types` package serves as the contract layer for the HTTP API, ensuring type-safe serialization of JSON bodies. It groups related data structures into logical categories:
 
-*   **Tunnel Management**: `ConnectRequest` and `ConnectResponse` handle the lifecycle of establishing a tunnel, including optional TLS termination via `CertificatePEM` and `PrivateKeyPEM`.
+*   **Tunnel Management**: `ConnectRequest` and `ConnectResponse` carry tunnel establishment (keys, port, protocol, hostname, tunnel name; WireGuard addresses and ports in the response). `ConnectRequest` also carries HTTP routing and rewriting for the server's proxy (`RemotePath`, `RemoteQuery`, `RemoteFragment`, `RemoteModifiers`) and an optional `CertificatePEM`/`PrivateKeyPEM` pair the server uses to terminate TLS for that tunnel's `Hostname`.
 *   **Health & Status**: `HealthcheckRequest` and `HealthcheckResponse` provide simple status reporting mechanisms.
 *   **Certificates**: `CertInfo` and `CertificatesResponse` expose details about cached TLS certificates, such as validity periods (`NotBefore`, `NotAfter`) and issuers.
 *   **Usage Metrics**: `TunnelUsage` and `UsageReport` aggregate byte-level traffic statistics (TX/RX) per tunnel instance.

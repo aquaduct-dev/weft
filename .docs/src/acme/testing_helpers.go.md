@@ -8,9 +8,9 @@ The `acme` package uses internal variables (`lookupIP`, `interfaceAddrs`) to abs
 ## Functions
 
 ### DNS Seams
-- **`SwapLookupIPForTest(hostsToIPs map[string][]string) func(string) ([]net.IP, error)`**: Replaces the global `lookupIP` function with a closure that returns specified IPs for given hosts. Returns the previous function for restoration. Hosts not in the map return a "no such host" error.
+- **`SwapLookupIPForTest(hostsToIPs map[string][]string) func(string) ([]net.IP, error)`**: Replaces the global `lookupIP` function with a closure that returns specified IPs for given hosts. Returns the previous function for restoration. Hosts not in the map return a "no such host" error; address strings that do not parse as IPs are silently skipped.
 - **`RestoreLookupIPForTest(prev func(string) ([]net.IP, error))`**: Restores the original `lookupIP` function returned by `SwapLookupIPForTest`.
 
 ### Interface Address Seams
-- **`SwapInterfaceAddrsForTest(localAddrs []string) func() ([]net.Addr, error)`**: Replaces the global `interfaceAddrs` function with a closure returning the provided IP addresses as `*net.IPNet`. Returns the previous function for restoration.
+- **`SwapInterfaceAddrsForTest(localAddrs []string) func() ([]net.Addr, error)`**: Replaces the global `interfaceAddrs` function with a closure returning the provided IP addresses as `*net.IPNet` (strings that do not parse as IPs are silently skipped). Returns the previous function for restoration.
 - **`RestoreInterfaceAddrsForTest(prev func() ([]net.Addr, error))`**: Restores the original `interfaceAddrs` function returned by `SwapInterfaceAddrsForTest`.

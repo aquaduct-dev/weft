@@ -107,6 +107,32 @@ func startVersionServer(t *testing.T, commit, date string) string {
 	return strings.TrimPrefix(srv.URL, "https://")
 }
 
+func TestJwtExpiry(t *testing.T) {
+	want := time.Now().Add(time.Hour).Truncate(time.Second)
+	got, err := jwtExpiry(generateToken(want))
+	if err != nil {
+		t.Fatalf("jwtExpiry returned error for a token with exp: %v", err)
+	}
+	if !got.Equal(want) {
+		t.Fatalf("jwtExpiry = %v, want %v", got, want)
+	}
+
+	// A token without exp must produce an error, not a panic, and the
+	// round tripper must treat it as invalid.
+	noExp, _ := jwt.NewWithClaims(jwt.SigningMethodHS256, jwt.MapClaims{"sub": "x"}).SignedString([]byte("secret"))
+	if _, err := jwtExpiry(noExp); err == nil {
+		t.Fatal("jwtExpiry returned no error for a token without exp")
+	}
+	h := WithJWT(&MockRoundTripper{}, noExp, nil)
+	if h.IsJWTValid() {
+		t.Fatal("IsJWTValid returned true for a token without exp")
+	}
+
+	if _, err := jwtExpiry("not-a-jwt"); err == nil {
+		t.Fatal("jwtExpiry returned no error for a malformed token")
+	}
+}
+
 func TestAnnotateWithVersions_Mismatch(t *testing.T) {
 	addr := startVersionServer(t, "deadbee", "2026-01-01")
 

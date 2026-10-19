@@ -13,7 +13,7 @@ The `vhost` package provides a robust infrastructure for hosting multiple domain
 Automatic certificate issuance is handled by `AddHostWithACME`, which binds port 80, probes reachability, and fetches certificates asynchronously. In distributed clusters, `acme_redirect.go` coordinates HTTP-01 challenges among peers. It uses a leader-fallback strategy: if a peer is registered for a host, requests are redirected there; otherwise, it falls back to the highest-IP node or local handling, preventing split-brain scenarios during renewal.
 
 ### Metering & Transport
-The embedded `meter` package tracks byte-level metrics for all connections. For HTTP/1.1 and HTTP/2, it wraps `net.Conn` to count I/O operations. For HTTP/3 (QUIC), it instruments the application layer since per-request connection hooks are unavailable. Additionally, `WGAwareRoundTripper` ensures internal WireGuard addresses are routed through the userspace network stack, with failure tracking to trigger tunnel cleanup.
+The embedded `meter` package tracks byte-level metrics for all connections. For HTTP/1.1 and HTTP/2, it wraps `net.Conn` to count I/O operations. For HTTP/3 (QUIC), it instruments the application layer since per-request connection hooks are unavailable. Additionally, `WGAwareRoundTripper` routes targets whose host starts with `10.1` through the userspace network stack when it is given a non-nil `UserspaceDevice`, with failure tracking to trigger tunnel cleanup. Without a device (or for other hosts) it falls back to `http.DefaultTransport`.
 
 ### Error Handling
 Custom logging via `errorlog.go` filters noisy TLS handshake errors from `net/http`, logging them at debug level while surfacing other server errors as warnings. This reduces log spam for internet-exposed ports while maintaining visibility into critical failures.
@@ -21,7 +21,7 @@ Custom logging via `errorlog.go` filters noisy TLS handshake errors from `net/ht
 ## Key Interfaces
 - `VHostProxy`: Manages routes per hostname, handling request matching and modification.
 - `VHostProxyManager`: Orchestrates multiple proxies, manages ACME cache, and handles peer redirections.
-- `WGAwareRoundTripper`: Custom transport routing internal WireGuard addresses through a userspace stack.
+- `WGAwareRoundTripper`: Custom transport routing internal WireGuard addresses (`10.1.*`) through a userspace stack when a WireGuard device is provided; otherwise `http.DefaultTransport`.
 - `NewMeteredServer`: Creates an `http.Server` configured to extract connection counters from context.
 - `countingConn`: A `net.Conn` wrapper that increments atomic counters on I/O operations.
 - `countingResponseWriter`: Implements `http.ResponseWriter` to intercept and track header/body writes.

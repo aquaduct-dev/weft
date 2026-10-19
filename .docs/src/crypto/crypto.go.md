@@ -17,6 +17,6 @@ Reverses `Encrypt`. It derives the same AES key from `key`, extracts the nonce f
 Generates a new RSA private key (2048-bit) and a corresponding self-signed X.509 certificate. The certificate includes:
 - **Subject**: Uses `commonName`.
 - **Validity**: Valid for 10 years, starting 30 days in the past.
-- **SANs**: Includes `commonName`, "localhost", IPv4 zero address, loopback, and any IPs provided in `additionalIps`.
+- **SANs**: DNS names `commonName` and "localhost"; IP addresses from `additionalIps` plus the IPv4 zero address and 127.0.0.1. An entry in `additionalIps` that does not parse as an IP returns an error.
 - **Usage**: Server authentication.
 Returns PEM-encoded certificate and private key bytes.

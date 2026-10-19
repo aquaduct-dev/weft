@@ -35,9 +35,9 @@ type mockServer struct {
 
 func newMockServer() *mockServer {
 	s := &mockServer{
-		secret: "test-secret",
+		secret:     "test-secret",
 		challenges: make(map[string]string),
-		tunnels: make(map[string]client.TunnelInfo),
+		tunnels:    make(map[string]client.TunnelInfo),
 	}
 
 	mux := http.NewServeMux()
@@ -159,7 +159,7 @@ func (m *mockServer) listHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	tokenString := strings.TrimPrefix(authHeader, "Bearer ")
-	
+
 	// Validate JWT
 	token, err := jwt.Parse(tokenString, func(t *jwt.Token) (interface{}, error) {
 		return []byte(m.secret), nil
@@ -180,7 +180,7 @@ func (m *mockServer) shutdownHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	tokenString := strings.TrimPrefix(authHeader, "Bearer ")
-	
+
 	// Validate JWT and extract tunnelName from claims
 	token, err := jwt.Parse(tokenString, func(t *jwt.Token) (interface{}, error) {
 		return []byte(m.secret), nil
@@ -254,6 +254,25 @@ func TestShutdown(t *testing.T) {
 	assert.NoError(t, err)
 	err = cNonExistent.Shutdown()
 	assert.NoError(t, err) // Server returns 200 even if tunnel doesn't exist.
+}
+
+func TestShutdownNoTunnelName(t *testing.T) {
+	server := newMockServer()
+	defer server.close()
+
+	server.tunnels["my-test-tunnel"] = client.TunnelInfo{}
+
+	// An empty tunnelName must be rejected before any request is made, so the
+	// tunnel on the mock server is left untouched.
+	weftURL := fmt.Sprintf("weft://%s@%s", server.secret, server.server.Listener.Addr().String())
+	c, err := client.NewClient(weftURL, "")
+	assert.NoError(t, err)
+
+	err = c.Shutdown()
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), "tunnelName not specified")
+	_, exists := server.tunnels["my-test-tunnel"]
+	assert.True(t, exists)
 }
 
 func TestShutdownUnauthorized(t *testing.T) {

@@ -51,6 +51,51 @@ func TestServeHTTPMetered_CountsRequestAndResponse(t *testing.T) {
 	}
 }
 
+// TestServeHTTPMetered_FlushPropagates checks that a streaming handler can
+// flush through the counting writer to the underlying writer, and that
+// flushing between chunks does not change the byte accounting.
+func TestServeHTTPMetered_FlushPropagates(t *testing.T) {
+	chunk := strings.Repeat("s", 700)
+	run := func(flush bool) (*httptest.ResponseRecorder, uint64) {
+		mh := meter.MakeMeteredHTTPHandler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Content-Type", "text/event-stream")
+			for i := 0; i < 3; i++ {
+				_, _ = io.WriteString(w, chunk)
+				if flush {
+					f, ok := w.(http.Flusher)
+					if !ok {
+						t.Fatalf("metered writer does not implement http.Flusher")
+					}
+					f.Flush()
+				}
+			}
+		}))
+		rr := httptest.NewRecorder()
+		mh.ServeHTTPMetered(rr, httptest.NewRequest(http.MethodGet, "https://example.test/stream", nil))
+		t.Logf("flush=%v flushed=%v body=%d BytesTx=%d", flush, rr.Flushed, rr.Body.Len(), mh.BytesTx())
+		return rr, mh.BytesTx()
+	}
+
+	flushed, flushedTx := run(true)
+	plain, plainTx := run(false)
+
+	if !flushed.Flushed {
+		t.Fatalf("Flush did not reach the underlying ResponseWriter")
+	}
+	if plain.Flushed {
+		t.Fatalf("recorder reports a flush although the handler never flushed")
+	}
+	if flushed.Body.String() != strings.Repeat(chunk, 3) {
+		t.Fatalf("streamed body mismatch: got %d bytes", flushed.Body.Len())
+	}
+	if flushedTx != plainTx {
+		t.Errorf("BytesTx with flushes = %d, without = %d; flushing must not change accounting", flushedTx, plainTx)
+	}
+	if flushedTx <= uint64(3*len(chunk)) {
+		t.Errorf("BytesTx = %d, want > %d (body + headers)", flushedTx, 3*len(chunk))
+	}
+}
+
 func TestHTTP3_RoundTripAndMeters(t *testing.T) {
 	respBody := strings.Repeat("Y", 4096)
 	mh := meter.MakeMeteredHTTPHandler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

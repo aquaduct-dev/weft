@@ -8,6 +8,7 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"net/netip"
 	"net/url"
 	"strings"
 	"sync"
@@ -15,6 +16,7 @@ import (
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
+	"golang.zx2c4.com/wireguard/tun/netstack"
 )
 
 var _ = Describe("Proxy Tests", func() {
@@ -504,4 +506,57 @@ var _ = Describe("Proxy Conflicts", func() {
 		Expect(p4.Conflicts(p3)).To(BeTrue())
 	})
 
+})
+
+var _ = Describe("parseModifiers", func() {
+	parse := func(raw string) map[string]string {
+		u, err := url.Parse(raw)
+		Expect(err).NotTo(HaveOccurred())
+		mods := parseModifiers(u)
+		GinkgoWriter.Printf("parseModifiers(%q) = %v\n", raw, mods)
+		return mods
+	}
+
+	It("returns an empty map when the URL has no fragment", func() {
+		Expect(parse("http://localhost:8080/")).To(BeEmpty())
+	})
+
+	It("parses header modifiers, keeping everything after the first '='", func() {
+		Expect(parse("http://localhost:8080/#Forwarded=true&X-Forwarded-For=!del&Authorization=+auth&X-Eq=a=b")).To(Equal(map[string]string{
+			"Forwarded":       "true",
+			"X-Forwarded-For": "!del",
+			"Authorization":   "+auth",
+			"X-Eq":            "a=b",
+		}))
+	})
+
+	It("maps the bare redirect token to redirect=true", func() {
+		Expect(parse("http://localhost:8080/#redirect")).To(Equal(map[string]string{"redirect": "true"}))
+	})
+
+	It("ignores bare tokens other than redirect and empty parts", func() {
+		Expect(parse("http://localhost:8080/#bogus&&X-A=1")).To(Equal(map[string]string{"X-A": "1"}))
+	})
+})
+
+var _ = Describe("WGAwareUDPConn", func() {
+	It("returns the read error instead of panicking when the gvisor conn is closed (nil addr)", func() {
+		_, tnet, err := netstack.CreateNetTUN([]netip.Addr{netip.MustParseAddr("10.1.0.2")}, nil, 1420)
+		Expect(err).NotTo(HaveOccurred())
+		gconn, err := tnet.ListenUDP(&net.UDPAddr{IP: net.ParseIP("10.1.0.2"), Port: 40000})
+		Expect(err).NotTo(HaveOccurred())
+		w := WGAwareUDPConn{goNetConn: gconn}
+		Expect(w.Close()).To(Succeed())
+
+		var (
+			n    int
+			addr *net.UDPAddr
+			rerr error
+		)
+		Expect(func() { n, addr, rerr = w.ReadFromUDP(make([]byte, 16)) }).NotTo(Panic())
+		GinkgoWriter.Printf("ReadFromUDP on closed gonet conn: n=%d addr=%v err=%v\n", n, addr, rerr)
+		Expect(rerr).To(HaveOccurred())
+		Expect(addr).To(BeNil())
+		Expect(n).To(Equal(0))
+	})
 })

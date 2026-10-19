@@ -1,10 +1,20 @@
-load("@rules_go//go:def.bzl", "go_library")
+load("@rules_go//go:def.bzl", "go_library", "go_test")
 
 go_library(
     name = "logging",
     srcs = ["logging.go"],
     importpath = "github.com/aquaduct-dev/weft/src/logging",
     visibility = ["//visibility:public"],
+    deps = [
+        "@com_github_rs_zerolog//:zerolog",
+        "@com_github_rs_zerolog//log",
+    ],
+)
+
+go_test(
+    name = "logging_test",
+    srcs = ["logging_test.go"],
+    embed = [":logging"],
     deps = [
         "@com_github_rs_zerolog//:zerolog",
         "@com_github_rs_zerolog//log",

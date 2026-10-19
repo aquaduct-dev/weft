@@ -7,7 +7,7 @@ This module serves as the DNS abstraction layer for the Weft project, isolating 
 
 ## Deep Dive
 ### Cloudflare Integration
-The core functionality resides in `cloudflare.go`, which implements the `UpdateRecord` function. This function authenticates with Cloudflare using an API token and resolves the correct zone by finding the longest matching domain suffix. It then performs a cleanup phase, deleting all existing A and CNAME records associated with the target hostname to prevent conflicts. Finally, it creates a new A record pointing to the specified IP address with a 120-second TTL and proxy disabled. To maintain an audit trail, it also creates a TXT record containing a timestamped message indicating the update action.
+The core functionality resides in `cloudflare.go`, which implements the `UpdateRecord` function. This function authenticates with Cloudflare using an API token and resolves the correct zone by finding the longest zone name that the hostname equals or ends in (on a label boundary). It then performs a cleanup phase, deleting every existing DNS record of any type (A, AAAA, CNAME, TXT, MX, ...) whose name is exactly the target hostname, to prevent conflicts. Finally, it creates a new A record pointing to the specified IP address with a 120-second TTL and proxy disabled. To maintain an audit trail, it also creates a TXT record containing a timestamped message indicating the update action.
 
 ### Error Handling and Logging
 Errors from the Cloudflare API are wrapped and returned, allowing higher-level services to handle retries or reporting appropriately. Structured logging is handled via Zerolog, ensuring that DNS operations are traceable within the application's logs.

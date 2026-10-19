@@ -183,6 +183,8 @@ func GetToken(serverAddr, connectionSecret, proxyName string) (string, []byte, e
 	return loginResp.Token, certPEM, nil
 }
 
+// jwtExpiry returns the exp claim of an unverified JWT. It errors (rather than
+// panicking) when the token does not parse or exp is missing or non-numeric.
 func jwtExpiry(jwtString string) (time.Time, error) {
 	token, _, err := jwt.NewParser().ParseUnverified(jwtString, jwt.MapClaims{})
 	if err != nil {
@@ -192,9 +194,11 @@ func jwtExpiry(jwtString string) (time.Time, error) {
 	if !ok {
 		return time.Now(), errors.New("failed to get JWT claims")
 	}
-	exp := int64(claims["exp"].(float64))
-	jwtExpiry := time.Unix(exp, 0)
-	return jwtExpiry, nil
+	exp, ok := claims["exp"].(float64)
+	if !ok {
+		return time.Now(), errors.New("JWT missing or non-numeric exp claim")
+	}
+	return time.Unix(int64(exp), 0), nil
 }
 
 // Login performs the full zero-trust authentication flow with the server, including
@@ -247,23 +251,12 @@ func (h *withJwt) IsJWTValid() bool {
 	if h.jwt == "" {
 		return false
 	}
-	token, _, err := jwt.NewParser().ParseUnverified(h.jwt, jwt.MapClaims{})
+	exp, err := jwtExpiry(h.jwt)
 	if err != nil {
-		log.Warn().Err(err).Msg("Failed to parse JWT; treating as invalid and forcing refresh")
+		log.Warn().Err(err).Msg("Failed to read JWT expiry; treating as invalid and forcing refresh")
 		return false
 	}
-	claims, ok := token.Claims.(jwt.MapClaims)
-	if !ok {
-		log.Warn().Msg("JWT claims unexpected type; treating as invalid and forcing refresh")
-		return false
-	}
-	expFloat, ok := claims["exp"].(float64)
-	if !ok {
-		log.Warn().Msg("JWT missing or non-numeric exp claim; treating as invalid")
-		return false
-	}
-	jwtExpiry := time.Unix(int64(expFloat), 0)
-	return time.Until(jwtExpiry) > 1*time.Minute
+	return time.Until(exp) > 1*time.Minute
 }
 
 func (h *withJwt) RoundTrip(req *http.Request) (*http.Response, error) {

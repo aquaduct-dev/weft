@@ -107,7 +107,7 @@ var tunnelCmd = &cobra.Command{
 			if err != nil {
 				log.Fatal().Err(err).Str("local", localStr).Str("remote", remoteStr).Msg("Failed to start tunnel")
 			}
-			
+
 			cleanupLock.Lock()
 			cleanups = append(cleanups, cleanup)
 			cleanupLock.Unlock()
@@ -254,7 +254,7 @@ func startTunnel(serverIP, connectionSecret, localStr, remoteStr, tunnelName str
 	cleanup := func() {
 		log.Info().Str("tunnel", tunnelName).Msg("Stopping tunnel")
 		monitor.Stop()
-		
+
 		// Notify server to shutdown this tunnel
 		shutdownURL := func() string {
 			if _, _, perr := net.SplitHostPort(serverIP); perr == nil {
@@ -263,11 +263,21 @@ func startTunnel(serverIP, connectionSecret, localStr, remoteStr, tunnelName str
 			return fmt.Sprintf("https://%s/shutdown", net.JoinHostPort(serverIP, "9092"))
 		}()
 		req, _ := http.NewRequest(http.MethodPost, shutdownURL, nil)
-		if resp, err := httpClient.Do(req); err == nil && resp != nil {
+		resp, err := httpClient.Do(req)
+		if err != nil {
+			// Best effort: the server's janitor reaps the tunnel once
+			// healthchecks stop, so log and keep tearing down.
+			log.Warn().Err(err).Str("tunnel", tunnelName).Str("url", shutdownURL).Msg("Failed to notify server of tunnel shutdown")
+		} else if resp != nil {
+			if resp.StatusCode < 200 || resp.StatusCode > 299 {
+				log.Warn().Int("status", resp.StatusCode).Str("tunnel", tunnelName).Str("url", shutdownURL).Msg("Server rejected tunnel shutdown notification")
+			} else {
+				log.Debug().Int("status", resp.StatusCode).Str("tunnel", tunnelName).Msg("Server acknowledged tunnel shutdown")
+			}
 			io.Copy(io.Discard, resp.Body)
 			resp.Body.Close()
 		}
-		
+
 		if device != nil && device.Device != nil {
 			device.Device.Close()
 		}

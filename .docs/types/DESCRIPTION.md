@@ -7,7 +7,10 @@ This directory establishes the type-safe serialization contract between the serv
 
 ## Deep Dive
 ### Tunnel Management
-`ConnectRequest` and `ConnectResponse` handle the lifecycle of establishing a tunnel. They support optional TLS termination via `CertificatePEM` and `PrivateKeyPEM`, allowing secure connection setup without exposing raw socket handling in higher-level handlers.
+`ConnectRequest` and `ConnectResponse` are the `/connect` payloads. The request's fields fall into three groups:
+- Tunnel establishment: `ClientPublicKey`, `RemotePort`, `Protocol`, `Hostname` and `TunnelName`; the response returns the WireGuard side (`ServerPublicKey`, `ClientAddress`, `ServerWGPort`, `TunnelProxyPort`).
+- Request routing and rewriting on the server's proxy for HTTP tunnels: `RemotePath` (prefix matched and stripped), `RemoteQuery` and `RemoteFragment` (matchers), and `RemoteModifiers` (header edits or `redirect`, taken from the local URL's fragment).
+- Optional server-side TLS: when `CertificatePEM` and `PrivateKeyPEM` are set, the server terminates TLS for that tunnel's `Hostname` with this certificate instead of using ACME. They play no part in the client's control-API or WireGuard connection.
 
 ### Health & Status
 `HealthcheckRequest` and `HealthcheckResponse` provide simple status reporting mechanisms. These lightweight structs enable quick verification of service availability and internal state consistency.

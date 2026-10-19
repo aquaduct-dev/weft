@@ -25,21 +25,7 @@ func UpdateRecord(token string, hostname string, targetIP string) error {
 		return fmt.Errorf("failed to list zones: %w", err)
 	}
 
-	var zoneID string
-	var zoneName string
-	maxLen := 0
-
-	for _, z := range zones {
-		if strings.HasSuffix(hostname, z.Name) {
-			// Find the longest matching zone (e.g. for foo.bar.com, match bar.com over com)
-			if len(z.Name) > maxLen {
-				maxLen = len(z.Name)
-				zoneID = z.ID
-				zoneName = z.Name
-			}
-		}
-	}
-
+	zoneID, zoneName := findZone(zones, hostname)
 	if zoneID == "" {
 		return fmt.Errorf("could not find zone for hostname %s", hostname)
 	}
@@ -88,4 +74,28 @@ func UpdateRecord(token string, hostname string, targetIP string) error {
 
 	log.Info().Str("hostname", hostname).Str("ip", targetIP).Msg("Updated Cloudflare DNS records")
 	return nil
+}
+
+// findZone returns the ID and name of the zone that hostname belongs to,
+// picking the longest match (e.g. for foo.bar.com, bar.com over com). A zone
+// matches when hostname equals it or ends in "."+zone, so "notexample.com"
+// does not match zone "example.com". Comparison ignores case and a trailing
+// dot. It returns empty strings when no zone matches.
+func findZone(zones []cloudflare.Zone, hostname string) (string, string) {
+	host := strings.ToLower(strings.TrimSuffix(hostname, "."))
+	var zoneID, zoneName string
+	maxLen := 0
+	for _, z := range zones {
+		name := strings.ToLower(strings.TrimSuffix(z.Name, "."))
+		if name == "" || (host != name && !strings.HasSuffix(host, "."+name)) {
+			continue
+		}
+		if len(name) > maxLen {
+			maxLen = len(name)
+			zoneID = z.ID
+			zoneName = z.Name
+		}
+	}
+	log.Debug().Str("hostname", hostname).Str("zone", zoneName).Int("candidates", len(zones)).Msg("Cloudflare zone lookup")
+	return zoneID, zoneName
 }

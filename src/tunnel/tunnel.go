@@ -35,8 +35,8 @@ import (
 //     and the server peer (server public key, allowed IPs, endpoint, and keepalive)
 //   - create and return a UserspaceDevice bound to the assigned client address.
 //
-// Note: endpoint is currently set to the control API loopback (127.0.0.1:9092) as a
-// default placeholder to match the prior in-repo behaviour.
+// The peer endpoint is the server address (resolved to an IP if serverIP is a
+// hostname) joined with resp.ServerWGPort.
 func Tunnel(serverIP string, localUrl *url.URL, hostname string, resp *types.ConnectResponse, privateKey wgtypes.Key, p *proxy.ProxyManager, tunnelName string, tlsCertPEM []byte, tlsKeyPEM []byte) (*wireguard.UserspaceDevice, error) {
 	clientAddress, err := netip.ParseAddr(resp.ClientAddress)
 	if err != nil {
@@ -150,4 +150,3 @@ func buildRemoteURL(localUrl *url.URL, hostname string, resp *types.ConnectRespo
 	}
 	return remoteUrl, nil
 }
-

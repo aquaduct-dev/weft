@@ -7,7 +7,7 @@ The `constants` package serves as a single source of truth for static configurat
 
 ## Deep Dive
 ### Static Configuration Defaults
-The package defines several key constants that establish the baseline network topology. `DefaultSubnetString` sets the CIDR notation for the peer subnet (`10.1.0.0/16`), while `DefaultServerIPString` assigns the server's IP address within that range. These strings provide a clear, human-readable reference for documentation and manual configuration overrides. Additionally, `WGPrivateKeyRedacted` is included strictly for logging safety, ensuring that actual private keys are never accidentally exposed in logs or error messages.
+The package defines several key constants that establish the baseline network topology. `DefaultSubnetString` sets the CIDR notation for the peer subnet (`10.1.0.0/16`), while `DefaultServerIPString` assigns the server's IP address within that range. These strings provide a clear, human-readable reference for documentation and manual configuration overrides.
 
 ### Pre-Parsed Network Types
 To avoid repeated parsing overhead, the package exposes pre-computed `netip` variables derived from the string constants. `DefaultSubnet` is initialized using `netip.MustParsePrefix`, and `DefaultServerIP` uses `netip.MustParseAddr`. These functions panic if the hardcoded strings are malformed, shifting validation responsibility to the initialization phase. This design choice ensures that any downstream package accessing these variables receives valid, ready-to-use network addresses without needing to handle potential parse errors.
@@ -15,7 +15,6 @@ To avoid repeated parsing overhead, the package exposes pre-computed `netip` var
 ## Key Interfaces
 - `DefaultSubnetString`: The default CIDR notation for the WireGuard peer subnet.
 - `DefaultServerIPString`: The default IP address assigned to the server interface.
-- `WGPrivateKeyRedacted`: A placeholder string for safe logging practices.
 - `DefaultSubnet`: Pre-parsed `netip.Prefix` for the default subnet.
 - `DefaultServerIP`: Pre-parsed `netip.Addr` for the default server IP.
 

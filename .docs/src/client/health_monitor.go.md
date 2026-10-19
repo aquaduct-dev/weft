@@ -16,4 +16,4 @@ This file implements an adaptive health monitoring loop that adjusts check frequ
 - **`doHealthcheck`**: Executes the request. Classifies errors into permanent (fatal) or transient. Updates `consecutiveFailures` and `recentFailures` for sliding window logic. Adjusts `currentInterval` using backoff multiplier up to `MaxInterval`.
 
 ### Integration
-Used by tunnel components to ensure connectivity. Permanent failures trigger `log.Fatal` via `OnFatal`, crashing the application to prevent silent degradation.
+Used by tunnel components to ensure connectivity. Permanent failures call `OnFatal`, which defaults to `log.Fatal` (exiting the process to prevent silent degradation) when the caller does not supply one.

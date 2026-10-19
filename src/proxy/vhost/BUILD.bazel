@@ -40,6 +40,7 @@ go_test(
         "//src/proxy/vhost/meter",
         "@com_github_onsi_ginkgo_v2//:ginkgo",
         "@com_github_onsi_gomega//:gomega",
+        "@com_github_quic_go_quic_go//http3",
         "@com_github_rs_zerolog//log",
     ],
 )

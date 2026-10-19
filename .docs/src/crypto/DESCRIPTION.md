@@ -10,7 +10,7 @@ This directory implements core cryptographic functions required by the Weft serv
 The package exposes `Encrypt` and `Decrypt` functions that handle AES-256-GCM operations. To ensure compatibility with string-based inputs, the input key is hashed using SHA-256 to derive a fixed 256-bit AES key. Encryption prepends a random nonce to the ciphertext, allowing decryption to extract it automatically. This design simplifies usage while maintaining security standards against replay attacks.
 
 ### Certificate Generation
-For scenarios requiring mutual TLS or local testing, `GenerateCert` creates self-signed X.509 certificates. It generates a 2048-bit RSA private key and a corresponding certificate valid for ten years. The certificate Subject Alternative Names (SANs) are automatically populated with "localhost", IPv4 zero address, loopback addresses, and any user-provided IPs. This automation reduces boilerplate code when setting up secure local environments.
+For scenarios requiring mutual TLS or local testing, `GenerateCert` creates self-signed X.509 certificates. It generates a 2048-bit RSA private key and a corresponding certificate valid for ten years. The certificate Subject Alternative Names (SANs) are automatically populated: the DNS names are `commonName` and "localhost", and the IP addresses are any user-provided IPs plus the IPv4 zero address and 127.0.0.1. A user-provided entry that is not a valid IP makes `GenerateCert` return an error. This automation reduces boilerplate code when setting up secure local environments.
 
 ## Key Interfaces
 *   `func Encrypt(key, text string) ([]byte, error)`

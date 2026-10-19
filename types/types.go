@@ -15,7 +15,11 @@ type ConnectRequest struct {
 	RemoteQuery string `json:"remote_query,omitempty"`
 	// Fragment to match on the remote side (used for headers/methods).
 	RemoteFragment string `json:"remote_fragment,omitempty"`
-	// Modifiers to apply to the request (from localURL fragment).
+	// Modifiers to apply to the request (from localURL fragment), as an
+	// "&"-separated list. "Name=value" sets a request header ("!del" removes
+	// it, a leading "+" sets it only when absent) and the bare token
+	// "redirect" turns the route into an HTTP redirect to the local URL.
+	// Parsed by proxy.parseModifiers; tokens matching neither form are ignored.
 	RemoteModifiers string `json:"remote_modifiers,omitempty"`
 	// Optional PEM-encoded certificate and private key. When provided,
 	// the server will terminate TLS for the given Hostname using this cert.
@@ -45,13 +49,17 @@ type ConnectResponse struct {
 
 // HealthcheckRequest is the request body for health checks.
 type HealthcheckRequest struct {
-	// Optional: A message to include in the health check request.
+	// Optional free-form text for debugging only. The server does not act on
+	// it; it echoes it back inside HealthcheckResponse.Message. The client
+	// sends the tunnel name and a timestamp.
 	Message string `json:"message,omitempty"`
 }
 
 // HealthcheckResponse is the response body for health checks.
 type HealthcheckResponse struct {
-	Status  string `json:"status"`
+	Status string `json:"status"`
+	// Message is human-readable diagnostic text (proxy name, peer IP and the
+	// echoed request message). Clients only log it; it is not machine-parsed.
 	Message string `json:"message,omitempty"`
 }
 
