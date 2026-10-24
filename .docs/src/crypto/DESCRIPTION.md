@@ -17,7 +17,7 @@ The package exposes `Encrypt` and `Decrypt` functions that utilize AES-256 in Ga
 ## Key Interfaces
 *   `func Encrypt(key []byte, plaintext []byte) ([]byte, error)`
 *   `func Decrypt(key []byte, ciphertext []byte) ([]byte, error)`
-*   `func GenerateCert(commonName string, additionalIps []string) (*x509.Certificate, *rsa.PrivateKey, error)`
+*   `func GenerateCert(commonName string, additionalIps []string) ([]byte, []byte, error)` — returns the PEM-encoded certificate and PEM-encoded RSA private key
 
 ## Dependencies
 *   `golang.org/x/crypto` (implied by GCM usage)
