@@ -1,15 +1,13 @@
-<!-- docdaemon ts:2026-10-19T23:25:56Z hash:a46a23d7a115a3b3 model:openrouter/qwen/qwen3.7-flash -->
+<!-- docdaemon ts:2026-10-29T21:04:48Z hash:a80835c6154e93e2 model:openrouter/qwen/qwen3.7-flash -->
 ## TL;DR
-This file implements the core tunneling dataplane, managing WireGuard peer state and HTTP/TCP/UDP proxy lifecycle.
+This file implements the `TunnelDataplane`, managing WireGuard device state and proxying traffic for client tunnels.
 
-### `TunnelDataplane`
-The main struct holding the WireGuard device, private key, and a `ProxyManager`. It coordinates between network tunnels and application-level proxies.
+The `TunnelDataplane` struct encapsulates a WireGuard userspace device, its private key, and an associated `ProxyManager`. It initializes by creating the WireGuard device on a specified port and binding IP, then configuring the proxy manager with cleanup handlers.
 
-### Key Functions
+Key responsibilities include:
 
-*   **`NewTunnelDataplane`**: Initializes the WireGuard device and proxy manager. Sets up cleanup hooks for graceful shutdown.
-*   **`UpdateWireGuardConfig`**: Incrementally reconciles WireGuard peers. Instead of replacing all peers (which discards learned roaming endpoints), it adds new peers and removes departed ones to maintain connectivity stability during churn.
-*   **`StartProxy`**: Creates a proxy instance for a specific tunnel request. It determines the protocol (TCP, UDP, HTTP, HTTPS) and configures source/destination URLs. For HTTPS, it optionally injects custom TLS certificates if provided in the request.
-*   **`CloseProxy`**: Terminates a named proxy instance.
-*   **`GetProxyCounters`**: Returns traffic statistics (Tx/Rx bytes) for all active proxies.
-*   **ACME/Certificate Management**: Methods like `SetACMEEmail`, `ListCertificates`, and `RegisterACMERedirect` delegate to the underlying VHost proxy manager to handle TLS certificate issuance, caching, and ACME challenge redirection.
+*   **Peer Reconciliation (`UpdateWireGuardConfig`)**: Incrementally adds or removes peers to preserve learned endpoints (roaming state). This avoids the "churn storm" where replacing all peers wipes return paths for active tunnels. It parses the current IPC config to identify existing keys and only applies diffs.
+*   **Proxy Management**: Spawns proxies for incoming tunnel requests via `StartProxy`, supporting TCP, UDP, HTTP, and HTTPS protocols. For HTTPS, it optionally injects custom TLS certificates. Proxies are identified by name and can be closed individually.
+*   **Certificate & ACME Integration**: Delegates certificate listing and ACME failure reporting to the underlying `VHostProxyManager`, exposing them for monitoring endpoints.
+
+The dataplane is designed for high-churn environments where maintaining persistent connections across dynamic peer sets is critical.

@@ -1,16 +1,17 @@
-<!-- docdaemon ts:2026-10-19T23:26:03Z hash:f1405efde286e116 model:openrouter/qwen/qwen3.7-flash -->
+<!-- docdaemon ts:2026-10-29T21:04:45Z hash:9d9fe91df9a99586 model:openrouter/qwen/qwen3.7-flash -->
 ## TL;DR
-This file provides exported test seams to inject deterministic DNS and network interface state for cross-package testing.
+This file provides exported test seams to mock DNS resolution, local network interfaces, and peer dialing for the ACME challenge proxy.
 
-### Purpose
-These helpers allow tests in other packages (e.g., `src/proxy/vhost`) to control the behavior of `net.LookupIP` and local interface addresses without modifying production code. They are strictly for testing and must not be called in non-test contexts.
+These helpers allow cross-package tests (e.g., in `src/proxy/vhost`) to inject deterministic state without affecting production behavior. They replace package-level function variables (`lookupIP`, `interfaceAddrs`, `dialPeer`) with closures that return controlled data.
 
 ### Key Functions
 
-*   **SwapLookupIPForTest**: Replaces the package-level `lookupIP` function with a closure that returns mapped IPs for specified hosts. Unparseable IP strings are silently skipped. Returns the previous function for restoration.
-*   **RestoreLookupIPForTest**: Restores the original `lookupIP` function returned by `SwapLookupIPForTest`.
-*   **SwapInterfaceAddrsForTest**: Replaces the `interfaceAddrs` seam to return a fixed list of local IP addresses as `net.IPNet` objects. Invalid IPs are ignored. Returns the previous function.
-*   **RestoreInterfaceAddrsForTest**: Restores the original `interfaceAddrs` function.
+*   **`SwapLookupIPForTest`**: Replaces `net.LookupIP` with a map of hostnames to IP addresses. Unparseable IPs are silently skipped. Returns the previous function for restoration.
+*   **`RestoreLookupIPForTest`**: Restores the original DNS lookup function.
+*   **`SwapInterfaceAddrsForTest`**: Mocks local interface addresses by converting dotted-decimal strings into `net.IPNet` objects. Invalid entries are ignored.
+*   **`RestoreInterfaceAddrsForTest`**: Restores the original interface address retrieval.
+*   **`SwapDialPeerForTest`**: Replaces the peer dialing logic with a custom function accepting context and IP. This is critical for testing peer-to-peer challenge routing where validators may land on different nodes.
+*   **`RestoreDialPeerForTest`**: Restores the original dialing function.
 
-### Design Notes
-The seams support peer fallback and leader election logic by allowing tests to simulate specific network states, such as unreachable peers or specific local bindings. This enables deterministic verification of ACME redirect coordination without relying on real network conditions.
+### Usage Notes
+All functions are exported solely for testing purposes. Production code must never call these. Always restore the previous seam function after tests complete to prevent state leakage between test cases.

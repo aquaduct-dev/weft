@@ -1,43 +1,44 @@
-<!-- docdaemon ts:2026-10-19T23:27:20Z hash:d3dd22692596eccb model:openrouter/qwen/qwen3.7-flash -->
+<!-- docdaemon ts:2026-10-29T21:06:07Z hash:c2e2818bd2922a0e model:openrouter/qwen/qwen3.7-flash -->
 ## TL;DR
-The `src/server` package implements the Weft control plane, managing WireGuard tunnel lifecycle, authentication, and ACME certificate issuance.
+The `src/server` package implements the Weft control plane, managing WireGuard tunnel lifecycle, authentication, and observability.
 
 ## Overview
-This directory serves as the central coordination point for the Weft bastion host, bridging HTTP API endpoints with underlying networking primitives. It handles peer registration, IP allocation, and proxy configuration while enforcing strict security policies via JWT-based authentication and constant-time secret comparisons. The server also includes background janitors to clean up stale tunnels and reporters to aggregate usage metrics.
+This directory contains the HTTP server that orchestrates client connections to the Weft mesh network. It handles JWT-based challenge-response authentication, provisions WireGuard peers with dynamic IP allocation, and manages background tasks like health-check janitors and usage reporting. The architecture separates HTTP handlers from core logic to facilitate modular testing and security hardening.
 
 ## Deep Dive
-### Tunnel Lifecycle & Dataplane
-The `TunnelDataplane` struct orchestrates WireGuard device state and HTTP/TCP/UDP proxies. Peer configuration is reconciled incrementally to preserve learned roaming endpoints, preventing connectivity loss during churn. The `Store` manages peer metadata and IP address allocation within a defined subnet, ensuring atomic creation to avoid leaks.
-
 ### Authentication & Security
-Authentication uses a challenge-response flow issuing signed JWTs. The `/login` endpoint generates encrypted challenges, while other routes require valid tokens via `requireJWT` middleware. Metrics endpoints use Basic Auth with constant-time comparison to prevent timing attacks. TLS certificates are managed via ACME, with peer-to-peer redirects for HTTP-01 challenges.
+The server enforces strict access controls using a multi-step challenge-response flow. Clients must exchange encrypted challenges for signed JWTs before accessing protected endpoints. Middleware validates these tokens, ensuring the subject claim matches the requested tunnel name to prevent hijacking. Metrics endpoints use constant-time comparison for secret validation to mitigate timing attacks.
 
-### Maintenance & Observability
-A `Janitor` goroutine periodically sweeps for stale tunnels that have missed health checks, removing them to free resources. Usage data is aggregated by an `HTTPUsageReporter` and sent to external endpoints. Prometheus-compatible metrics and JSON statistics are exposed for monitoring, with careful escaping of label values to prevent injection.
+### Tunnel Lifecycle Management
+Core connectivity is handled by `handlers_tunnel.go`, which coordinates peer creation, IP allocation, and proxy startup. To maintain network stability during high churn, `dataplane.go` performs incremental WireGuard configuration updates rather than full device rebuilds. This preserves learned roaming endpoints for active tunnels when others are removed, preventing traffic disruption.
+
+### Observability & Maintenance
+Operational health is monitored via Prometheus-compatible metrics and JSON status endpoints. A background `Janitor` periodically sweeps the store to remove tunnels that have failed health checks, preventing resource leaks. An `HTTPUsageReporter` aggregates traffic statistics and sends them to external monitoring systems asynchronously.
 
 ## Key Interfaces
-*   `Server`: Main coordinator embedding `http.Server`, handling mux, store, and dataplane.
-*   `TunnelDataplane`: Manages WireGuard peers, proxy instances, and ACME certificate state.
-*   `InMemoryTunnelStore`: Thread-safe storage for peer records, IPs, and last-seen timestamps.
-*   `Janitor`: Background worker that identifies and removes inactive tunnels based on health reports.
-*   `HTTPUsageReporter`: Periodic sender of tunnel traffic statistics to a configured URL.
+- `Server`: Main struct holding HTTP listener, store, dataplane, and secrets.
+- `TunnelDataplane`: Manages WireGuard device state and proxy routing.
+- `InMemoryTunnelStore`: Thread-safe storage for peer metadata and IP allocations.
+- `Janitor`: Background worker for cleaning up stale tunnels.
+- `HTTPUsageReporter`: Periodic reporter for tunnel traffic statistics.
 
 ## Dependencies
-*   `//src/acme`: Certificate management and ACME protocol handling.
-*   `//src/crypto`: Cryptographic utilities for encryption and hashing.
-*   `//src/dns`: DNS resolution and record updates.
-*   `//src/proxy`: Core proxying logic for TCP, UDP, and HTTP traffic.
-*   `//wireguard`: WireGuard device interface and IPC operations.
-*   External: `jwt` for token validation, `zerolog` for logging, `prometheus` for metrics.
+- Internal packages: `crypto`, `proxy`, `wireguard`, `version`.
+- External libraries: `github.com/golang-jwt/jwt/v4`, `google.golang.org/grpc`, `prometheus/client_golang`.
 
 ## Subcomponents
-*   `server.go`: Entry point and core server logic.
-*   `dataplane.go`: WireGuard and proxy lifecycle management.
-*   `store.go`: In-memory peer and IP state storage.
-*   `handlers_*.go`: HTTP handlers for auth, tunnels, certs, metrics, and health.
-*   `middleware.go`: JWT validation and context helpers.
-*   `janitor.go`: Stale tunnel cleanup scheduler.
-*   `usage_reporter.go`: Traffic metric aggregation and reporting.
-*   `types.go`: Core data structures and interfaces.
-*   `test_helpers_test.go`: Test stubs for dataplane isolation.
-*   `test_data/`: Build exports for test fixtures (currently empty).
+- `server.go`: Server initialization and TLS setup.
+- `middleware.go`: JWT validation middleware.
+- `handlers_auth.go`: Challenge-response login logic.
+- `handlers_tunnel.go`: Connect/Shutdown endpoint handlers.
+- `handlers_health.go`: Health check processing.
+- `handlers_metrics.go`: Prometheus and JSON metrics.
+- `handlers_certificates.go`: ACME certificate status.
+- `handlers_version.go`: Build metadata endpoint.
+- `dataplane.go`: WireGuard and proxy management.
+- `store.go`: In-memory peer and IP storage.
+- `janitor.go`: Stale tunnel cleanup.
+- `usage_reporter.go`: Traffic reporting.
+- `types.go`: Core data structures and interfaces.
+- `test_helpers_test.go`: Test stubs.
+- `test_data/`: TLS fixture labels.

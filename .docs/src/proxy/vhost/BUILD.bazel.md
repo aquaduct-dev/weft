@@ -1,7 +1,9 @@
-<!-- docdaemon ts:2026-10-19T23:25:51Z hash:ff8512b4ca70c359 model:openrouter/qwen/qwen3.7-flash -->
+<!-- docdaemon ts:2026-10-29T21:04:44Z hash:0fd8807efac28462 model:openrouter/qwen/qwen3.7-flash -->
 ## TL;DR
-This file defines the Bazel build targets for the `vhost` package, which manages virtual hosts, TLS certificates, and HTTP/3 termination.
+This Bazel build file defines the Go library and test targets for the virtual host proxying subsystem.
 
-The `go_library` target compiles `acme_redirect.go`, `errorlog.go`, and `vhost.go`. It exposes the package publicly to allow other modules to depend on virtual host management logic. Key dependencies include `quic-go` for HTTP/3 support, `autocert` for ACME certificate issuance, and internal utilities for logging and metering.
+The `vhost` library implements HTTP/HTTPS termination, ACME certificate management, and request routing for multiple virtual hosts. It supports HTTP/3 (QUIC) alongside standard TCP listeners, handling TLS handshakes via `autocert`. The system routes HTTP-01 ACME challenges to sibling nodes in a cluster to ensure validators can reach the node holding the key authorization, avoiding redirect issues with round-robin DNS. It also exposes a `/certificates` endpoint for monitoring cached TLS certificates.
 
-The `go_test` target runs the test suite using Ginkgo and Gomega. It embeds the main library and adds testing-specific dependencies like `src/crypto`. The tests cover ACME failure handling, certificate management, path prefix matching, and race conditions in concurrent access to TLS configurations and ACME hosts.
+Key dependencies include `quic-go` for HTTP/3 support, `zerolog` for structured logging, and internal packages for ACME logic, utility functions, metrics, and WireGuard integration. The `WGAwareRoundTripper` optimizes transport selection based on target IP ranges.
+
+Tests cover ACME failure scenarios, certificate handling, challenge proxying, path prefix matching, and race conditions using Ginkgo and Gomega.
