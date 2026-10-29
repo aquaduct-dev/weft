@@ -38,6 +38,3 @@ func (d *testDataplane) ListCertificates() ([]types.CertInfo, error) {
 func (d *testDataplane) ListACMEFailures() []types.ACMEFailure {
 	return d.acmeFailures
 }
-func (d *testDataplane) RegisterACMERedirect(host, peerIP string) error {
-	return nil
-}

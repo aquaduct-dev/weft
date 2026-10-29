@@ -1,4 +1,4 @@
-// Cross-package test seams for the ACME redirect coordination logic.
+// Cross-package test seams for the ACME challenge proxy.
 //
 // These helpers are exported solely so that tests living in *other* packages
 // (notably src/proxy/vhost) can inject deterministic DNS and interface
@@ -6,7 +6,10 @@
 // code.
 package acme
 
-import "net"
+import (
+	"context"
+	"net"
+)
 
 // SwapLookupIPForTest replaces the package-level lookupIP seam with a closure
 // driven by hostsToIPs (host → list of dotted-decimal addresses). Entries that
@@ -62,4 +65,18 @@ func SwapInterfaceAddrsForTest(localAddrs []string) func() ([]net.Addr, error) {
 // RestoreInterfaceAddrsForTest restores the interfaceAddrs seam.
 func RestoreInterfaceAddrsForTest(prev func() ([]net.Addr, error)) {
 	interfaceAddrs = prev
+}
+
+// SwapDialPeerForTest replaces the dialPeer seam so tests can route a peer IP
+// (as it appears in DNS) to a local listener address. Returns the previous
+// function for restoration via RestoreDialPeerForTest.
+func SwapDialPeerForTest(dial func(ctx context.Context, ip net.IP) (net.Conn, error)) func(context.Context, net.IP) (net.Conn, error) {
+	prev := dialPeer
+	dialPeer = dial
+	return prev
+}
+
+// RestoreDialPeerForTest restores the dialPeer seam.
+func RestoreDialPeerForTest(prev func(context.Context, net.IP) (net.Conn, error)) {
+	dialPeer = prev
 }

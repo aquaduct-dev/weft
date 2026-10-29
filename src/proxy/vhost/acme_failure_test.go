@@ -19,20 +19,14 @@ import (
 	"golang.org/x/crypto/acme/autocert"
 )
 
-// withACMEStubs replaces the certificate wait and peer-redirect loop seams for
-// the duration of the test.
+// withACMEStubs replaces the certificate wait seam for the duration of the
+// test.
 func withACMEStubs(t *testing.T, wait func(context.Context, *autocert.Manager, string) (*tls.Certificate, error)) {
 	t.Helper()
 	origWait := waitForCertificateFn
-	origLoop := registerRedirectsLoopFn
 	waitForCertificateFn = wait
-	registerRedirectsLoopFn = func(ctx context.Context, host string, _ int) {
-		t.Logf("stub redirect loop started for %s", host)
-		<-ctx.Done()
-	}
 	t.Cleanup(func() {
 		waitForCertificateFn = origWait
-		registerRedirectsLoopFn = origLoop
 	})
 }
 

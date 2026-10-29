@@ -4,7 +4,7 @@ go_library(
     name = "acme",
     srcs = [
         "acme.go",
-        "acme_redirect.go",
+        "challenge_proxy.go",
         "testing_helpers.go",
     ],
     importpath = "github.com/aquaduct-dev/weft/src/acme",
@@ -19,15 +19,13 @@ go_test(
     name = "acme_test",
     timeout = "short",
     srcs = [
-        "acme_redirect_test.go",
         "acme_test.go",
+        "challenge_proxy_test.go",
     ],
     embed = [":acme"],
     deps = [
         "@com_github_onsi_ginkgo_v2//:ginkgo",
         "@com_github_onsi_gomega//:gomega",
-        "@com_github_rs_zerolog//:zerolog",
-        "@com_github_rs_zerolog//log",
         "@org_golang_x_crypto//acme/autocert",
     ],
 )

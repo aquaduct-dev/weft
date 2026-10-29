@@ -277,13 +277,6 @@ type VHostProxyManager struct {
 	certsCachePath string
 	Cleanup        func(tunnelName string)
 
-	// redirects holds peer-registered ACME challenge redirects (set by
-	// RegisterPeerRedirect, read by tryRedirectChallenge). Guarded by
-	// redirectsMu — kept distinct from `mu` so the challenge hot-path
-	// doesn't contend with the bulk of the manager's state.
-	redirects   map[string]peerRedirect
-	redirectsMu sync.Mutex
-
 	// acmeFailures holds the last error from background ACME issuance per
 	// host (set by recordACMEFailure, cleared on a later success, read by
 	// ACMEFailures for GET /certificates). Guarded by acmeFailuresMu.
@@ -845,13 +838,9 @@ func (p *VHostProxy) AddHostWithACME(cfg RouteConfig) (VHostCloser, *meter.Meter
 		go func() {
 			defer closer.Close()
 
-			// Spin up the peer-redirect loop so that, if the CA's HTTP-01
-			// validator lands on a sibling node behind DNS round-robin, that
-			// node knows to 301 the challenge back to us. The loop runs until
-			// we cancel it once issuance returns (success or failure).
-			redirectCtx, cancelRedirect := context.WithCancel(context.Background())
-			defer cancelRedirect()
-			go registerRedirectsLoopFn(redirectCtx, cfg.Host, acme.DefaultPeerPort)
+			// If the CA's validator lands on a sibling node behind DNS
+			// round-robin, that node fetches our answer for it (see
+			// serveChallenge), so nothing needs registering here.
 
 			log.Debug().Str("host", cfg.Host).Str("proxy", cfg.ProxyName).Msg("VHost: waiting for ACME certificate in background")
 			cert, err := waitForCertificateFn(context.Background(), p.manager.acmeManager, cfg.Host)
@@ -899,12 +888,8 @@ func (p *VHostProxy) ServeHTTP(w *meter.MeteredResponseWriter, r *meter.MeteredR
 		host = h
 	}
 	if p.port == p.manager.acmePort && p.manager.acmeManager != nil && strings.HasPrefix(r.URL.Path, "/.well-known/acme-challenge/") {
-		if p.manager.tryRedirectChallenge(w, r.Request, host) {
-			return
-		}
-		handler := p.manager.acmeManager.HTTPHandler(nil)
 		h := meter.MeteredHandlerFunc(func(w2 *meter.MeteredResponseWriter, r2 *meter.MeteredRequest) {
-			handler.ServeHTTP(w2, r2.Request)
+			p.manager.serveChallenge(w2, r2.Request, host)
 		})
 		h.ServeHTTP(w, r)
 		return
@@ -1222,9 +1207,6 @@ var (
 	waitForCertificateFn = func(ctx context.Context, m *autocert.Manager, host string) (*tls.Certificate, error) {
 		return acme.NewACMEHelper(m).WaitForCertificate(ctx, host)
 	}
-	// registerRedirectsLoopFn keeps peer ACME challenge redirects registered
-	// until ctx is cancelled.
-	registerRedirectsLoopFn = acme.RegisterRedirectsLoop
 )
 
 // rrPassThresholdPercent is the minimum fraction of public-IPv4 records that
@@ -1309,7 +1291,9 @@ func probeACMEChallenge(ctx context.Context, host string, dialIP netip.Addr) (bo
 		return false, "refused: non-public IP"
 	}
 	pinned := net.JoinHostPort(dialIP.String(), "80")
-	checkURL := fmt.Sprintf("http://%s/.well-known/acme-challenge/", host)
+	// NoProxyParam makes the node answer itself instead of asking its
+	// peers, so each record's probe really tests that record.
+	checkURL := fmt.Sprintf("http://%s/.well-known/acme-challenge/?%s=true", host, acme.NoProxyParam)
 	req, err := http.NewRequestWithContext(ctx, http.MethodHead, checkURL, nil)
 	if err != nil {
 		return false, fmt.Sprintf("build request: %v", err)

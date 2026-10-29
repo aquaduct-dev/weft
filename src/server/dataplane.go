@@ -251,11 +251,3 @@ func (d *TunnelDataplane) ListCertificates() ([]types.CertInfo, error) {
 func (d *TunnelDataplane) ListACMEFailures() []types.ACMEFailure {
 	return d.proxyManager.VHostProxyManager.ACMEFailures()
 }
-
-// RegisterACMERedirect forwards the peer redirect registration to the vhost
-// manager. The /acme-redirect HTTP handler must verify the peer IP is in DNS
-// for host before calling this — this layer is just plumbing.
-func (d *TunnelDataplane) RegisterACMERedirect(host, peerIP string) error {
-	d.proxyManager.VHostProxyManager.RegisterPeerRedirect(host, peerIP)
-	return nil
-}

@@ -83,11 +83,6 @@ type Dataplane interface {
 	// ListACMEFailures returns hosts whose latest background ACME issuance
 	// failed, with the error text, so GET /certificates can report them.
 	ListACMEFailures() []types.ACMEFailure
-	// RegisterACMERedirect records a peer-to-peer ACME challenge redirect so
-	// that subsequent /.well-known/acme-challenge/* requests for host are
-	// 301'd to peerIP. The caller MUST have validated peerIP appears in DNS
-	// for host before invoking this — see ACMERedirectHandler.
-	RegisterACMERedirect(host, peerIP string) error
 }
 
 // ProxyCounters holds the cumulative transmission and reception statistics for a proxy.
