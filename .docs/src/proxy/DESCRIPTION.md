@@ -1,40 +1,40 @@
-<!-- docdaemon ts:2026-10-29T21:06:06Z hash:93933468bffbfa4d model:openrouter/qwen/qwen3.7-flash -->
+<!-- docdaemon ts:2026-10-30T02:44:19Z hash:c19cbbb7d8c74886 model:openrouter/qwen/qwen3.7-flash -->
 ## TL;DR
-The `proxy` package implements protocol-agnostic tunneling for TCP, UDP, and HTTP/HTTPS traffic with WireGuard integration.
+The `proxy` package implements a multi-protocol tunnel manager that forwards TCP, UDP, and HTTP traffic through WireGuard, handling lifecycle, conflict resolution, and virtual host routing.
 
 ## Overview
-This directory orchestrates network proxies that forward traffic between public listeners and internal targets. It manages the lifecycle of tunnels, handles connection state, and ensures resilience against transient failures. The system supports automatic TLS certificate management via ACME and provides detailed metrics for billing and monitoring.
+This directory provides the core infrastructure for establishing and maintaining network tunnels between public endpoints and internal targets. It abstracts away the complexity of protocol translation, connection multiplexing, and TLS management, allowing higher-level components to register proxies by name and scheme. The system ensures robust operation in distributed environments by handling transient failures, concurrent access, and automated certificate issuance.
 
 ## Deep Dive
-### Core Proxy Logic
-`ProxyManager` coordinates active instances, enforcing uniqueness to prevent conflicts. It delegates routing decisions based on source and destination schemes, instantiating specific proxy types for TCP, UDP, or virtual hosts. TCP connections use a sliding-window failure tracker to avoid premature teardown during brief outages, while UDP sessions are keyed by source address to manage concurrent streams safely.
+### Proxy Orchestration
+`ProxyManager` acts as the central coordinator, mapping proxy names to concrete implementations (`TCP`, `UDP`, `VHost`). It enforces uniqueness constraints, returning specific errors for conflicts to prevent duplicate tunnel registration. The manager delegates HTTP/HTTPS traffic to the `vhost` subpackage, which handles complex routing logic.
 
-### Virtual Host Management
-The `vhost` subdirectory handles HTTP/HTTPS traffic through name-based routing. It supports longest-prefix matching to ensure specific paths are not shadowed by catch-all routes. Automatic TLS certificates are issued via Let's Encrypt, with distributed challenge validation to support round-robin DNS setups where validators may hit any node in a cluster.
+### Protocol Forwarding
+TCP and UDP proxies manage stream and session lifecycles respectively. TCP forwarding uses a sliding-window failure tracker to tolerate brief upstream outages without tearing down the tunnel. UDP sessions are keyed by source address, with dedicated goroutines handling upstream reads to prevent race conditions on shared maps. Both protocols utilize WireGuard-aware dialers to route traffic through the gVisor netstack when targeting internal subnets.
 
-### WireGuard Integration
-Traffic destined for internal subnets is routed through the gVisor NetStack using `WGAware` wrappers. These wrappers detect when a connection should traverse the WireGuard interface, optimizing transport selection. Recent fixes ensure graceful error handling when underlying connections close, preventing panics during session termination.
+### Virtual Host Routing
+HTTP/HTTPS traffic is handled by `VHostRouteProxy`, which registers routes with the `VHostProxyManager`. This component supports longest-prefix matching, header modifiers, and path rewrites via URL fragments. It manages TLS certificates using ACME for automatic issuance or static PEM data, ensuring secure termination for external clients.
 
-### Metrics and Monitoring
-Byte traffic is metered across all protocols, including HTTP/3 over QUIC. The system tracks both completed and in-flight requests to provide accurate real-time usage data. This metering supports billing logic and operational visibility into tunnel health.
+### Resilience and Observability
+The system includes metrics tracking for bytes transmitted and received across all proxy types. Error handling has been hardened to prevent panics during connection closure, particularly in WireGuard paths where nil addresses may be returned. A custom error logger filters noisy TLS handshake errors to reduce log spam while preserving visibility into critical failures.
 
 ## Key Interfaces
-*   `Proxy`: Standardizes traffic forwarding, lifecycle management, and metrics reporting.
-*   `ProxyManager`: Orchestrates active proxies and enforces naming uniqueness.
-*   `VHostProxyManager`: Coordinates multiple virtual host proxies and ACME state.
-*   `MeteredHTTPHandler`: Aggregates traffic metrics for HTTP handlers.
-*   `PathMatcher`: Performs segment-aware prefix matching for route selection.
+*   `Proxy`: Standard interface for lifecycle management, identification, and metrics.
+*   `ProxyManager`: Orchestrates active proxies and resolves conflicts.
+*   `VHostProxyManager`: Coordinates virtual hosts, ACME issuance, and challenge relays.
+*   `WGAwareUDPConn`: WireGuard-aware UDP connection wrapper with safe read handling.
+*   `parseModifiers`: Utility function for extracting header modifications from URL fragments.
 
 ## Dependencies
 *   `github.com/quic-go/quic-go`: HTTP/3 QUIC support.
-*   `golang.org/x/crypto/acme/autocert`: Automatic certificate management.
+*   `golang.org/x/crypto/acme/autocert`: Let's Encrypt integration.
 *   `go.uber.org/zap` / `zerolog`: Structured logging.
-*   Internal packages: `acme`, `metrics`, `tunnel`, `wireguard`.
+*   Internal packages: `util`, `vhost`, `vhost/meter`.
 
 ## Subcomponents
 *   `proxy.go`: Core proxy implementations and manager logic.
 *   `types.go`: Interface definitions and WireGuard-aware connection wrappers.
 *   `BUILD.bazel`: Bazel build targets for library and tests.
-*   `vhost/`: Virtual host reverse proxy implementation.
 *   `proxy_suite_test.go`: Ginkgo test suite initialization.
-*   `proxy_test.go`: Integration tests for proxy functionality.
+*   `proxy_test.go`: Integration tests for tunnel creation and forwarding.
+*   `vhost/`: Virtual host routing and TLS management.

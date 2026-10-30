@@ -1,9 +1,7 @@
-<!-- docdaemon ts:2026-10-29T21:04:44Z hash:0fd8807efac28462 model:openrouter/qwen/qwen3.7-flash -->
+<!-- docdaemon ts:2026-10-30T02:43:08Z hash:eb1949f714e7a9f6 model:openrouter/qwen/qwen3.7-flash -->
 ## TL;DR
-This Bazel build file defines the Go library and test targets for the virtual host proxying subsystem.
+This file defines the Bazel build targets for the `vhost` package, which manages virtual hosting, TLS certificate issuance, and HTTP/3 termination.
 
-The `vhost` library implements HTTP/HTTPS termination, ACME certificate management, and request routing for multiple virtual hosts. It supports HTTP/3 (QUIC) alongside standard TCP listeners, handling TLS handshakes via `autocert`. The system routes HTTP-01 ACME challenges to sibling nodes in a cluster to ensure validators can reach the node holding the key authorization, avoiding redirect issues with round-robin DNS. It also exposes a `/certificates` endpoint for monitoring cached TLS certificates.
+The `go_library` target compiles `challenge_proxy.go`, `errorlog.go`, and `vhost.go`. It exposes the `VHostProxyManager` type to other packages, enabling dynamic route registration and ACME-based certificate management. The library depends on internal utilities, the `meter` sub-package for metrics, and external dependencies like `quic-go` for HTTP/3 support and `autocert` for Let's Encrypt integration.
 
-Key dependencies include `quic-go` for HTTP/3 support, `zerolog` for structured logging, and internal packages for ACME logic, utility functions, metrics, and WireGuard integration. The `WGAwareRoundTripper` optimizes transport selection based on target IP ranges.
-
-Tests cover ACME failure scenarios, certificate handling, challenge proxying, path prefix matching, and race conditions using Ginkgo and Gomega.
+The `go_test` target runs the test suite using Ginkgo and Gomega. It embeds the main library and includes tests for ACME failure handling, certificate lifecycle, challenge proxying (including sibling node redirection), path prefix matching, and HTTP/3 Alt-Svc header behavior. These tests ensure robustness against race conditions and network failures during tunnel establishment.

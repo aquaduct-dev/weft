@@ -1,11 +1,17 @@
-<!-- docdaemon ts:2026-10-29T21:04:47Z hash:958bb104e021d3a0 model:openrouter/qwen/qwen3.7-flash -->
+<!-- docdaemon ts:2026-10-30T02:43:10Z hash:b0e4f1314ce789bd model:openrouter/qwen/qwen3.7-flash -->
 ## TL;DR
-This file contains end-to-end tests for the ACME HTTP-01 challenge proxying logic in a multi-node cluster.
+End-to-end tests verifying that ACME HTTP-01 challenges are correctly proxied among cluster nodes without redirect loops or excessive hops.
 
-The tests verify that `serveChallenge` correctly routes validation requests across nodes sharing a hostname via round-robin DNS, ensuring only one hop of forwarding occurs. Key behaviors validated include:
+### Purpose
+Validates `serveChallenge` behavior in a multi-node setup where round-robin DNS distributes validation requests across peers, but only one node holds the specific token. Ensures nodes forward requests to peers when necessary, while strictly limiting forwarding to a single hop to prevent infinite loops.
 
-*   **Cluster Routing**: Nodes without the token forward requests to peers holding it, while respecting the `NoProxyParam` to prevent loops or unnecessary forwarding.
-*   **Concurrency**: Multiple simultaneous orders are handled correctly, with each node serving its own tokens and proxying others.
-*   **Error Handling**: Unknown tokens return 404s from all nodes, and no-proxy requests are answered locally (resulting in 404 if the token isn't local).
+### Key Components
+*   **`testNode`**: Wraps a `VHostProxyManager` and an `httptest.Server` to simulate individual bastion nodes with distinct IPs.
+*   **`newRRCluster`**: Spins up a cluster of nodes sharing a hostname (`rr.example.com`). It swaps out `acme` package lookups and dialers to route traffic between fake IPs within the same process.
+*   **`writeToken`**: Manually places key authorization files into the node's certificate cache directory to simulate an order in flight.
 
-The `newRRCluster` helper sets up isolated test environments by swapping DNS lookups and peer dialers to simulate network topology within a single process.
+### Test Scenarios
+*   **`TestServeChallenge_EveryNodeAnswersForTheOrderer`**: Confirms that any node can answer for a token held by another, and verifies that no request is forwarded more than once (single-hop proxying).
+*   **`TestServeChallenge_SeveralOrdersInFlight`**: Tests concurrent orders where each node holds a unique token, ensuring isolation and correct routing for all active challenges.
+*   **`TestServeChallenge_UnknownTokenIs404Everywhere`**: Verifies that unknown tokens return 404s from every node, preventing information leakage about which node might hold a valid token.
+*   **`TestServeChallenge_NoProxyRequestIsAnsweredLocally`**: Ensures requests marked with `NoProxyParam` are not forwarded, forcing local resolution or failure.
