@@ -236,6 +236,12 @@ func (d *TunnelDataplane) SetACMEEmail(email string) {
 	d.proxyManager.VHostProxyManager.SetACMEEmail(email)
 }
 
+// StartChallengeListener keeps the ACME challenge port open for the life of
+// the server, so sibling bastions sharing a hostname can always reach it.
+func (d *TunnelDataplane) StartChallengeListener() error {
+	return d.proxyManager.VHostProxyManager.StartChallengeListener(d.bindIP)
+}
+
 func (d *TunnelDataplane) SetCertsCachePath(path string) {
 	d.proxyManager.VHostProxyManager.SetCertsCachePath(path)
 }

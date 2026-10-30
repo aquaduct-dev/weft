@@ -191,6 +191,12 @@ var serverCmd = &cobra.Command{
 			srv.Dataplane.SetCertsCachePath(certsCachePath)
 		}
 
+		// Bind :80 before accepting tunnels, so this node answers ACME
+		// challenges and sibling bastions' reachability probes from the start.
+		if err := srv.Dataplane.StartChallengeListener(); err != nil {
+			log.Warn().Err(err).Msg("cannot open the ACME challenge listener; HTTP-01 issuance and sibling probes will fail until a host binds it")
+		}
+
 		log.Info().Str("connection_secret", srv.ConnectionSecret).Msg("Connection Secret")
 		// F-10: print the server's TLS leaf-cert fingerprint so operators can
 		// pin it on clients via `weft tunnel --server-fingerprint=...`.

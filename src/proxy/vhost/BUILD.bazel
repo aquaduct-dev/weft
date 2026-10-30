@@ -27,6 +27,8 @@ go_test(
     srcs = [
         "acme_failure_test.go",
         "certificates_test.go",
+        "challenge_fallthrough_test.go",
+        "challenge_listener_test.go",
         "challenge_proxy_test.go",
         "path_prefix_test.go",
         "probe_test.go",

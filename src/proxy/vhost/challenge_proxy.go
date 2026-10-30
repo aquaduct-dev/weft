@@ -54,18 +54,23 @@ func (b *bufferedResponse) copyTo(w http.ResponseWriter) {
 
 // serveChallenge answers an HTTP-01 challenge request for host, locally if we
 // can and otherwise by relaying a sibling node's answer.
-func (m *VHostProxyManager) serveChallenge(w http.ResponseWriter, r *http.Request, host string) {
+//
+// canFallThrough is true when host has a plain HTTP route on this port and
+// weft isn't issuing its certificate. Then the challenge may belong to the
+// user's own ACME client behind the tunnel: if neither we nor a sibling has
+// the token, serveChallenge writes nothing and returns false, and the caller
+// routes the request to the backend like any other.
+//
+// It returns true when it wrote a response.
+func (m *VHostProxyManager) serveChallenge(w http.ResponseWriter, r *http.Request, host string, canFallThrough bool) bool {
 	handler := m.acmeManager.HTTPHandler(nil)
 
-	// A peer asked us directly: answer from our own state only, never
-	// forward again. That is what keeps the fan-out from looping.
-	if acme.IsNoProxyRequest(r) {
-		handler.ServeHTTP(w, r)
-		return
-	}
 	if r.Method != http.MethodGet && r.Method != http.MethodHead {
+		if canFallThrough {
+			return false
+		}
 		handler.ServeHTTP(w, r)
-		return
+		return true
 	}
 
 	local := &bufferedResponse{header: make(http.Header)}
@@ -73,16 +78,33 @@ func (m *VHostProxyManager) serveChallenge(w http.ResponseWriter, r *http.Reques
 	if local.code == http.StatusOK {
 		log.Debug().Str("host", host).Str("path", r.URL.Path).Msg("acme-proxy: answered challenge locally")
 		local.copyTo(w)
-		return
+		return true
+	}
+
+	// A peer asked us directly: answer from our own state (autocert, or the
+	// backend if we fall through), never forward to peers again. That is
+	// what keeps the fan-out from looping.
+	if acme.IsNoProxyRequest(r) {
+		if canFallThrough {
+			stripNoProxyParam(r)
+			log.Debug().Str("host", host).Str("path", r.URL.Path).Msg("acme-proxy: peer request not ours; passing to the host's own route")
+			return false
+		}
+		local.copyTo(w)
+		return true
 	}
 
 	body, peer, err := acme.FetchChallengeFromPeers(r.Context(), host, r.URL.Path)
 	if err != nil {
+		if canFallThrough {
+			log.Debug().Str("host", host).Str("path", r.URL.Path).Err(err).Msg("acme-proxy: no weft node has the token; passing to the host's own route")
+			return false
+		}
 		// No node had it: return our own answer (404 for an unknown token,
 		// 403 for a host we don't issue for).
 		log.Debug().Str("host", host).Str("path", r.URL.Path).Int("local_status", local.code).Err(err).Msg("acme-proxy: no peer answered; returning local response")
 		local.copyTo(w)
-		return
+		return true
 	}
 	log.Debug().Str("host", host).Str("path", r.URL.Path).Str("peer", peer.String()).Msg("acme-proxy: serving peer's challenge answer")
 	w.Header().Set("Content-Type", "text/plain")
@@ -90,4 +112,21 @@ func (m *VHostProxyManager) serveChallenge(w http.ResponseWriter, r *http.Reques
 	if r.Method != http.MethodHead {
 		_, _ = w.Write(body)
 	}
+	return true
+}
+
+// stripNoProxyParam removes weft's internal marker before a request goes to
+// a user's backend.
+func stripNoProxyParam(r *http.Request) {
+	q := r.URL.Query()
+	q.Del(acme.NoProxyParam)
+	r.URL.RawQuery = q.Encode()
+	r.RequestURI = r.URL.RequestURI()
+}
+
+// isACMEHost reports whether weft is issuing host's certificate.
+func (m *VHostProxyManager) isACMEHost(host string) bool {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.acmeHosts[host]
 }

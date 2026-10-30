@@ -35,6 +35,9 @@ func (d *testDataplane) SetCertsCachePath(path string)         {}
 func (d *testDataplane) ListCertificates() ([]types.CertInfo, error) {
 	return []types.CertInfo{}, nil
 }
+func (d *testDataplane) StartChallengeListener() error {
+	return nil
+}
 func (d *testDataplane) ListACMEFailures() []types.ACMEFailure {
 	return d.acmeFailures
 }

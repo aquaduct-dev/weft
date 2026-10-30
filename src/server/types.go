@@ -76,6 +76,9 @@ type Dataplane interface {
 	GetPrivateKey() wgtypes.Key
 	// SetACMEEmail sets the email address used for ACME certificate registration.
 	SetACMEEmail(email string)
+	// StartChallengeListener binds the ACME challenge port (80) for the
+	// life of the server.
+	StartChallengeListener() error
 	// SetCertsCachePath sets the directory path where SSL certificates are cached.
 	SetCertsCachePath(path string)
 	// ListCertificates returns a summary of the cached TLS certificates.

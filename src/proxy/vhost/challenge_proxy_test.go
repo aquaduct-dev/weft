@@ -56,7 +56,7 @@ func newRRCluster(t *testing.T, ips ...string) map[string]*testNode {
 			if h, _, err := net.SplitHostPort(host); err == nil {
 				host = h
 			}
-			n.manager.serveChallenge(w, r, host)
+			n.manager.serveChallenge(w, r, host, false)
 		}))
 		t.Cleanup(n.server.Close)
 		nodes[ip] = n

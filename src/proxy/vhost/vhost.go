@@ -232,6 +232,12 @@ type VHostProxy struct {
 
 	manager *VHostProxyManager
 
+	// keepOpen stops VHostCloser.Close from tearing the listener down when
+	// its last route goes. Set on the ACME challenge listener by
+	// StartChallengeListener, so sibling nodes behind round-robin DNS can
+	// always reach this node on :80.
+	keepOpen bool
+
 	defaultHandler meter.MeteredHandler
 	// tlsRoutes holds HTTPS routes per hostname when TLS termination is configured.
 	tlsRoutes map[string][]*Route
@@ -475,6 +481,27 @@ func (v *VHostProxyManager) AddACMEHost(host string, bindIp string) (io.Closer, 
 	return VHostCloser{VHostProxy: proxy, Host: host, Tls: false}, err
 }
 
+// StartChallengeListener binds the ACME challenge port (80 by default) for
+// the life of the process.
+//
+// With round-robin DNS every node in a hostname's record set must answer on
+// :80: the CA's validators and the other nodes' CanPassACMEChallenge probes
+// can hit any of them. Without this, :80 is only open while this node has an
+// issuance in flight, so a sibling's probe gets "connection refused" and
+// fails, and the probe's failure closes the listener again, so two nodes
+// starting together keep failing each other.
+func (v *VHostProxyManager) StartChallengeListener(bindIp string) error {
+	proxy := v.Proxy(bindIp, v.ACMEPort())
+	proxy.mu.Lock()
+	proxy.keepOpen = true
+	proxy.mu.Unlock()
+	if err := proxy.Start(); err != nil {
+		return fmt.Errorf("bind ACME challenge listener on port %d: %w", v.ACMEPort(), err)
+	}
+	log.Info().Str("bind_ip", bindIp).Int("port", v.ACMEPort()).Msg("ACME: challenge listener open for the life of the server")
+	return nil
+}
+
 func (v *VHostProxyManager) Proxy(bindIp string, port int) *VHostProxy {
 	v.mu.Lock()
 	defer v.mu.Unlock()
@@ -527,7 +554,7 @@ func (v VHostCloser) Close() error {
 		}
 	}
 
-	if v.VHostProxy.s != nil && len(v.VHostProxy.routes) == 0 && len(v.VHostProxy.tlsRoutes) == 0 {
+	if v.VHostProxy.s != nil && !v.VHostProxy.keepOpen && len(v.VHostProxy.routes) == 0 && len(v.VHostProxy.tlsRoutes) == 0 {
 		log.Info().Bool("has_tls", v.VHostProxy.hasTLS()).Int("port", v.VHostProxy.port).Msg("Closing VHost (no proxies)")
 		v.VHostProxy.s.Close()
 		// Tear down the HTTP/3 server + its UDP socket alongside the TCP server.
@@ -888,11 +915,16 @@ func (p *VHostProxy) ServeHTTP(w *meter.MeteredResponseWriter, r *meter.MeteredR
 		host = h
 	}
 	if p.port == p.manager.acmePort && p.manager.acmeManager != nil && strings.HasPrefix(r.URL.Path, "/.well-known/acme-challenge/") {
-		h := meter.MeteredHandlerFunc(func(w2 *meter.MeteredResponseWriter, r2 *meter.MeteredRequest) {
-			p.manager.serveChallenge(w2, r2.Request, host)
-		})
-		h.ServeHTTP(w, r)
-		return
+		// A host with its own plain-HTTP route that weft doesn't issue for
+		// may be running its own ACME client; serveChallenge hands those
+		// requests back to the route when no weft node has the token.
+		p.mu.RLock()
+		hasRoute := len(p.routes[host]) > 0
+		p.mu.RUnlock()
+		canFallThrough := hasRoute && !p.manager.isACMEHost(host)
+		if p.manager.serveChallenge(w, r.Request, host, canFallThrough) {
+			return
+		}
 	}
 
 	p.mu.RLock()
