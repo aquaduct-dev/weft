@@ -5,12 +5,14 @@ go_library(
     srcs = [
         "acme.go",
         "challenge_proxy.go",
+        "http01_only.go",
         "testing_helpers.go",
     ],
     importpath = "github.com/aquaduct-dev/weft/src/acme",
     visibility = ["//visibility:public"],
     deps = [
         "@com_github_rs_zerolog//log",
+        "@org_golang_x_crypto//acme",
         "@org_golang_x_crypto//acme/autocert",
     ],
 )
@@ -21,6 +23,7 @@ go_test(
     srcs = [
         "acme_test.go",
         "challenge_proxy_test.go",
+        "http01_only_test.go",
     ],
     embed = [":acme"],
     deps = [

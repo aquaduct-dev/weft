@@ -320,6 +320,10 @@ func NewVHostProxyManager() *VHostProxyManager {
 			return nil
 		},
 		Cache: autocert.DirCache(m.certsCachePath),
+		// http-01 only: tls-alpn-01 can't pass with round-robin DNS and
+		// each failed attempt counts against Let's Encrypt's
+		// failed-authorization limit. See src/acme/http01_only.go.
+		Client: acme.NewHTTP01OnlyClient(),
 	}
 	return m
 }
@@ -1094,10 +1098,10 @@ func (p *VHostProxy) Start() error {
 
 	if p.hasTLS() {
 		// ALPN advertisement:
-		//   - acme-tls/1 must be advertised so Let's Encrypt can perform
-		//     TLS-ALPN-01 challenges against this listener — that's the only
-		//     renewal path once the transient port-80 listener from
-		//     AddHostWithACME has closed.
+		//   - acme-tls/1 is still advertised, but autocert only answers
+		//     http-01 now (src/acme/http01_only.go), so issuance and renewal
+		//     both go through the :80 challenge listener, which stays open
+		//     for the life of the server (StartChallengeListener).
 		//   - h2 is advertised whenever HTTP/2 is enabled for this proxy (the
 		//     default; see http2Enabled) and is preferred so browsers negotiate
 		//     it. WebSockets are unaffected — weft does not advertise RFC 8441
