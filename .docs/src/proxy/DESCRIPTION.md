@@ -1,40 +1,39 @@
-<!-- docdaemon ts:2026-10-30T02:44:19Z hash:c19cbbb7d8c74886 model:openrouter/qwen/qwen3.7-flash -->
+<!-- docdaemon ts:2026-11-01T18:06:03Z hash:154f25d2a7bc078e model:openrouter/qwen/qwen3.7-flash -->
 ## TL;DR
-The `proxy` package implements a multi-protocol tunnel manager that forwards TCP, UDP, and HTTP traffic through WireGuard, handling lifecycle, conflict resolution, and virtual host routing.
+The `proxy` package implements a multi-protocol tunnel manager that forwards TCP, UDP, and HTTP traffic through WireGuard, handling lifecycle management, conflict detection, and automatic TLS provisioning.
 
 ## Overview
-This directory provides the core infrastructure for establishing and maintaining network tunnels between public endpoints and internal targets. It abstracts away the complexity of protocol translation, connection multiplexing, and TLS management, allowing higher-level components to register proxies by name and scheme. The system ensures robust operation in distributed environments by handling transient failures, concurrent access, and automated certificate issuance.
+This directory serves as the core transport layer for the bastion nodes, abstracting the complexity of network stack operations behind a unified `ProxyManager`. It supports dynamic route registration, allowing multiple virtual hosts to share a single IP address while maintaining isolated traffic flows. The system is designed to be resilient against transient upstream failures and concurrent session management, ensuring stable connectivity for both stream-oriented and datagram protocols.
 
 ## Deep Dive
-### Proxy Orchestration
-`ProxyManager` acts as the central coordinator, mapping proxy names to concrete implementations (`TCP`, `UDP`, `VHost`). It enforces uniqueness constraints, returning specific errors for conflicts to prevent duplicate tunnel registration. The manager delegates HTTP/HTTPS traffic to the `vhost` subpackage, which handles complex routing logic.
-
 ### Protocol Forwarding
-TCP and UDP proxies manage stream and session lifecycles respectively. TCP forwarding uses a sliding-window failure tracker to tolerate brief upstream outages without tearing down the tunnel. UDP sessions are keyed by source address, with dedicated goroutines handling upstream reads to prevent race conditions on shared maps. Both protocols utilize WireGuard-aware dialers to route traffic through the gVisor netstack when targeting internal subnets.
+The `ProxyManager` orchestrates `TCPProxy`, `UDPProxy`, and `VHostRouteProxy` instances. TCP tunnels use a sliding-window failure tracker to prevent teardown during brief outages, while UDP sessions are keyed by source address and protected against concurrent map writes. All connections utilize `WGAware` wrappers to route traffic through the gVisor NetStack when targeting the WireGuard subnet, falling back to standard transports otherwise.
 
 ### Virtual Host Routing
-HTTP/HTTPS traffic is handled by `VHostRouteProxy`, which registers routes with the `VHostProxyManager`. This component supports longest-prefix matching, header modifiers, and path rewrites via URL fragments. It manages TLS certificates using ACME for automatic issuance or static PEM data, ensuring secure termination for external clients.
+HTTP/HTTPS traffic is handled by delegating to the `vhost` subpackage, which manages name-based routing, path modifiers, and ACME-based certificate issuance. Routes are matched using longest-prefix logic for paths and strict hostname matching. The system supports distributed HTTP-01 challenges across cluster peers to handle round-robin DNS scenarios, ensuring Let's Encrypt validations succeed regardless of which node receives the request.
 
 ### Resilience and Observability
-The system includes metrics tracking for bytes transmitted and received across all proxy types. Error handling has been hardened to prevent panics during connection closure, particularly in WireGuard paths where nil addresses may be returned. A custom error logger filters noisy TLS handshake errors to reduce log spam while preserving visibility into critical failures.
+Metrics are tracked at both connection and application layers, with specific handling for HTTP/3 streaming data. Error logging filters noisy TLS handshake failures to debug level, surfacing only critical server errors. Recent fixes addressed panics in `WGAwareUDPConn.ReadFromUDP` when underlying connections closed, ensuring graceful error propagation instead of crashes during session termination.
 
 ## Key Interfaces
-*   `Proxy`: Standard interface for lifecycle management, identification, and metrics.
-*   `ProxyManager`: Orchestrates active proxies and resolves conflicts.
-*   `VHostProxyManager`: Coordinates virtual hosts, ACME issuance, and challenge relays.
-*   `WGAwareUDPConn`: WireGuard-aware UDP connection wrapper with safe read handling.
-*   `parseModifiers`: Utility function for extracting header modifications from URL fragments.
+*   `ProxyManager`: Central coordinator for creating, starting, and managing proxy instances.
+*   `Proxy`: Interface defining lifecycle methods (`Close`, `Name`) and metrics (`BytesTx`, `BytesRx`).
+*   `TCPProxy`: Manages TCP listeners and upstream dialing with failure tracking.
+*   `UDPProxy`: Handles UDP sessions via source-address-keyed maps and response goroutines.
+*   `VHostRouteProxy`: Registers HTTP routes with the VHost manager and handles TLS configuration.
+*   `WGAwareUDPConn`: Wrapper for UDP connections that integrates with the gVisor NetStack.
 
 ## Dependencies
 *   `github.com/quic-go/quic-go`: HTTP/3 QUIC support.
-*   `golang.org/x/crypto/acme/autocert`: Let's Encrypt integration.
+*   `golang.org/x/crypto/acme/autocert`: Let's Encrypt certificate management.
 *   `go.uber.org/zap` / `zerolog`: Structured logging.
-*   Internal packages: `util`, `vhost`, `vhost/meter`.
+*   `github.com/ginkgo-ginkgo/ginkgo/v2` & `gomega`: Testing framework.
+*   Standard library: `net`, `crypto/tls`, `sync`, `io`.
 
 ## Subcomponents
 *   `proxy.go`: Core proxy implementations and manager logic.
-*   `types.go`: Interface definitions and WireGuard-aware connection wrappers.
+*   `types.go`: Proxy interface definitions and WireGuard-aware connection wrappers.
 *   `BUILD.bazel`: Bazel build targets for library and tests.
 *   `proxy_suite_test.go`: Ginkgo test suite initialization.
-*   `proxy_test.go`: Integration tests for tunnel creation and forwarding.
-*   `vhost/`: Virtual host routing and TLS management.
+*   `proxy_test.go`: Integration tests for protocol forwarding and conflict detection.
+*   `vhost/`: Virtual host reverse proxy implementation.

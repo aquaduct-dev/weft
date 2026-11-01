@@ -1,31 +1,35 @@
-<!-- docdaemon ts:2026-10-29T21:06:05Z hash:c6a794fadaa66c67 model:openrouter/qwen/qwen3.7-flash -->
+<!-- docdaemon ts:2026-11-01T18:06:03Z hash:2bc44462e8589a61 model:openrouter/qwen/qwen3.7-flash -->
 ## TL;DR
-This package manages ACME certificate acquisition, caching, and HTTP-01 challenge resolution across cluster nodes.
+This package manages TLS certificate acquisition and HTTP-01 challenge validation for round-robin DNS environments.
 
 ## Overview
-The `acme` directory provides utilities for automating TLS certificate management using Let's Encrypt via the `autocert` library. It ensures certificates are available before listeners start and emits structured logs for observability. In clustered environments with round-robin DNS, it solves the problem of validators hitting non-authoritative nodes by proxying HTTP-01 challenges to peers that hold the key authorization, avoiding rejected bare-IP redirects.
+The ACME module simplifies HTTPS listener setup by wrapping `autocert.Manager` to ensure certificates are available before mounting listeners. It specifically addresses failures in round-robin DNS setups where only the node placing an order holds the challenge key, causing other nodes to fail `tls-alpn-01` validation and hit rate limits. The system forces HTTP-01 usage and proxies challenges between sibling nodes to ensure successful authentication regardless of which node the CA validator contacts.
 
 ## Deep Dive
-### Certificate Lifecycle Management
-`ACMEHelper` wraps `autocert.Manager` to simplify HTTPS setup. `AcquireCertificate` probes the cache to distinguish between local hits and CA round-trips, emitting specific events (`acme_cache_hit`, `acme_issuance_started`) for debugging. `WaitForCertificate` blocks until a cert is ready, ensuring safe listener mounting.
+### Certificate Acquisition
+`ACMEHelper` wraps `autocert.Manager` to provide structured logging for certificate lifecycle events (`acme_cache_hit`, `acme_issuance_started`). It exposes `WaitForCertificate` to block until a cert is ready and `AcquireCertificate` to handle TLS handshakes, distinguishing between cache hits and new CA round-trips.
 
-### Peer-to-Peer Challenge Proxy
-When a node receives an HTTP-01 challenge but lacks the token (because another node placed the order), it fans out requests to all sibling nodes in parallel. This bypasses the limitation where Let's Encrypt rejects 301 redirects to bare IPs. The proxy filters out loopback and link-local addresses to prevent internal traffic loops and enforces strict timeouts and body size limits to prevent resource exhaustion. A `weft-redirect=true` parameter ensures peers respond from local state only.
+### HTTP-01 Enforcement
+In round-robin DNS, `tls-alpn-01` fails on non-leader nodes because they lack the specific challenge certificate. `HTTP01OnlyTransport` intercepts ACME JSON responses, stripping `tls-alpn-01` challenges to force immediate fallback to `http-01`. This prevents rapid authorization failures that trigger Let's Encrypt rate limits.
+
+### Peer Challenge Proxying
+When a node receives an HTTP-01 challenge it cannot answer locally, `FetchChallengeFromPeers` queries all sibling nodes in parallel. It uses a `weft-redirect=true` parameter to prevent recursive loops and filters out loopback/link-local IPs. This ensures the CA validator gets a valid response from any node in the rotation without relying on redirects, which CAs reject for bare IPs.
 
 ## Key Interfaces
-*   `NewACMEHelper(m *autocert.Manager)` - Constructs the helper instance.
-*   `AcquireCertificate(m *autocert.Manager, hello *tls.ClientHelloInfo)` - Fetches or caches a TLS certificate.
-*   `(a *ACMEHelper) WaitForCertificate(ctx context.Context, host string)` - Blocks until the certificate is available.
-*   `FetchChallengeFromPeers(path string)` - Proxies HTTP-01 challenges to sibling nodes.
-*   `SwapLookupIPForTest`, `SwapInterfaceAddrsForTest`, `SwapDialPeerForTest` - Test seams for mocking network behavior.
+- `NewACMEHelper(m *autocert.Manager)` constructs the helper wrapper.
+- `AcquireCertificate(m *autocert.Manager, hello *tls.ClientHelloInfo)` fetches certs with observability logs.
+- `WaitForCertificate(ctx context.Context, host string)` blocks until a certificate is available.
+- `FetchChallengeFromPeers(path string)` fans out HTTP requests to siblings to find the key auth token.
+- `NewHTTP01OnlyClient()` returns an ACME client configured to ignore TLS-ALPN-01 challenges.
+- `SwapLookupIPForTest`, `SwapInterfaceAddrsForTest`, `SwapDialPeerForTest` export test seams for mocking network behavior.
 
 ## Dependencies
-*   `golang.org/x/crypto/acme/autocert` - Core ACME protocol implementation.
-*   `github.com/rs/zerolog` - Structured logging.
-*   Ginkgo and Gomega - Testing framework.
+- `golang.org/x/crypto/acme/autocert`: Core certificate management.
+- `zerolog`: Structured event logging.
+- `net/http`, `crypto/tls`: Standard library networking and TLS handling.
 
 ## Subcomponents
-*   `acme.go` - Certificate acquisition and caching logic.
-*   `challenge_proxy.go` - Fan-out proxy for HTTP-01 challenges.
-*   `testing_helpers.go` - Exported test seams for network mocking.
-*   `*_test.go` - Unit tests for both modules.
+- `acme.go`: Helper utilities and log event constants.
+- `challenge_proxy.go`: Fan-out proxy logic for sibling nodes.
+- `http01_only.go`: Transport wrapper to strip TLS-ALPN-01.
+- `testing_helpers.go`: Exported mock functions for DNS and dialing.

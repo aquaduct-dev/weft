@@ -1,7 +1,9 @@
-<!-- docdaemon ts:2026-10-29T21:04:44Z hash:e6e6b3452e74980e model:openrouter/qwen/qwen3.7-flash -->
+<!-- docdaemon ts:2026-11-01T18:05:29Z hash:21b191515649ee5a model:openrouter/qwen/qwen3.7-flash -->
 ## TL;DR
-This file defines the Bazel build targets for the ACME package, which handles certificate acquisition and HTTP-01 challenge proxying.
+This file defines the Bazel build targets for the ACME package, which manages TLS certificate acquisition and HTTP-01 challenge handling in a round-robin DNS environment.
 
-The `go_library` target compiles `acme.go`, `challenge_proxy.go`, and `testing_helpers.go`. It exposes the package publicly for downstream consumers and depends on `zerolog` for structured logging and `x/crypto/acme/autocert` for core ACME protocol implementation. The library emits events (e.g., `acme_cache_hit`) to track certificate lifecycle stages.
+The `go_library` target compiles the core ACME logic, including `challenge_proxy.go` and `http01_only.go`. The `http01_only.go` implementation restricts validation to HTTP-01 challenges to prevent `tls-alpn-01` failures caused by round-robin DNS resolution hitting nodes that do not hold the current authorization key. The `challenge_proxy.go` module proxies HTTP-01 challenges to sibling nodes rather than issuing redirects, ensuring Let's Encrypt validators can complete authentication regardless of which node they contact.
 
-The `go_test` target runs tests using Ginkgo and Gomega. It embeds the main library and includes a live TLS peer test seam to verify peer fallback logic and leader election behavior during challenge resolution. This setup supports the proxy mechanism that forwards HTTP-01 challenges to sibling nodes when round-robin DNS directs validators to non-authoritative servers, avoiding issues with bare IP redirects.
+Dependencies include `zerolog` for structured event logging (e.g., `acme_cache_hit`, `acme_issuance_started`) and `golang.org/x/crypto/acme` for protocol interaction.
+
+The `go_test` target runs the test suite using Ginkgo and Gomega. It embeds the library and includes tests for peer fallback mechanisms and leader election, verifying that the system correctly skips dead peers and handles registration loops when multiple bastion nodes are present.

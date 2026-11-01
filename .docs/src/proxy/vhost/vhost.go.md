@@ -1,12 +1,9 @@
-<!-- docdaemon ts:2026-10-30T02:43:11Z hash:bf3397fd6e916a71 model:openrouter/qwen/qwen3.7-flash -->
+<!-- docdaemon ts:2026-11-01T18:05:29Z hash:65953f6d750bdd9b model:openrouter/qwen/qwen3.7-flash -->
 ## TL;DR
-This file implements a name-based virtual host reverse proxy with support for TLS termination, ACME certificate management, and HTTP/3.
+This file implements a name-based virtual host reverse proxy with support for HTTP/1.1, HTTP/2, and HTTP/3, including automatic TLS certificate management via ACME.
 
-`VHostProxy` manages routes per hostname, applying matchers (path, header, query, method) and modifiers (header injection, redirects, path stripping). It supports three traffic modes: plain HTTP, static TLS (`AddHostWithTLS`), and automated ACME TLS (`AddHostWithACME`). The `VHostProxyManager` coordinates multiple proxies, handling ACME challenge listeners and certificate caching.
+The `VHostProxy` manages routes per hostname, matching requests using `PathMatcher`, `HeaderMatcher`, or `MethodMatcher`. It applies `Modifier`s like header injection or path prefix stripping before forwarding to upstream targets via `WGAwareRoundTripper`, which handles WireGuard netstack dialing and failure-based tunnel cleanup.
 
-Key behaviors include:
-- **Route Selection**: Uses longest-prefix matching to resolve overlapping paths on the same host.
-- **TLS & ALPN**: Advertisements are configured dynamically based on enabled protocols (HTTP/2, HTTP/3). ACME challenges are served via `autocert` or proxied to sibling nodes in round-robin DNS setups.
-- **WireGuard Integration**: `WGAwareRoundTripper` routes upstream requests through a userspace WireGuard device if the target is in the `10.1.*` range, with failure tracking to trigger tunnel cleanup.
-- **HTTP/3**: Served on a separate UDP listener alongside TCP, advertised via `Alt-Svc`. Disabled by default for internal WireGuard hosts.
-- **Health Checks**: `CanPassACMEChallenge` probes public IPv4 records to ensure ACME HTTP-01 reachability before issuance.
+TLS termination is handled through `AddHostWithTLS` (static certs) or `AddHostWithACME` (Let's Encrypt). The ACME flow binds port 80 first to satisfy HTTP-01 challenges, then probes public IPs to ensure reachability across round-robin DNS records. If issuance succeeds, it starts the TLS listener in the background.
+
+HTTP/2 and HTTP/3 are enabled by default but can be disabled via environment variables. HTTP/3 uses a separate UDP listener. Route selection prioritizes the longest path prefix match to prevent catch-all routes from shadowing specific ones.
