@@ -12,9 +12,14 @@ import (
 	"context"
 	"crypto/tls"
 	"errors"
+	"fmt"
+	"regexp"
+	"strings"
+	"sync"
 	"time"
 
 	"github.com/rs/zerolog/log"
+	xacme "golang.org/x/crypto/acme"
 	"golang.org/x/crypto/acme/autocert"
 )
 
@@ -62,11 +67,23 @@ func AcquireCertificate(m *autocert.Manager, hello *tls.ClientHelloInfo) (*tls.C
 		log.Info().Str("event", EventIssuanceStarted).Str("host", host).Msg("ACME: cert acquisition starting")
 	}
 
+	// While the CA has this host rate limited, asking again only fails and,
+	// for some limits, extends the wait: answer from here until the time
+	// the CA gave. This is the only failure that is ever remembered.
+	if until, limited := rateLimitedUntil(host, time.Now()); limited {
+		return nil, fmt.Errorf("acme: %s is rate limited by the CA until %s; not asking again before then", host, until.UTC().Format(time.RFC3339))
+	}
+
 	start := time.Now()
 	cert, err := m.GetCertificate(hello)
 	dur := time.Since(start)
 
 	if err != nil {
+		if until, ok := rateLimitEnd(err, time.Now()); ok {
+			holdRateLimit(host, until)
+			log.Warn().Str("event", EventIssuanceFailed).Str("host", host).Time("retry_after", until).Err(err).Msg("ACME: CA rate limit; holding issuance for this host until the CA's retry-after")
+			return nil, err
+		}
 		log.Warn().Str("event", EventIssuanceFailed).Str("host", host).Dur("duration", dur).Err(err).Msg("ACME: cert acquisition failed")
 		return nil, err
 	}
@@ -86,4 +103,72 @@ func (a *ACMEHelper) WaitForCertificate(ctx context.Context, host string) (*tls.
 	}
 	hello := &tls.ClientHelloInfo{ServerName: host}
 	return AcquireCertificate(a.Manager, hello)
+}
+
+// Rate limits the CA has placed on hosts: host -> when the CA said to try
+// again. Nothing else about a failed issuance is kept, so any other failure
+// is retried as soon as it is asked for.
+var (
+	rateLimitsMu sync.Mutex
+	rateLimits   = map[string]time.Time{}
+)
+
+// retryAfterText matches the time Let's Encrypt writes into a rate-limit
+// problem's detail, e.g. "..., retry after 2026-06-12 19:00:00 UTC: see ...".
+var retryAfterText = regexp.MustCompile(`retry after (\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}) UTC`)
+
+// rateLimitEnd says whether err is the CA's rate limit and, if so, when it
+// ends: the Retry-After header, else the time in the problem's detail. A
+// rate limit that names no end is not held: the next request finds out.
+func rateLimitEnd(err error, now time.Time) (time.Time, bool) {
+	var ae *xacme.Error
+	if errors.As(err, &ae) {
+		if d, ok := xacme.RateLimit(ae); ok {
+			if d > 0 {
+				return now.Add(d), true
+			}
+			if t, ok := retryAfterIn(ae.Detail); ok {
+				return t, t.After(now)
+			}
+			return time.Time{}, false
+		}
+	}
+	msg := err.Error()
+	if !strings.Contains(strings.ToLower(msg), "ratelimited") && !strings.Contains(strings.ToLower(msg), "rate limit") {
+		return time.Time{}, false
+	}
+	if t, ok := retryAfterIn(msg); ok && t.After(now) {
+		return t, true
+	}
+	return time.Time{}, false
+}
+
+func retryAfterIn(text string) (time.Time, bool) {
+	m := retryAfterText.FindStringSubmatch(text)
+	if m == nil {
+		return time.Time{}, false
+	}
+	t, err := time.ParseInLocation("2006-01-02 15:04:05", m[1], time.UTC)
+	return t, err == nil
+}
+
+func holdRateLimit(host string, until time.Time) {
+	rateLimitsMu.Lock()
+	defer rateLimitsMu.Unlock()
+	rateLimits[host] = until
+}
+
+// rateLimitedUntil reports a hold still in force, dropping one that ended.
+func rateLimitedUntil(host string, now time.Time) (time.Time, bool) {
+	rateLimitsMu.Lock()
+	defer rateLimitsMu.Unlock()
+	until, ok := rateLimits[host]
+	if !ok {
+		return time.Time{}, false
+	}
+	if !now.Before(until) {
+		delete(rateLimits, host)
+		return time.Time{}, false
+	}
+	return until, true
 }

@@ -26,11 +26,13 @@ go_test(
         "challenge_proxy_test.go",
         "fresh_lookup_test.go",
         "http01_only_test.go",
+        "ratelimit_test.go",
     ],
     embed = [":acme"],
     deps = [
         "@com_github_onsi_ginkgo_v2//:ginkgo",
         "@com_github_onsi_gomega//:gomega",
+        "@org_golang_x_crypto//acme",
         "@org_golang_x_crypto//acme/autocert",
     ],
 )
