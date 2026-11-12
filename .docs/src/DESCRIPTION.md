@@ -1,51 +1,44 @@
-<!-- docdaemon ts:2026-11-12T09:11:41Z hash:8f1f4dd6a18eb9a2 model:openrouter/qwen/qwen3.7-flash -->
+<!-- docdaemon ts:2026-11-12T09:41:02Z hash:27129e9ad309c02d model:openrouter/qwen/qwen3.7-flash -->
 ## TL;DR
 The `src` directory implements the core Weft server infrastructure, managing secure tunnel lifecycle, authentication, and network proxying.
 
 ## Overview
-This package orchestrates the connection between public endpoints and internal services using WireGuard tunnels. It handles zero-trust authentication via challenge-response JWTs, manages TLS certificate issuance through ACME, and provides multi-protocol proxying for HTTP, TCP, and UDP traffic. The codebase is structured to separate cryptographic primitives, network configuration, and application logic into distinct subpackages for maintainability.
+This package orchestrates the connection between public endpoints and internal services via WireGuard tunnels. It handles the full request lifecycle from JWT-based challenge-response authentication to dynamic IP allocation and reverse proxy management. The system ensures reliability through adaptive health monitoring, automatic certificate issuance, and robust error handling for distributed environments.
 
 ## Deep Dive
 ### Authentication and Security
-The `auth` package enforces zero-trust principles by validating client secrets through encrypted challenge-response exchanges. It manages JWT lifecycles with automatic renewal and supports optional TLS fingerprint pinning to prevent man-in-the-middle attacks during initial handshakes. The `crypto` package provides low-level AES-GCM encryption and self-signed certificate generation for these secure channels.
+The server enforces strict access controls using a multi-step challenge-response flow. Clients exchange encrypted challenges for signed JWTs, validated against a shared connection secret. Middleware ensures all protected routes require valid tokens, while constant-time comparisons prevent timing attacks. Optional TLS pinning mitigates man-in-the-middle risks during initial handshakes.
 
-### Tunnel Management and Proxying
-The `server` package acts as the control plane, allocating IPs from a subnet pool and coordinating WireGuard dataplane updates. The `proxy` package forwards traffic through gVisor-based WireGuard interfaces, supporting HTTP/3 and virtual host routing. It includes resilience features like sliding-window failure tracking to prevent premature tunnel teardowns during transient upstream outages.
+### Tunnel Lifecycle Management
+Tunnel establishment involves validating JWT claims, allocating IPs from a subnet pool, and configuring the WireGuard dataplane. Removal triggers cleanup of proxies, IP releases, and peer deletion. WireGuard configuration updates are incremental to preserve learned roaming endpoints, preventing disruption during churn. A background janitor sweeps stale tunnels to prevent resource leaks.
 
-### Certificate and DNS Automation
-Automated HTTPS setup is handled by the `acme` package, which wraps `autocert.Manager` to manage certificate lifecycles. It implements a fan-out proxy to distribute HTTP-01 challenges across sibling bastions in round-robin DNS environments, ensuring validation succeeds regardless of which node the CA contacts. The `dns` package synchronizes Cloudflare records with strict zone resolution to prevent cross-zone pollution.
-
-### Client-Side Connectivity
-The `client` package provides programmatic access to administrative endpoints and includes an adaptive health monitor. This monitor uses exponential backoff for transient errors and treats permanent failures (like 404s after eviction) as fatal events, triggering process termination to avoid silent degradation. The `tunnel` package on the client side orchestrates WireGuard device creation and local proxy startup.
+### Resilience and Observability
+Operational health is monitored through Prometheus-compatible metrics and JSON status reports. An adaptive health monitor adjusts retry intervals based on server responses, treating permanent failures as fatal events. The ACME helper manages certificate issuance with rate-limit protection and peer-to-peer challenge proxying to handle round-robin DNS scenarios, ensuring availability even when nodes share hostnames.
 
 ## Key Interfaces
-- `GetToken`: Executes challenge-response login and returns a signed JWT.
-- `NewClient`: Initializes an administrative client with JWT-based auth.
-- `ProxyManager`: Coordinates active TCP, UDP, and HTTP tunnel instances.
-- `Server`: Main struct holding HTTP listener, store, and dataplane.
-- `Tunnel`: Orchestrates full client-side connection lifecycle.
-- `HealthMonitor`: Adaptive loop verifying server connectivity with backoff.
-- `ACMEHelper`: Manages certificate acquisition and HTTP-01 challenge proxying.
-- `UpdateRecord`: Synchronizes Cloudflare DNS records for a hostname.
+- `Server`: Main struct holding HTTP listener, store, dataplane, and secrets.
+- `Dataplane`: Interface for WireGuard configuration and proxy lifecycle management.
+- `TunnelStore`: Abstraction for peer state and IP address allocation.
+- `Janitor`: Background worker for removing stale tunnels.
+- `NewACMEHelper`: Constructs an ACME helper wrapping an autocert manager.
+- `GetToken`: Executes the challenge-response login and returns a JWT.
+- `WithJWT`: An `http.RoundTripper` wrapper for automatic Bearer token injection.
+- `ProxyManager`: Central coordinator for creating, starting, and stopping proxy instances.
+- `HealthMonitor`: Adaptive health checking logic for verifying server connectivity.
 
 ## Dependencies
-- `github.com/cloudflare/cloudflare-go`: DNS record management.
-- `github.com/quic-go/quic-go`: HTTP/3 QUIC support.
-- `golang.org/x/crypto/acme/autocert`: Let's Encrypt integration.
-- `github.com/rs/zerolog`: Structured logging.
-- `github.com/golang-jwt/jwt/v4`: JWT handling.
-- `go.uber.org/zap`: Alternative logging backend.
-- Standard library: `net`, `crypto/tls`, `sync`.
+- Internal packages: `auth`, `client`, `crypto`, `proxy`, `server`, `tunnel`, `types`, `wireguard`.
+- External libraries: `ginkgo`, `gomega`, `wgctrl`, `prometheus`, `jwt-go`, `autocert`.
 
 ## Subcomponents
-- `acme/`: TLS certificate acquisition and challenge validation.
-- `auth/`: Zero-trust authentication and JWT management.
-- `client/`: Administrative client and health monitoring.
-- `crypto/`: Symmetric encryption and certificate generation.
-- `dns/`: Cloudflare DNS synchronization.
-- `internal/`: Network constants and URL utilities.
-- `logging/`: Centralized zerolog configuration.
-- `proxy/`: Multi-protocol tunnel manager and vhost routing.
-- `server/`: Control plane, handlers, and janitor workers.
-- `tunnel/`: Client-side WireGuard device orchestration.
-- `version/`: Build metadata injection.
+- `acme/`: Certificate issuance and HTTP-01 challenge validation.
+- `auth/`: Zero-trust authentication and JWT lifecycle management.
+- `client/`: Go client library for tunnel management and health monitoring.
+- `crypto/`: Cryptographic utilities for login exchanges and certificate generation.
+- `dns/`: Cloudflare DNS record synchronization.
+- `internal/`: Immutable network configuration constants and low-level utilities.
+- `logging/`: Centralized application-wide logging configuration.
+- `proxy/`: Multi-protocol tunnel manager forwarding traffic through WireGuard.
+- `server/`: Control plane managing tunnel lifecycle and observability.
+- `tunnel/`: Client-side WireGuard tunnel setup and proxy configuration.
+- `version/`: Application build metadata exposed at runtime.

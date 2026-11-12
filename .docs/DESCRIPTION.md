@@ -1,43 +1,45 @@
-<!-- docdaemon ts:2026-11-12T09:11:49Z hash:bda99b79129941f4 model:openrouter/qwen/qwen3.7-flash -->
+<!-- docdaemon ts:2026-11-12T09:41:11Z hash:70f0b6bd2916b23e model:openrouter/qwen/qwen3.7-flash -->
 ## TL;DR
-This directory serves as the root of the Weft project, defining the build system, CI/CD pipelines, and entry points for a Layer 4/Layer 7 tunnelling proxy.
+This directory contains the root configuration, build definitions, and entry points for the Weft tunnelling proxy application.
 
 ## Overview
-Weft exposes local resources via public IPs using WireGuard tunnels and ACME-managed TLS certificates. The repository is structured around Bazel for reproducible, multi-platform builds and GitHub Actions for automated testing and release. It separates CLI logic, core server infrastructure, and container packaging into distinct packages to maintain modularity.
+The repository root orchestrates the development lifecycle of Weft, a Layer 4/Layer 7 tunnelling proxy using WireGuard. It defines the Bazel module structure, cross-compilation rules for multiple platforms, and container image packaging. The directory serves as the central hub for CI/CD pipelines, CLI entry points, and core infrastructure code, ensuring reproducible builds and automated releases across Linux, Windows, and macOS.
 
 ## Deep Dive
-### Build System
-`BUILD.bazel` and `MODULE.bazel` configure Gazelle and rules_oci to compile Go binaries for Linux, Windows, and macOS. Cross-compilation targets (`weft`, `weft_arm64`, etc.) feed into OCI image layers, which are indexed into a multi-architecture manifest pushed to GHCR. Stability is ensured by `workspace_status.sh`, which injects stable Git metadata into Bazel’s `x_defs` to optimize caching.
+### Build System Configuration
+`MODULE.bazel` and `BUILD.bazel` define the project's dependency graph and compilation targets. The system uses `rules_go` and `gazelle` to manage Go dependencies and synchronize BUILD files automatically. Cross-compilation is handled via `go_cross_binary`, producing platform-specific executables (`weft`, `weft_arm64`, etc.) that are later packaged into OCI images.
 
-### Core Infrastructure
-The `src` package implements the zero-trust authentication flow, JWT management, and multi-protocol proxying. It handles ACME certificate issuance with fan-out challenge validation for round-robin DNS environments. The `wireguard` package wraps `wireguard-go` to manage userspace TUN devices and network binding, while `types` defines the API contract for tunnel connections and usage reporting.
+### Containerization
+The `container/` directory defines rules for building multi-architecture Docker images. It combines AMD64 and ARM64 binaries into a single manifest list, allowing consumers to pull the correct variant based on their host architecture. These images are published to GitHub Container Registry with the `latest` tag.
 
-### CLI and Testing
-The `cmd` package provides the user interface via Cobra subcommands for managing servers, tunnels, and proxies. Integration tests in `test/` validate TCP/UDP forwarding, HTTPS routing, and billing accuracy using mock servers and compiled binaries. Scripts in `scripts/` enforce pre-commit checks to keep BUILD files synchronized with source code.
+### Application Entry Points
+`main.go` initializes the Cobra-based CLI defined in `cmd/`. This package provides subcommands for managing proxies, tunnels, and the bastion server. The `src/` directory implements the core server logic, including authentication, tunnel lifecycle management, and network proxying.
+
+### Automation and Testing
+Scripts in `scripts/` enforce pre-commit checks and stabilize build metadata. The `test/` directory contains integration tests validating TCP/UDP proxying, HTTPS tunneling, and security features like MITM resistance. CI workflows in `.github/` automate testing and release processes.
 
 ## Key Interfaces
-- `rootCmd`: Base Cobra command for global flags and execution.
-- `Server`: Control plane struct holding HTTP listeners and dataplane state.
-- `Tunnel`: Client-side orchestrator for WireGuard device lifecycle.
-- `UserspaceDevice`: Wrapper for initializing and controlling WireGuard instances.
-- `ConnectRequest`: Payload for initiating new tunnel connections.
-- `HealthMonitor`: Adaptive loop verifying server connectivity with backoff.
+- `main()`: Application entry point delegating to `cmd.Execute()`.
+- `rootCmd`: Base Cobra command defining global flags and execution flow.
+- `Server`: Main struct holding HTTP listener, store, dataplane, and secrets.
+- `UserspaceDevice`: Aggregates device logic, netstack, and TUN interface for WireGuard.
+- `ConnectRequest`: Payload for initiating a new tunnel connection.
+- `weft_image`: Multi-arch OCI image index published to GHCR.
 
 ## Dependencies
 - Bazel and Bazelisk for build management.
-- Go 1.25+ with standard library networking and crypto packages.
-- `github.com/spf13/cobra` for CLI structure.
-- `github.com/rs/zerolog` for structured logging.
-- `com_zx2c4_golang_wireguard` for userspace tunnel implementation.
-- `github.com/cloudflare/cloudflare-go` for DNS synchronization.
+- Go 1.25+ with `rules_go` and `gazelle`.
+- `rules_oci` for container image building.
+- `wireguard-go` for userspace tunnel management.
+- Cobra for CLI framework.
+- Zerolog for structured logging.
 
 ## Subcomponents
 - `.github/workflows/`: CI/CD pipeline definitions.
 - `cmd/`: Command-line interface implementation.
-- `container/`: OCI image build and publishing rules.
-- `scripts/`: Automation scripts for hooks and build stability.
-- `src/`: Core server, client, and proxy logic.
+- `container/`: OCI image build rules.
+- `scripts/`: Automation and hook installation scripts.
+- `src/`: Core server and client infrastructure.
 - `test/`: Integration test suite.
-- `types/`: API payload struct definitions.
-- `wireguard/`: WireGuard device abstraction layer.
-- `main.go`: Application entry point.
+- `types/`: API payload structs.
+- `wireguard/`: WireGuard device wrapper.

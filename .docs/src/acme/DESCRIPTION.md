@@ -1,40 +1,38 @@
-<!-- docdaemon ts:2026-11-12T09:11:07Z hash:a5fcb217c90d351f model:openrouter/qwen/qwen3.7-flash -->
+<!-- docdaemon ts:2026-11-12T09:40:32Z hash:a7855487d33f6a5c model:openrouter/qwen/qwen3.7-flash -->
 ## TL;DR
-This package manages TLS certificate acquisition and HTTP-01 challenge validation across a cluster of bastion nodes.
+This package manages ACME certificate issuance and HTTP-01 challenge validation for round-robin DNS environments.
 
 ## Overview
-The ACME helper simplifies HTTPS listener setup by wrapping `autocert.Manager` to ensure certificates are available before mounting listeners. It addresses specific challenges in round-robin DNS environments where multiple nodes share a hostname, ensuring that only the node holding the order can complete validation without hitting rate limits or causing CA rejections due to redirects.
+The directory provides a robust wrapper around `autocert.Manager` to handle TLS certificate lifecycle, specifically addressing failures common in distributed clusters where nodes share hostnames via round-robin DNS. It ensures that certificate acquisition respects CA rate limits and that HTTP-01 challenges are correctly resolved even when the validating CA lands on a node that did not initiate the order. By combining local caching, peer-to-peer proxying, and authoritative DNS lookups, it prevents cascading failures and stale cache issues during new host registration.
 
 ## Deep Dive
-### Certificate Acquisition
-`ACMEHelper` wraps `autocert.Manager` to provide structured logging for certificate lifecycle events, distinguishing between cache hits and CA round-trips. The `WaitForCertificate` method blocks until a certificate is available, while `AcquireCertificate` emits specific log events for observability.
+### Certificate Acquisition & Rate Limiting
+`acme.go` wraps `autocert.Manager` to provide structured logging and rate-limit protection. The `ACMEHelper` blocks startup until certificates are ready and intercepts runtime handshakes. Crucially, it tracks CA-imposed rate limits per host. If a request fails due to rate limiting, subsequent requests for that host are served locally or blocked until the CA-specified `Retry-After` time elapses, preventing repeated failed attempts from extending the wait period.
 
-### HTTP-01 Challenge Proxying
-In clusters with round-robin DNS, Let's Encrypt validators may hit any node, but only the ordering node holds the key authorization. Instead of using 301 redirects (which CAs reject for bare IPs), this module implements a fan-out proxy. When a node cannot answer locally, it fetches the token from sibling nodes via parallel HTTP requests, ensuring validation succeeds regardless of which node the CA contacts.
+### Peer-to-Peer Challenge Proxying
+In round-robin setups, only the ordering node holds the key authorization for HTTP-01 challenges. `challenge_proxy.go` implements a fan-out proxy that relays challenge responses from sibling nodes when the current node cannot answer locally. It avoids 301 redirects (which CAs reject for bare IPs) by fetching tokens directly from peers. The system filters out local, loopback, and link-local addresses and caps the fan-out to limit network load.
 
-### Transport Hardening
-To prevent `tls-alpn-01` failures caused by multiple nodes attempting simultaneous authorizations on port 443, the package provides an HTTP transport wrapper. This transport intercepts ACME responses and strips `tls-alpn-01` challenges, forcing the client to use `http-01` exclusively. This avoids rate limit exhaustion when non-ordering nodes fail ALPN validation.
-
-### Fresh DNS Resolution
-New hosts often trigger certificate requests immediately after DNS registration, risking stale NXDOMAIN cache entries from the system resolver. The `LookupIPFresh` function bypasses local caches by querying authoritative nameservers directly for the host's zone. If authoritative servers confirm the record exists, resolution proceeds; otherwise, it falls back to the standard resolver.
+### DNS Resolution & Challenge Enforcement
+To prevent stale NXDOMAIN errors from blocking new hosts, `fresh_lookup.go` queries authoritative nameservers directly instead of relying on the system resolver’s cache. Additionally, `http01_only.go` forces the ACME client to use only HTTP-01 challenges by stripping `tls-alpn-01` from server responses. This is necessary because `tls-alpn-01` fails across nodes that do not hold the specific challenge certificate, quickly hitting authorization failure rate limits.
 
 ## Key Interfaces
-- `NewACMEHelper(m *autocert.Manager)` constructs a new helper instance.
-- `AcquireCertificate(m *autocert.Manager, hello *tls.ClientHelloInfo)` fetches a TLS certificate with logging.
-- `(a *ACMEHelper) WaitForCertificate(ctx context.Context, host string)` waits for certificate availability.
-- `FetchChallengeFromPeers` fans out parallel requests to siblings to resolve HTTP-01 challenges.
-- `LookupIPFresh` resolves hostnames via authoritative nameservers to avoid cached NXDOMAIN errors.
-- `NewHTTP01OnlyClient` returns an ACME client configured to force HTTP-01 validation.
+*   `NewACMEHelper`: Constructs an ACME helper wrapping an autocert manager.
+*   `WaitForCertificate`: Blocks until a valid certificate is available or context expires.
+*   `AcquireCertificate`: Fetches certificates with detailed logging and rate-limit protection.
+*   `FetchChallengeFromPeers`: Proxies HTTP-01 challenges from sibling cluster nodes.
+*   `LookupIPFresh`: Resolves hostnames via authoritative nameservers to bypass cached NXDOMAIN.
+*   `NewHTTP01OnlyClient`: Creates an ACME client configured to reject TLS-ALPN-01 challenges.
 
 ## Dependencies
-- `golang.org/x/crypto/acme/autocert`
-- `golang.org/x/crypto/acme`
-- `zerolog` for structured event logging
-- Ginkgo/Gomega for testing
+*   `golang.org/x/crypto/acme`: Core ACME protocol implementation.
+*   `github.com/uber-go/automaxprocs` (implied via standard lib): System resource management.
+*   `zerolog`: Structured logging infrastructure.
+*   `net`, `crypto/tls`: Standard library networking and TLS handling.
 
 ## Subcomponents
-- `acme.go`: Core helper utilities and certificate management.
-- `challenge_proxy.go`: Fan-out proxy for peer-to-peer challenge forwarding.
-- `fresh_lookup.go`: Authoritative DNS resolution to bypass cache.
-- `http01_only.go`: Transport wrapper to enforce HTTP-01 validation.
-- `testing_helpers.go`: Test seams for mocking DNS and network behavior.
+*   `acme.go`: Core certificate acquisition and rate-limit logic.
+*   `challenge_proxy.go`: Peer-to-peer HTTP-01 challenge relay.
+*   `fresh_lookup.go`: Authoritative DNS resolution.
+*   `http01_only.go`: Transport wrapper to enforce HTTP-01 only.
+*   `testing_helpers.go`: Test seams for DNS and network mocking.
+*   `*_test.go`: Unit tests for all components.
