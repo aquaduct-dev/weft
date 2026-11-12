@@ -65,9 +65,9 @@ const (
 
 // Test seams: overridden in unit tests so the logic can be exercised without
 // real DNS, interface state or port-80 listeners. Production callers go
-// through net.LookupIP / net.InterfaceAddrs / a plain dialer unchanged.
+// through LookupIPFresh / net.InterfaceAddrs / a plain dialer unchanged.
 var (
-	lookupIP       = net.LookupIP
+	lookupIP       = LookupIPFresh
 	interfaceAddrs = net.InterfaceAddrs
 	dialPeer       = func(ctx context.Context, ip net.IP) (net.Conn, error) {
 		addr := net.JoinHostPort(ip.String(), fmt.Sprint(ChallengePort))

@@ -5,6 +5,7 @@ go_library(
     srcs = [
         "acme.go",
         "challenge_proxy.go",
+        "fresh_lookup.go",
         "http01_only.go",
         "testing_helpers.go",
     ],
@@ -23,6 +24,7 @@ go_test(
     srcs = [
         "acme_test.go",
         "challenge_proxy_test.go",
+        "fresh_lookup_test.go",
         "http01_only_test.go",
     ],
     embed = [":acme"],

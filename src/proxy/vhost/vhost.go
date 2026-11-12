@@ -1235,9 +1235,11 @@ func (p *VHostProxy) GetTLSConfig(host string) *tls.Config {
 	return p.tlsConfigs[host]
 }
 
-// Test seams. Replaced by tests; production uses net.LookupIP and the real prober.
+// Test seams. Replaced by tests; production uses acme.LookupIPFresh and the real prober.
 var (
-	lookupIP             = net.LookupIP
+	// Asks the zone's authoritative servers, never a resolver that may have
+	// cached the name's NXDOMAIN from before its record existed.
+	lookupIP             = acme.LookupIPFresh
 	probeACMEChallengeFn = probeACMEChallenge
 	// waitForCertificateFn blocks until autocert has a certificate for host.
 	waitForCertificateFn = func(ctx context.Context, m *autocert.Manager, host string) (*tls.Certificate, error) {
