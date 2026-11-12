@@ -1,35 +1,40 @@
-<!-- docdaemon ts:2026-11-01T18:06:03Z hash:2bc44462e8589a61 model:openrouter/qwen/qwen3.7-flash -->
+<!-- docdaemon ts:2026-11-12T09:11:07Z hash:a5fcb217c90d351f model:openrouter/qwen/qwen3.7-flash -->
 ## TL;DR
-This package manages TLS certificate acquisition and HTTP-01 challenge validation for round-robin DNS environments.
+This package manages TLS certificate acquisition and HTTP-01 challenge validation across a cluster of bastion nodes.
 
 ## Overview
-The ACME module simplifies HTTPS listener setup by wrapping `autocert.Manager` to ensure certificates are available before mounting listeners. It specifically addresses failures in round-robin DNS setups where only the node placing an order holds the challenge key, causing other nodes to fail `tls-alpn-01` validation and hit rate limits. The system forces HTTP-01 usage and proxies challenges between sibling nodes to ensure successful authentication regardless of which node the CA validator contacts.
+The ACME helper simplifies HTTPS listener setup by wrapping `autocert.Manager` to ensure certificates are available before mounting listeners. It addresses specific challenges in round-robin DNS environments where multiple nodes share a hostname, ensuring that only the node holding the order can complete validation without hitting rate limits or causing CA rejections due to redirects.
 
 ## Deep Dive
 ### Certificate Acquisition
-`ACMEHelper` wraps `autocert.Manager` to provide structured logging for certificate lifecycle events (`acme_cache_hit`, `acme_issuance_started`). It exposes `WaitForCertificate` to block until a cert is ready and `AcquireCertificate` to handle TLS handshakes, distinguishing between cache hits and new CA round-trips.
+`ACMEHelper` wraps `autocert.Manager` to provide structured logging for certificate lifecycle events, distinguishing between cache hits and CA round-trips. The `WaitForCertificate` method blocks until a certificate is available, while `AcquireCertificate` emits specific log events for observability.
 
-### HTTP-01 Enforcement
-In round-robin DNS, `tls-alpn-01` fails on non-leader nodes because they lack the specific challenge certificate. `HTTP01OnlyTransport` intercepts ACME JSON responses, stripping `tls-alpn-01` challenges to force immediate fallback to `http-01`. This prevents rapid authorization failures that trigger Let's Encrypt rate limits.
+### HTTP-01 Challenge Proxying
+In clusters with round-robin DNS, Let's Encrypt validators may hit any node, but only the ordering node holds the key authorization. Instead of using 301 redirects (which CAs reject for bare IPs), this module implements a fan-out proxy. When a node cannot answer locally, it fetches the token from sibling nodes via parallel HTTP requests, ensuring validation succeeds regardless of which node the CA contacts.
 
-### Peer Challenge Proxying
-When a node receives an HTTP-01 challenge it cannot answer locally, `FetchChallengeFromPeers` queries all sibling nodes in parallel. It uses a `weft-redirect=true` parameter to prevent recursive loops and filters out loopback/link-local IPs. This ensures the CA validator gets a valid response from any node in the rotation without relying on redirects, which CAs reject for bare IPs.
+### Transport Hardening
+To prevent `tls-alpn-01` failures caused by multiple nodes attempting simultaneous authorizations on port 443, the package provides an HTTP transport wrapper. This transport intercepts ACME responses and strips `tls-alpn-01` challenges, forcing the client to use `http-01` exclusively. This avoids rate limit exhaustion when non-ordering nodes fail ALPN validation.
+
+### Fresh DNS Resolution
+New hosts often trigger certificate requests immediately after DNS registration, risking stale NXDOMAIN cache entries from the system resolver. The `LookupIPFresh` function bypasses local caches by querying authoritative nameservers directly for the host's zone. If authoritative servers confirm the record exists, resolution proceeds; otherwise, it falls back to the standard resolver.
 
 ## Key Interfaces
-- `NewACMEHelper(m *autocert.Manager)` constructs the helper wrapper.
-- `AcquireCertificate(m *autocert.Manager, hello *tls.ClientHelloInfo)` fetches certs with observability logs.
-- `WaitForCertificate(ctx context.Context, host string)` blocks until a certificate is available.
-- `FetchChallengeFromPeers(path string)` fans out HTTP requests to siblings to find the key auth token.
-- `NewHTTP01OnlyClient()` returns an ACME client configured to ignore TLS-ALPN-01 challenges.
-- `SwapLookupIPForTest`, `SwapInterfaceAddrsForTest`, `SwapDialPeerForTest` export test seams for mocking network behavior.
+- `NewACMEHelper(m *autocert.Manager)` constructs a new helper instance.
+- `AcquireCertificate(m *autocert.Manager, hello *tls.ClientHelloInfo)` fetches a TLS certificate with logging.
+- `(a *ACMEHelper) WaitForCertificate(ctx context.Context, host string)` waits for certificate availability.
+- `FetchChallengeFromPeers` fans out parallel requests to siblings to resolve HTTP-01 challenges.
+- `LookupIPFresh` resolves hostnames via authoritative nameservers to avoid cached NXDOMAIN errors.
+- `NewHTTP01OnlyClient` returns an ACME client configured to force HTTP-01 validation.
 
 ## Dependencies
-- `golang.org/x/crypto/acme/autocert`: Core certificate management.
-- `zerolog`: Structured event logging.
-- `net/http`, `crypto/tls`: Standard library networking and TLS handling.
+- `golang.org/x/crypto/acme/autocert`
+- `golang.org/x/crypto/acme`
+- `zerolog` for structured event logging
+- Ginkgo/Gomega for testing
 
 ## Subcomponents
-- `acme.go`: Helper utilities and log event constants.
-- `challenge_proxy.go`: Fan-out proxy logic for sibling nodes.
-- `http01_only.go`: Transport wrapper to strip TLS-ALPN-01.
-- `testing_helpers.go`: Exported mock functions for DNS and dialing.
+- `acme.go`: Core helper utilities and certificate management.
+- `challenge_proxy.go`: Fan-out proxy for peer-to-peer challenge forwarding.
+- `fresh_lookup.go`: Authoritative DNS resolution to bypass cache.
+- `http01_only.go`: Transport wrapper to enforce HTTP-01 validation.
+- `testing_helpers.go`: Test seams for mocking DNS and network behavior.

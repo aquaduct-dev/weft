@@ -1,41 +1,39 @@
-<!-- docdaemon ts:2026-11-01T18:05:39Z hash:8a644d227be6964b model:openrouter/qwen/qwen3.7-flash -->
+<!-- docdaemon ts:2026-11-12T09:10:40Z hash:0f7b506eb9a60c57 model:openrouter/qwen/qwen3.7-flash -->
 ## TL;DR
-This directory implements a name-based virtual host reverse proxy with automatic TLS management and HTTP/3 support.
+This directory implements a name-based virtual host reverse proxy with automatic TLS termination, HTTP/2 and HTTP/3 support, and distributed ACME challenge handling.
 
 ## Overview
-The `vhost` package manages dynamic route registration, ACME-based certificate issuance, and multi-protocol termination for the weft bastion nodes. It enables multiple hosts to share a single IP by routing requests based on hostname, path prefixes, and headers while handling complex distributed ACME challenges across cluster peers. The system ensures robustness against race conditions, network failures, and round-robin DNS distribution during tunnel establishment.
+The `vhost` package manages dynamic route registration and certificate lifecycle for multiple hosts on shared ports. It supports static PEM certificates, Let's Encrypt via ACME, and plain HTTP, ensuring robust operation in round-robin DNS environments by distributing HTTP-01 challenges across sibling bastions. The system integrates with WireGuard for internal traffic routing and provides accurate byte-metering for billing and monitoring across all supported protocols.
 
 ## Deep Dive
 ### Virtual Host Routing
-Requests are matched against registered routes using `PathMatcher`, `HeaderMatcher`, or `MethodMatcher`. The longest matching path prefix takes precedence to prevent catch-all routes from shadowing specific subpaths. Routes forward traffic via `WGAwareRoundTripper`, which uses WireGuard netstack dialing for internal targets and standard transport otherwise. Path modifiers strip prefixes cleanly, normalizing dot-segments to ensure upstream services receive valid URLs.
+`VHostProxy` dispatches requests to `Route` objects based on path prefix, header, query, or method matchers. Path matching is segment-aware to prevent collisions (e.g., `/api` vs `/apifoo`) and normalizes dot-segments. The longest matching prefix wins, adhering to Gateway-API precedence rules.
 
-### ACME Certificate Management
-TLS certificates are issued automatically via Let's Encrypt using the ACME protocol. The flow binds port 80 first to satisfy HTTP-01 challenges, then probes public IPs to verify reachability across round-robin DNS records. If issuance fails, errors are recorded in `ACMEFailures` and exposed via `/certificates`. Successful issuance starts the TLS listener in the background, while failures trigger cleanup of associated tunnels.
+### ACME Challenge Distribution
+To support round-robin DNS, the proxy implements a distributed HTTP-01 challenge proxy. If a node cannot answer locally, it queries siblings via `acme.FetchChallengeFromPeers`. Requests marked with `NoProxyParam` are not forwarded further, preventing infinite loops. Challenges for unmanaged hosts fall through to the backend if configured. The listener remains open even without active hosts to allow reachability probes from peers.
 
-### Distributed Challenge Proxy
-To handle round-robin DNS where validators may land on any node, HTTP-01 challenges are proxied among sibling bastions. A node lacking the challenge token queries peers via `acme.FetchChallengeFromPeers`. Requests marked with `NoProxyParam` are answered locally only, preventing infinite forwarding loops. Unmanaged hosts fall through to the backend if configured, allowing external ACME clients to complete their own validations.
+### Protocol Support & Metering
+The proxy negotiates HTTP/2 over TLS and serves HTTP/3 (QUIC) on UDP for public listeners. Internal WireGuard routes use HTTP/1.1. The `meter` sub-package tracks byte traffic at the connection level for HTTP/1.1/2 and application layer for HTTP/3, ensuring accurate metrics for long-lived streaming requests.
 
-### Metering and Observability
-Traffic metrics are tracked at both connection and application layers. For HTTP/1.1 and HTTP/2, byte counts are captured via wrapped connections beneath TLS termination. HTTP/3 metering occurs at the application layer, wrapping request bodies and response writers to track streaming data accurately. Active request tracking ensures long-lived transfers do not under-report usage. Error logs filter noisy TLS handshake failures to debug level, surfacing other server errors as warnings.
+### Security & Error Handling
+TLS handshake errors are filtered to debug level to reduce log noise. The proxy validates ACME challenge targets to prevent SSRF, rejecting loopback and private IPs. WireGuard-aware transport restricts userspace stack usage to specific internal IP ranges.
 
 ## Key Interfaces
-*   `VHostProxyManager`: Manages route registration, ACME issuance, and certificate lifecycle.
-*   `VHostProxy`: Handles request routing, TLS termination, and upstream forwarding per host.
-*   `MeteredServer`: Wraps `http.Server` to provide transparent byte-metering for all protocols.
+*   `VHostProxyManager`: Coordinates multiple proxies, certificate caching, and status endpoints.
+*   `VHostProxy`: Manages routing, TLS configs, and protocol negotiation for a single listener.
+*   `MeteredServer`: Wraps `http.Server` to provide TLS counting and context injection.
 *   `PathMatcher`: Performs segment-aware prefix matching for route selection.
-*   `httpErrorLogWriter`: Filters and structures net/http error messages for zerolog integration.
+*   `WGAwareRoundTripper`: Routes upstream traffic through WireGuard for internal targets.
 
 ## Dependencies
 *   `github.com/quic-go/quic-go`: HTTP/3 QUIC support.
-*   `golang.org/x/crypto/acme/autocert`: Let's Encrypt certificate management.
+*   `golang.org/x/crypto/acme/autocert`: Let's Encrypt integration.
 *   `go.uber.org/zap` / `zerolog`: Structured logging.
-*   `github.com/ginkgo-ginkgo/ginkgo/v2` & `gomega`: Testing framework.
-*   Standard library: `net/http`, `crypto/tls`, `sync`, `io`.
+*   Standard library: `net/http`, `crypto/tls`, `sync`.
 
 ## Subcomponents
-*   `vhost.go`: Core proxy implementation and route management.
-*   `challenge_proxy.go`: Distributed HTTP-01 challenge forwarding logic.
-*   `errorlog.go`: Custom HTTP error log writer.
-*   `meter/`: Byte-metering components for HTTP/1.1, HTTP/2, and HTTP/3.
-*   `BUILD.bazel`: Bazel build targets for library and tests.
-*   `*_test.go`: Comprehensive test suite covering concurrency, routing, and ACME flows.
+*   `vhost.go`: Core proxy implementation and routing logic.
+*   `challenge_proxy.go`: Distributed HTTP-01 challenge forwarding.
+*   `errorlog.go`: Filtered HTTP error logging.
+*   `meter/`: Byte-metering components for HTTP/1.1, 2, and 3.
+*   `*_test.go`: Ginkgo/Gomega test suite covering race conditions, ACME failures, and metering.

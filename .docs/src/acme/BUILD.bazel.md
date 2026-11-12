@@ -1,9 +1,9 @@
-<!-- docdaemon ts:2026-11-01T18:05:29Z hash:21b191515649ee5a model:openrouter/qwen/qwen3.7-flash -->
+<!-- docdaemon ts:2026-11-12T09:10:28Z hash:c5ef15147e5d73df model:openrouter/qwen/qwen3.7-flash -->
 ## TL;DR
-This file defines the Bazel build targets for the ACME package, which manages TLS certificate acquisition and HTTP-01 challenge handling in a round-robin DNS environment.
+This file defines the Bazel build targets for the ACME package, which manages TLS certificate acquisition and HTTP-01 challenge validation across a cluster of bastion nodes.
 
-The `go_library` target compiles the core ACME logic, including `challenge_proxy.go` and `http01_only.go`. The `http01_only.go` implementation restricts validation to HTTP-01 challenges to prevent `tls-alpn-01` failures caused by round-robin DNS resolution hitting nodes that do not hold the current authorization key. The `challenge_proxy.go` module proxies HTTP-01 challenges to sibling nodes rather than issuing redirects, ensuring Let's Encrypt validators can complete authentication regardless of which node they contact.
+The `go_library` target compiles the core logic for interacting with Let's Encrypt via `golang.org/x/crypto/acme`. It includes `challenge_proxy.go` to handle peer-to-peer challenge forwarding, ensuring that when round-robin DNS directs a CA validator to a node other than the one holding the order, the challenge is proxied rather than redirected (which CAs reject). The `http01_only.go` component forces HTTP-01 validation exclusively, preventing `tls-alpn-01` failures caused by multiple nodes attempting simultaneous authorizations on port 443.
 
-Dependencies include `zerolog` for structured event logging (e.g., `acme_cache_hit`, `acme_issuance_started`) and `golang.org/x/crypto/acme` for protocol interaction.
+The `fresh_lookup.go` module addresses DNS caching issues where NXDOMAIN responses from new hosts block certificate issuance by resolving queries directly against zone nameservers instead of relying on the system resolver.
 
-The `go_test` target runs the test suite using Ginkgo and Gomega. It embeds the library and includes tests for peer fallback mechanisms and leader election, verifying that the system correctly skips dead peers and handles registration loops when multiple bastion nodes are present.
+The `go_test` target uses Ginkgo/Gomega to verify these behaviors, including leader election fallbacks and peer connectivity checks. Dependencies include `zerolog` for structured event logging of certificate lifecycle events (cache hits, issuance success/failure) to aid operator auditing.

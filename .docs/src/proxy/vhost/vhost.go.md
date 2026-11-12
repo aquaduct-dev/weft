@@ -1,9 +1,11 @@
-<!-- docdaemon ts:2026-11-01T18:05:29Z hash:65953f6d750bdd9b model:openrouter/qwen/qwen3.7-flash -->
+<!-- docdaemon ts:2026-11-12T09:10:30Z hash:d3375014d328b189 model:openrouter/qwen/qwen3.7-flash -->
 ## TL;DR
-This file implements a name-based virtual host reverse proxy with support for HTTP/1.1, HTTP/2, and HTTP/3, including automatic TLS certificate management via ACME.
+This file implements a name-based virtual host reverse proxy with automatic TLS termination, HTTP/2 and HTTP/3 support, and ACME challenge handling.
 
-The `VHostProxy` manages routes per hostname, matching requests using `PathMatcher`, `HeaderMatcher`, or `MethodMatcher`. It applies `Modifier`s like header injection or path prefix stripping before forwarding to upstream targets via `WGAwareRoundTripper`, which handles WireGuard netstack dialing and failure-based tunnel cleanup.
+`VHostProxy` manages routing for multiple hosts on a single port, dispatching requests to `Route` objects defined by matchers (path, header, query, method) and modifiers (header injection, redirects, path stripping). It supports three TLS modes: static PEM certificates (`AddHostWithTLS`), Let's Encrypt via ACME (`AddHostWithACME`), or plain HTTP. The ACME implementation uses the HTTP-01 challenge exclusively to avoid failures in round-robin DNS setups, probing all public IPv4 records to ensure reachability before issuance.
 
-TLS termination is handled through `AddHostWithTLS` (static certs) or `AddHostWithACME` (Let's Encrypt). The ACME flow binds port 80 first to satisfy HTTP-01 challenges, then probes public IPs to ensure reachability across round-robin DNS records. If issuance succeeds, it starts the TLS listener in the background.
-
-HTTP/2 and HTTP/3 are enabled by default but can be disabled via environment variables. HTTP/3 uses a separate UDP listener. Route selection prioritizes the longest path prefix match to prevent catch-all routes from shadowing specific ones.
+Key components include:
+*   **Routing Logic**: `findRoute` selects the most specific matching route based on path prefix length, adhering to Gateway-API precedence rules.
+*   **Protocol Support**: Automatically negotiates HTTP/2 over TLS and serves HTTP/3 (QUIC) on UDP for public listeners, while keeping internal WireGuard routes on HTTP/1.1.
+*   **WireGuard Integration**: `WGAwareRoundTripper` routes upstream traffic through a userspace NetStack if the target is in the `10.1.*` range, with failure tracking to trigger tunnel cleanup.
+*   **Lifecycle Management**: `VHostProxyManager` coordinates multiple proxies, caching certificates and exposing status endpoints for certificate validity and ACME failure reporting.
